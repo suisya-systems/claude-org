@@ -1,159 +1,159 @@
-# 意図的に持たない機能（Non-goals）
+# Non-goals (Things this project deliberately doesn't do)
 
-claude-org-ja は**運用規律フレームワーク**であり、Claude Code 上での組織運用に対象を絞っています。「あった方が便利そうに見えるが、設計哲学上あえて持たない」機能を以下に明示します。能動的な不在表明は、本フレームワークの境界と価値を読者に正しく伝えるための装置です。
+claude-org is an **operational-discipline framework** scoped to running an organization on top of Claude Code. The list below makes explicit which capabilities we have decided not to build, even though they may sound convenient. Stating absences actively is the device we use to communicate the boundary — and the value — of this framework.
 
-> README には特に強い 5 項目だけ要約しています。本ドキュメントはその詳細版で、全 12 項目を扱います。
+> The README summarizes only the five strongest items. This document is the long form and covers all twelve.
 
 ---
 
-## 1. ワーカーに `--dangerously-skip-permissions` を既定で撒かない
+## 1. We don't hand `--dangerously-skip-permissions` to Workers by default
 
-**やらないこと**: 実作業を担うワーカー（とその指示を出す窓口）に対して、Claude Code の許可プロンプトを全面的に回避する `--dangerously-skip-permissions`（= `permission_mode="bypassPermissions"`）を既定として配ること。「全ロール一律で bypass を有効にする」運用は採用しません。
+**What we don't do**: ship `--dangerously-skip-permissions` (= `permission_mode="bypassPermissions"`), which broadly suppresses Claude Code's permission prompts, as a default for the Workers that do real work (and for the Lead that instructs them). We do not adopt the "every role uniformly bypasses" stance.
 
-**理由**: claude-org-ja は**許可エントリの絞り込み + 多層防御**を中核価値としています。実作業ロールに許可境界の全面回避を撒くと、`git push --force` や `.env` の読み取りなど、組織運用で最も致命的な事故クラスを事前に止められなくなります。farm 系の全自動志向とは方向が逆で、「目の届かないところでこっそり危険な操作が走る」状況は許容しません。
+**Why**: claude-org's core value is **narrow allow-listing plus defense in depth**. Handing a blanket bypass to the role that actually does work eliminates our ability to pre-empt the most catastrophic accident classes — `git push --force`, reads of `.env`, and so on. This is the opposite direction from farm-style "everything fully automatic" tools; we don't accept "dangerous operations quietly running where no one is watching."
 
-ただし、claude-org-ja は**ロールごとに permission_mode を意図的に使い分ける**設計です。建前として「全ロール `auto` モード」と書くと現実と乖離するため、ここで正直に整理しておきます:
+That said, claude-org is **deliberately heterogeneous in `permission_mode` across roles**. Pretending "every role runs in `auto`" would diverge from reality, so we lay it out honestly:
 
-| ロール | `permission_mode` | モデル | 補足 |
+| Role | `permission_mode` | Model | Notes |
 |---|---|---|---|
-| 窓口（Secretary） | `auto` | Opus | 許可エントリを絞った `settings.local.json` + PreToolUse フックで防御 |
-| フォアマン（Dispatcher） | `bypassPermissions` | Sonnet | **例外**。理由は下記 |
-| キュレーター（Curator） | `auto` | Opus | 最小許可（読み取り中心 + ナレッジ整理に必要な書き込みのみ） |
-| ワーカー（Worker） | `auto` | Opus | 許可エントリの絞り込み + ロール別フック + タスクごとの作業ディレクトリ境界 |
+| Lead | `auto` | Opus | Narrow allow-list in `settings.local.json` plus PreToolUse hooks |
+| Dispatcher | `bypassPermissions` | Sonnet | **Exception.** See below |
+| Curator | `auto` | Opus | Minimal allow-list (read-mostly plus the writes needed for curation) |
+| Worker | `auto` | Opus | Narrow allow-list + role-specific hooks + per-task working-directory boundary |
 
-フォアマンだけが `bypassPermissions` 固定の理由は **コスト最適化の必然的な帰結**です。Claude Code（TUI）では `auto` モードが Opus 系でのみ起動し、Sonnet では `auto` モード自体が利用できません。フォアマンを Sonnet で運用する以上、`permission_mode` の選択肢は実質 `bypassPermissions` 一択であり、これは分類器の挙動を回避しているわけではなく、そもそも `auto` を選べない環境での唯一の選択です。
+The reason only the Dispatcher is pinned to `bypassPermissions` is **a forced consequence of cost optimization**. In Claude Code (TUI), `auto` mode is only available on Opus-class models — Sonnet cannot run `auto` at all. Since we run the Dispatcher on Sonnet, the only realistic value of `permission_mode` is `bypassPermissions`. This isn't classifier evasion; it's the only choice the environment offers.
 
-### `bypassPermissions` の実際の挙動（誤魔化さない）
+### What `bypassPermissions` actually does (no fudging)
 
-`bypassPermissions` モードはその名の通り、`permissions.allow` と `permissions.deny` の **両方を bypass します**。つまり「`permissions.deny` に並べた `git push --force` 等の拒否ルールはフォアマン側では効きません」。Claude Code 公式が bypass モードでも残しているのは、`.git/`, `.claude/`, `.vscode/`, `.idea/`, `.husky/` 等の保護対象ディレクトリに対する書き込み確認プロンプトのみです。
+True to its name, `bypassPermissions` mode bypasses **both** `permissions.allow` and `permissions.deny`. That is, "the deny rules in `permissions.deny` such as `git push --force` are not enforced on the Dispatcher." What Claude Code itself still preserves under bypass is only the write-confirmation prompt for protected directories such as `.git/`, `.claude/`, `.vscode/`, `.idea/`, and `.husky/`.
 
-したがってフォアマンの実効防御層は次のように整理されます:
+So the Dispatcher's effective defense layers come out as:
 
-1. **保護対象ディレクトリの自動確認プロンプト**（Claude Code 側で `bypassPermissions` でも保持される範囲のみ）
-2. **PreToolUse フック**（`bypassPermissions` でも実行され、exit code 2 でツール呼び出しをブロックできる。allow ルールより優先される）。フォアマン用には以下のフックが配備済みです:
-   - `block-dispatcher-out-of-scope.sh` — Edit/Write 対象を `.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）への直接編集は exit 2 でブロック
-   - `block-git-push.sh` — フォアマンからの直接 push を禁止（push は窓口経由）
-   - `block-dangerous-git.sh` — `git push --force` / `git reset --hard` / `git branch -D` の遮断
-   - `block-workers-delete.sh` — workers ディレクトリの再帰削除を遮断
-   - `block-no-verify.sh` — `--no-verify` 系の検証バイパスを遮断
-3. **ロール契約による自主規律**（フォアマンの `CLAUDE.md` に記載された業務スコープ宣言と、窓口によるライフサイクル監視）
+1. **Auto-confirmation prompts for protected directories** (the residual range Claude Code keeps even under `bypassPermissions`)
+2. **PreToolUse hooks** (run even under `bypassPermissions`, can block a tool call by exiting with code 2; take precedence over allow rules). The following hooks are deployed for the Dispatcher:
+   - `block-dispatcher-out-of-scope.sh` — restricts Edit/Write targets to `.dispatcher/`, `.state/`, and `knowledge/raw/YYYY-MM-DD-{topic}.md`. Direct edits to application code (`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/`, etc.) are blocked with exit 2
+   - `block-git-push.sh` — forbids direct push from the Dispatcher (push goes through the Lead)
+   - `block-dangerous-git.sh` — blocks `git push --force` / `git reset --hard` / `git branch -D`
+   - `block-workers-delete.sh` — blocks recursive deletion of the workers directory
+   - `block-no-verify.sh` — blocks `--no-verify`-style verification bypasses
+3. **Self-discipline through the role contract** (the business-scope declarations in the Dispatcher's `CLAUDE.md`, plus lifecycle oversight by the Lead)
 
-bypass モードでも (2) の PreToolUse フックは有効に作動するため、`git push --force` 系の履歴上書きやアプリケーションコードへの不意の書き込みは技術的にも止まります。ただしフックは Bash コマンド文字列に対する loose match であり、関数定義やシェル変数経由の極端な迂回までは捕捉しません — その意味で「ロール契約に基づく自主規律」は依然として補完的に必要です（誇張なく言えば「複数層の網が重なっているが、各層の網目は粗い」状態）。
+Layer (2) — PreToolUse hooks — does run under bypass, so history-rewriting commands like `git push --force` and unintended writes into application code are technically blocked. That said, hooks loose-match against Bash command strings, so they don't catch every extreme workaround such as function definitions or routing through shell variables — which is why "self-discipline through the role contract" remains a complementary necessity. Honest framing: "multiple layers of net are stacked, but each layer has wide gaps."
 
-**代替手段**: 各ロールごとに `tools/role_configs_schema.json` を正典とした `settings.local.json` を `/org-setup` で配布します。許可エントリとフックはスキーマに登録され、CI (`tools/check_role_configs.py`) で設定の乖離を検出します。フォアマンの `bypassPermissions` 例外そのものは、Sonnet で `auto` モードが利用可能になった時点で再評価します。
-
----
-
-## 2. 固定ロールプール（フロントエンド / バックエンド / QA エージェント等）を持たない
-
-**やらないこと**: 「フロントエンド担当エージェント」「バックエンド担当エージェント」のような事前定義されたロールプールを提供すること。
-
-**理由**: claude-org-ja は**タスクごとに**作業ディレクトリと `CLAUDE.md` を都度生成する設計です。事前のロールプールは「タスクが来る前にロールが決まっている」前提で動くため、タスクごとの規律（タスクごとに環境を作り直す）と矛盾します。同じ「フロントエンド作業」でも、対象リポジトリ・ブランチ・検証深度ごとに必要な許可と文脈は異なるため、定型化されたロールを再利用することで文脈のずれが起きやすくなります。
-
-**代替手段**: `/org-delegate` がタスクごとにワーカーを派生させ、その都度作業ディレクトリの中に `CLAUDE.local.md`（タスク固有の指示書）を生成します。「定型タスク」を扱いたい場合はロールではなく**作業スキル**として切り出してください（`/org-retro` → スキル候補キュー → `skill-creator` の流れ）。
+**Alternative**: each role gets a `settings.local.json` distributed via `/org-setup`, with `tools/role_configs_schema.json` as the canonical source. Allow entries and required hooks are registered in the schema, and CI (`tools/check_role_configs.py`) detects drift. The Dispatcher's `bypassPermissions` exception will be re-evaluated as soon as `auto` mode becomes available on Sonnet.
 
 ---
 
-## 3. 大規模並列（20+ エージェント）はしない
+## 2. We don't ship a fixed pool of pre-defined roles (front-end / back-end / QA agents, etc.)
 
-**やらないこと**: いわゆる farm 系のように 20〜100 並列でエージェントを回し、各エージェントが同一タスクを試行錯誤する運用を採用すること。
+**What we don't do**: provide a pre-defined pool of "front-end agent", "back-end agent", and similar role archetypes.
 
-**理由**: claude-org-ja は **3〜5 ワーカー / 品質重視**の立ち位置です。大規模並列は「数で殴って 1 つでも当たれば勝ち」のアプローチで、人間レビュアーが追えない量のプルリクエスト・コミットを生み出します。巻き戻し・再現性・知見蓄積という運用規律の観点では、ワーカー数を絞って `/org-retro` で振り返るほうが自己成長ループが回ります。
+**Why**: claude-org generates **per-task** working directories and `CLAUDE.md` files freshly each time. A pre-baked role pool assumes "the role is decided before the task arrives", which conflicts with our discipline of remaking the environment per task. Even within "front-end work", the required permissions and context vary by repository, branch, and verification depth; reusing a stock role tends to produce contextual drift.
 
-**代替手段**: 現状のフォアマンは同時に複数のワーカーを派生できますが、ピークでも 3〜5 を上限の目安としてください。「大量の似たタスクをまとめて処理したい」用途なら、ワーカーを多重化するのではなく、タスクをまとめて 1 ワーカーに渡し、進捗をジャーナルで追う方が適しています。
-
----
-
-## 4. 自然言語からのプロジェクト雛形生成（Auto-create app）はしない
-
-**やらないこと**: 「Twitter クローンを作って」のような自然言語からプロジェクトの雛形を生成する機能。
-
-**理由**: claude-org-ja は運用規律フレームワークであり、雛形生成器ではありません。雛形生成は「最初の 5 分」を短くするツールで、claude-org-ja の主戦場である「長期運用での規律維持」とは関心領域が異なります。両方を 1 つのツールに混ぜると、どちらの責務もぼやけます。
-
-**代替手段**: 雛形生成が必要なら `create-react-app` / `cargo new` / `npm init` 等の専用ツールを使い、その後 claude-org-ja で組織運用を始めてください。
+**Alternative**: `/org-delegate` derives a Worker per task and writes a task-specific `CLAUDE.local.md` into its working directory. If you want to repeat **routine tasks**, factor them out as **work skills** rather than as roles (`/org-retro` → skill candidate queue → `skill-creator`).
 
 ---
 
-## 5. 複数プロバイダー切替（Aider / Codex / Gemini 等）はしない
+## 3. We don't run massive parallelism (20+ agents)
 
-**やらないこと**: Claude Code 以外の言語モデル（OpenAI / Gemini / DeepSeek 等）を主役のワーカーとして切り替え可能にすること。
+**What we don't do**: farm-style operation in which 20–100 agents run in parallel and each tries the same task.
 
-**理由**: claude-org-ja は **Claude 専用**で立ち位置を取っています。複数プロバイダー対応は魅力的に見えますが、プロバイダーごとに許可モデル・フック機構・MCP サーバーとの互換性・文脈窓の形状・ツール呼び出し仕様が異なり、「規律を強制する」というフレームワークの本質がプロバイダー数だけ薄まります。Claude Code に深く張ることで、`renga-peers` MCP サーバー・フック・設定スキーマ・サンドボックス等、Claude Code 由来の規律を最大限活用できます。
+**Why**: claude-org sits in the **3–5 Workers / quality-first** position. Massive parallelism is a "swing for hits at scale" approach that produces more pull requests and commits than human reviewers can keep up with. From the operational-discipline viewpoint — rollback, reproducibility, knowledge accumulation — keeping the Worker count small and reviewing via `/org-retro` is what makes the self-improvement loop spin.
 
-**代替手段**: レビュー用途や別視点の確認に限り、`codex:rescue` や `codex` セルフレビューゲートのような**任意のレビュー用フック**として他プロバイダーを呼ぶことは想定範囲です（主役ではなく補助）。多様なプロバイダーを主役で使い分けたい場合は、汎用エージェントフレーム（Aider / LangGraph / CrewAI 等）の方が適合します。
-
----
-
-## 6. PTY や端末多重化器の層を持たない
-
-**やらないこと**: 疑似端末（PTY）操作・ペイン分割・キーストローク注入のような低レイヤ実装を本リポジトリに持つこと。
-
-**理由**: PTY や端末多重化の層は **Layer 3 = `renga`**（`suisya-systems/renga`）に分離されています。claude-org-ja は Layer 4 = 「Claude Code を素で叩く運用層」であり、低レイヤの端末制御は依存先に責務を譲ります。同一リポジトリで両方を抱えると、運用規律の改修と PTY 層のバグ修正が干渉してリリース速度が落ちます。
-
-**代替手段**: ペイン操作・構造化ペイン生成・ピア通信は `renga-peers` MCP サーバー（Layer 3 が提供、14 種のツール）を通じて利用してください。
+**Alternative**: the Dispatcher today can spawn multiple Workers concurrently, but treat 3–5 as the peak guideline. If you want to handle a large batch of similar tasks, don't multiplex Workers — bundle the tasks into a single Worker and follow progress through the journal.
 
 ---
 
-## 7. ベンチマークスイート（SWE-Bench スコア等）を持たない
+## 4. We don't generate project scaffolds from natural language (auto-create app)
 
-**やらないこと**: エージェント性能比較用のベンチマーク実行・スコア公開機能。
+**What we don't do**: features that accept "build me a Twitter clone" and generate a project scaffold from natural language.
 
-**理由**: claude-org-ja はエージェント性能比較フレームワークではありません。「窓口の指示がワーカーでどう実行されたか」「生の知見が整理済み知見に正しく昇華したか」のような**運用ロジックの正しさ**は対象ですが、「Claude Code がベンチマークで何点取るか」は Claude Code 自体の評価であり、claude-org-ja の射程外です。
+**Why**: claude-org is an operational-discipline framework, not a scaffold generator. Scaffold generators shorten "the first five minutes"; claude-org's main field — "maintaining discipline over the long run of operation" — is a different concern. Mixing the two into a single tool blurs both responsibilities.
 
-**代替手段**: SWE-Bench / HumanEval 等の標準ベンチマークは Anthropic 側や専用 OSS（`swe-bench` 等）を使ってください。
-
----
-
-## 8. スタック別プロンプトテンプレート集を持たない
-
-**やらないこと**: 「Next.js 用」「Rails 用」「Django 用」など、フレームワーク別のプロンプトテンプレート集を本フレームワーク同梱で配布すること。
-
-**理由**: claude-org-ja は**プロジェクト固有の文脈構築**を主役にする設計です。`CLAUDE.md` と作業ディレクトリの `CLAUDE.local.md` がプロジェクト固有の正典になり、スタック別プロンプトは「最大公約数の汎用文」になりがちで、プロジェクト固有の文脈を希釈します。
-
-**代替手段**: スタック別プロンプトが必要なら、プロジェクトの `CLAUDE.md` に各自記述するか、外部のプロンプト集（Awesome Prompts 系）を別途参照してください。
+**Alternative**: if you need a scaffold, use the dedicated tool (`create-react-app`, `cargo new`, `npm init`, etc.), then start operating it with claude-org afterwards.
 
 ---
 
-## 9. `tools` フロントマターによる許可宣言形式を採らない
+## 5. We don't switch between providers (Aider / Codex / Gemini, etc.)
 
-**やらないこと**: スキルやエージェントの定義ファイルのフロントマターで `tools: [Read, Edit, Bash]` のように、ツール許可をファイル単位で宣言する公式形式。
+**What we don't do**: make non-Claude language models (OpenAI / Gemini / DeepSeek, etc.) interchangeable as the primary Worker.
 
-**理由**: claude-org-ja は **`settings.local.json` + 拒否フックでタスクごとに制御**します。フロントマター方式の許可宣言は静的で、「いつ・どのワーカーが・どこの作業ディレクトリで」という動的境界を表現できません。同じスキルでもタスクによって許可境界が変わるため、ロール × タスクの 2 軸で動的に決定する設計を採用しています。
+**Why**: claude-org takes a **Claude-only** stance. Multi-provider support is appealing on paper, but each provider has a different permission model, hook mechanism, MCP-server compatibility, context-window shape, and tool-call spec — and "the framework enforces discipline" thins out by exactly the number of providers you support. Going all-in on Claude Code is what lets us fully exploit Claude-Code-native discipline: the `renga-peers` MCP server, hooks, configuration schemas, sandboxing, and so on.
 
-**代替手段**: ツール許可の追加が必要なら、`tools/role_configs_schema.json` を更新してください（ルール追加フロー: スキーマ → ドキュメント → 実 `settings.local.json` の順）。drift 検出時の対処手順は [docs/getting-started.md](getting-started.md) の `tools/check_role_configs.py` の節を参照。
-
----
-
-## 10. `--add-dir` による横断アクセスを既定で許可しない
-
-**やらないこと**: ワーカーが自分の作業ディレクトリの外（他ワーカーの作業領域、リポジトリ外のホームディレクトリ等）に自由にアクセスすること。
-
-**理由**: claude-org-ja は**作業ディレクトリの境界を強制境界**としています。ワーカー間で作業ツリーや状態を共有すると、並列作業時の競合や、誤って他ワーカーのコミットを上書きする事故が起こります。境界を緩めるたびに「どのワーカーが何を見たか」を追跡するコストが増えます。
-
-**代替手段**: 共有が必要な情報は `knowledge/curated/` や `registry/` 等の窓口管理領域に置き、フォアマン・窓口経由でのみ書き換えてください。
+**Alternative**: bringing in another provider as an **optional review hook** — for example via `codex:rescue` or a `codex` self-review gate — for review or second-opinion purposes is in scope (a complement, not a star). If you want to swap providers in the primary role, a provider-agnostic agent framework (Aider / LangGraph / CrewAI, etc.) is the better fit.
 
 ---
 
-## 11. 公式同梱スキル（`/simplify` 等）を再実装しない
+## 6. We don't host a PTY or terminal-multiplexer layer
 
-**やらないこと**: Claude Code 公式に同梱されているスキル群（`simplify` / `init` / `review` / `security-review` 等）の機能を claude-org-ja 側で再実装すること。
+**What we don't do**: keep low-level implementations such as pseudo-terminal (PTY) control, pane splitting, or keystroke injection inside this repository.
 
-**理由**: 公式スキルに乗っかる方針です。再実装すると公式の更新のたびに追従コストがかかり、しかもユーザーから見ると「公式版と何が違うのか」が分かりにくくなります。claude-org-ja の対象範囲は公式が提供しない運用規律層に絞ります。
+**Why**: PTY and terminal-multiplexing concerns are separated into **Layer 3 = `renga`** (`suisya-systems/renga`). claude-org is Layer 4, "the operational layer that drives Claude Code as-is", and defers low-level terminal control to the dependency. Hosting both in one repository would cause the operational-discipline track and the PTY-fix track to interfere, slowing release cadence.
 
-**代替手段**: 公式スキルはそのまま使ってください。組織運用文脈で公式スキルを呼び出すラッパーが必要な場合のみ、`/org-*` 系として薄く包みます（例: `/org-retro` は振り返りの組織化ラッパー）。
-
----
-
-## 12. MCP の HTTP 公開形式の外部統合は持たない
-
-**やらないこと**: MCP サーバーを HTTP で外部公開し、ブラウザ拡張や別マシンの IDE から接続できるようにすること。
-
-**理由**: claude-org-ja の MCP サーバーは `renga-peers`（ローカル標準入出力経由）に集約されており、**同一タブ内 P2P** が通信モデルの正本です。HTTP 公開は認証・流量制御・TLS・ネットワーク境界という別レイヤの問題を呼び込み、「ローカルで完結する運用規律」というシンプルな保証が崩れます。
-
-**代替手段**: 別マシンや別タブからの監視は、状態ファイル（`.state/`）とダッシュボード（`/org-dashboard`）経由で行ってください。リアルタイムの外部統合が必要なら、別途 MCP の HTTP サーバーを併設する設計も可能ですが、claude-org-ja 本体の責務外とします。
+**Alternative**: pane operations, structured pane spawning, and peer communication go through the `renga-peers` MCP server (provided by Layer 3, 14 tools).
 
 ---
 
-## 改訂履歴
+## 7. We don't ship a benchmark suite (SWE-Bench scores, etc.)
 
-- 2026-04-27: 初版（Issue #107 README 全面書き換えに伴い分離）
+**What we don't do**: features that run agent-benchmark suites and publish scores.
+
+**Why**: claude-org is not an agent-performance benchmarking framework. We do care about **whether the operational logic is correct** — "did the Lead's instruction get carried out by the Worker the way it should have?", "did raw notes graduate to curated knowledge correctly?" — but "what score Claude Code gets on a benchmark" is an evaluation of Claude Code itself, outside claude-org's scope.
+
+**Alternative**: use Anthropic's published numbers or dedicated OSS (`swe-bench`, etc.) for SWE-Bench, HumanEval, and the like.
+
+---
+
+## 8. We don't ship a stack-by-stack prompt template library
+
+**What we don't do**: bundle stack-specific prompt template libraries ("Next.js prompts", "Rails prompts", "Django prompts", etc.) with this framework.
+
+**Why**: claude-org's design centers on **building project-specific context**. The repository-level `CLAUDE.md` and the per-task `CLAUDE.local.md` are the canonical context; stack-by-stack prompts tend toward "lowest-common-denominator generic text" and dilute project-specific context.
+
+**Alternative**: if you want a stack-specific prompt, write it into the project's own `CLAUDE.md`, or reference an external prompt library (Awesome-Prompts-style) separately.
+
+---
+
+## 9. We don't adopt the `tools` front-matter form for permission declarations
+
+**What we don't do**: an official form in which a skill or agent definition file declares tool permissions per-file via front matter such as `tools: [Read, Edit, Bash]`.
+
+**Why**: claude-org controls permissions per task via **`settings.local.json` plus deny hooks**. A front-matter declaration is static and can't express the dynamic boundary of "which Worker, when, in which working directory". The same skill needs different permissions in different tasks, so we make the decision dynamic on the role × task axes.
+
+**Alternative**: when you need to extend tool permissions, update `tools/role_configs_schema.json` (the propagation order is schema → `permissions.md` → actual `settings.local.json`). For drift handling see the `tools/check_role_configs.py` section in [docs/getting-started.md](getting-started.md).
+
+---
+
+## 10. We don't allow cross-cutting access via `--add-dir` by default
+
+**What we don't do**: let a Worker freely access locations outside its own working directory (other Workers' working trees, the home directory outside the repo, etc.).
+
+**Why**: claude-org treats **the working-directory boundary as a hard boundary**. Sharing trees or state across Workers introduces concurrent-work conflicts and accidents like overwriting another Worker's commits. Every relaxation of the boundary increases the cost of tracking "who saw what".
+
+**Alternative**: anything that genuinely needs to be shared belongs in Lead-managed areas such as `knowledge/curated/` or `registry/`, and is rewritten only via the Dispatcher or the Lead.
+
+---
+
+## 11. We don't reimplement the bundled official skills (`/simplify`, etc.)
+
+**What we don't do**: rebuild the functionality of skills bundled with Claude Code (`simplify` / `init` / `review` / `security-review`, etc.) inside claude-org.
+
+**Why**: we lean on the official skills. Reimplementing them costs follow-up effort each time the official versions update, and from a user's standpoint it becomes hard to tell "what's different from official". claude-org's scope is limited to the operational-discipline layer that the official skills don't cover.
+
+**Alternative**: use the official skills directly. Only when an organization-context wrapper around an official skill is needed do we wrap it thinly under the `/org-*` family (e.g. `/org-retro` is a retrospective wrapper organized for the org).
+
+---
+
+## 12. We don't expose MCP over HTTP for external integrations
+
+**What we don't do**: expose an MCP server over HTTP so it can be reached from a browser extension or an IDE on a different machine.
+
+**Why**: claude-org's MCP server is consolidated into `renga-peers` (over local stdio), and the canonical communication model is **same-tab P2P**. An HTTP exposure brings in a separate layer of concerns — auth, rate limiting, TLS, network boundary — and breaks the simple guarantee of "operational discipline that completes locally".
+
+**Alternative**: monitor from another machine or another tab via the state files (`.state/`) and the dashboard (`/org-dashboard`). If real-time external integration is needed, you can stand up an additional HTTP MCP server alongside, but that responsibility lies outside claude-org proper.
+
+---
+
+## Revision history
+
+- 2026-04-27: Initial version (split out alongside the README rewrite in Issue #107)
