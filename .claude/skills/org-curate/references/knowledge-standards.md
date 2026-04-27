@@ -1,59 +1,59 @@
-# 知見管理の基準
+# Knowledge management standards
 
-org-curate と org-retro が共通で参照する、知見の記録・整理基準。
+Standards for recording and curating knowledge, referenced by both org-curate and org-retro.
 
-## 記録フォーマット
+## Recording format
 
 ```markdown
-# {タイトル}
+# {title}
 
-## 事実
-{何が起きたか、観察した事実を客観的に記述}
+## Facts
+{Objective description of what happened or was observed.}
 
-## 判断
-{どういう判断を下したか、何を選択したか}
+## Decision
+{What decision was made or what was chosen.}
 
-## 根拠
-{なぜその判断に至ったか。技術的理由、トレードオフ、制約等}
+## Rationale
+{Why that decision was reached. Technical reasons, trade-offs, constraints, etc.}
 
-## 適用場面
-{この知見が役立つ具体的な状況。「いつ」「どんなとき」に参照すべきか}
+## When to apply
+{The concrete situations where this knowledge is useful. "When" and "in what circumstances" should it be referenced.}
 ```
 
-**記録基準**: 再現性がある / 非自明 / コードを読むだけではわからない。一般的なプログラミング知識や公式ドキュメントに書いてあることは記録不要。
+**Recording criteria**: reproducible / non-obvious / not derivable from reading the code alone. General programming knowledge or things written in the official documentation do not need to be recorded.
 
-## 統合（キュレーション）の判断基準
+## Curation (consolidation) criteria
 
-### マージする場合
-- 同じ技術・サービスに関する知見が複数ある
-- 一方が他方の詳細版である
-- 同じ問題の異なる側面を記述している
+### When to merge
+- Multiple pieces of knowledge concern the same technology or service
+- One is a more detailed version of the other
+- They describe different aspects of the same problem
 
-### マージしない場合
-- テーマは近いが適用場面が異なる
-- 一方が他方と矛盾する（両方残し、矛盾を明記する）
+### When NOT to merge
+- The themes are similar but the application contexts differ
+- One contradicts the other (keep both and clearly note the contradiction)
 
-## 改善提案の判断基準
+## Improvement proposal criteria
 
-### 提案すべき場合
-- 同じ種類の知見が3件以上蓄積された（パターン化している）
-- 既存スキルの手順に明らかな漏れがある
-- 繰り返し発生する問題の予防策が明確になった
+### When to propose
+- 3 or more pieces of knowledge of the same kind have accumulated (a pattern is forming)
+- There is a clear gap in an existing skill's procedure
+- A clear preventive measure has emerged for a recurring problem
 
-### 提案すべきでない場合
-- 1件の知見だけで一般化するのは早計
-- 改善の効果が小さい（手順の微調整程度）
-- 既にスキルに記載されているが、ワーカーが読み飛ばしただけ
+### When NOT to propose
+- Generalizing from a single piece of knowledge is premature
+- The improvement effect is small (just minor procedural tweaks)
+- It is already documented in a skill but the Worker just skipped over it
 
-## skill 化判定の委譲先
+## Delegation target for skill-eligibility judgment
 
-新 skill の必要性判断は `.claude/skills/skill-eligibility-check/SKILL.md` に集約されている。
-本ファイルは知見統合基準の参照元に留め、skill 化判定の重複定義は置かない。
-org-retro と org-curate の両方が `skill-eligibility-check` を呼び、同一基準で採点する。
+Judgment of whether a new skill is needed is centralized in `.claude/skills/skill-eligibility-check/SKILL.md`.
+This file remains a reference for knowledge consolidation criteria only, and does not duplicate skill-eligibility criteria.
+Both org-retro and org-curate call `skill-eligibility-check` and score against the same criteria.
 
-## curated ファイルの品質基準
+## Quality standards for curated files
 
-- 各知見は独立して読めること（前後の文脈がなくても理解できる）
-- 適用場面が明確であること（「いつ使うか」がわかる）
-- 根拠が記載されていること（なぜその判断なのか）
-- 古くなった知見は削除するか、注記を付ける
+- Each piece of knowledge can be read independently (understandable without surrounding context).
+- The when-to-apply is clear ("when to use it" is evident).
+- The rationale is recorded (why that decision was made).
+- Outdated knowledge is removed, or annotated.
