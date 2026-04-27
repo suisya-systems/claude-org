@@ -173,7 +173,7 @@ Run these in order each cycle:
      Run sequentially (16 Workers in parallel still fits in <1s total).
    - **On error**: tool result text carries `[<code>] <msg>`. Branch on `code` (see `references/renga-error-codes.md`):
      - `[pane_not_found]` / `[pane_vanished]` — Worker already closed. Skip its inspect; the `WORKER_PANE_EXITED` path will fire from Step 3's `list_panes` reconciliation (de-dup absorbs the duplicate).
-     - `[shutting_down]` — `renga` is going down. Stop the monitoring loop immediately and `mcp__renga-peers__send_message` a `FOREMAN_STOPPING` notice to the Lead.
+     - `[shutting_down]` — `renga` is going down. Stop the monitoring loop immediately and `mcp__renga-peers__send_message` a `DISPATCHER_STOPPING` notice to the Lead.
      - `[io_error]` / `[app_timeout]` / `[internal]` — likely transient. Record in `.state/journal.jsonl`, retry next cycle.
      - Unknown code (future renga additions) — journal-only, continue.
 
