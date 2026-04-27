@@ -1,77 +1,77 @@
 ---
 name: "{skill-name}"
 description: >
-  {1行の説明。このスキルが何をするか、どんなタスクで使えるか。
-  org-delegate がタスク内容とマッチングする際にこの description を参照する。}
+  {One-line description. What this skill does, and on what kind of tasks it can be used.
+  org-delegate references this description when matching a task.}
 type: "{implementation | testing | debugging | analysis | infrastructure}"
 triggers:
-  - "{このスキルが適用される状況1（例: Excel形式のアンケートデータを分析する）}"
-  - "{このスキルが適用される状況2}"
+  - "{Situation 1 where this skill applies (e.g. analyze Excel-format survey data)}"
+  - "{Situation 2 where this skill applies}"
 origin:
-  task_id: "{初めてこのパターンが使われたタスクID（例: data-analysis）}"
+  task_id: "{Task ID where this pattern was first used (e.g. data-analysis)}"
   date: "{YYYY-MM-DD}"
 ---
 
-# {skill-name}: {スキルのタイトル}
+# {skill-name}: {Skill title}
 
-{このスキルが何を実現するか、1-2文で概要を記述。}
+{1-2 sentences describing what this skill achieves.}
 
-## 背景
+## Background
 
-{このパターンが生まれた経緯。どんなタスクで初めて使われたか。
-なぜこのアプローチが有効だったか。}
+{The context in which this pattern emerged. What kind of task it was first used on.
+Why this approach was effective.}
 
-## 前提条件
+## Prerequisites
 
-{このスキルを適用するために必要な条件をリストアップ。}
+{List the conditions required to apply this skill.}
 
-- {前提条件1（例: Python 3.8+ がインストールされていること）}
-- {前提条件2（例: 入力データが特定のフォーマットであること）}
+- {Prerequisite 1 (e.g. Python 3.8+ is installed)}
+- {Prerequisite 2 (e.g. the input data is in a specific format)}
 
-## 手順
+## Procedure
 
-### Step 1: {最初のステップ名}
+### Step 1: {First step name}
 
-{具体的な手順を記述。コマンド例やコードスニペットがあれば含める。}
+{Concrete procedure. Include command examples or code snippets if relevant.}
 
 ```{language}
-{コード例}
+{code example}
 ```
 
-### Step 2: {次のステップ名}
+### Step 2: {Next step name}
 
-{手順の記述。判断基準がある場合は明確にする。}
+{Procedure description. Make decision criteria explicit if any.}
 
-### Step 3: {次のステップ名}
+### Step 3: {Next step name}
 
-{手順の記述。}
+{Procedure description.}
 
-## 成果物
+## Deliverables
 
-{このスキルを実行した結果、何が生成されるか。}
+{What is produced as a result of running this skill.}
 
-- {成果物1（例: `report.md` — 分析レポート）}
-- {成果物2（例: `analyze.py` — 分析スクリプト）}
+- {Deliverable 1 (e.g. `report.md` — analysis report)}
+- {Deliverable 2 (e.g. `analyze.py` — analysis script)}
 
-## 判断基準・閾値
+## Decision criteria / thresholds
 
-{スキル内で使われる判断基準や閾値があれば記述。
-定量的な基準は具体的な数値を含める。}
+{Document any decision criteria or thresholds used inside the skill.
+For quantitative criteria, include concrete numbers.}
 
-| 基準 | 値 | 根拠 |
+| Criterion | Value | Rationale |
 |---|---|---|
-| {基準名} | {値} | {なぜその値か} |
+| {criterion name} | {value} | {why this value} |
 
-## 応用・バリエーション
+## Variations / applications
 
-{このスキルを別の文脈で応用する場合のガイダンス。}
+{Guidance for applying this skill in a different context.}
 
-- **{バリエーション1}**: {どう変えるか}
-- **{バリエーション2}**: {どう変えるか}
+- **{Variation 1}**: {how to change}
+- **{Variation 2}**: {how to change}
 
-## 注意点
+## Caveats
 
-{このスキルを使う際の注意点やよくある落とし穴。}
+{Caveats and common pitfalls when using this skill.}
 
-- {注意点1}
-- {注意点2}
+- {Caveat 1}
+- {Caveat 2}

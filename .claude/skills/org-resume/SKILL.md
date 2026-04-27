@@ -1,65 +1,65 @@
 ---
 name: org-resume
 description: >
-  中断された組織を再開する。.state/org-state.md が存在し Status: SUSPENDED のとき、
-  「再開」「続きから」「前回どこまでやった？」と言われたときに使う。
-  起動時の自動ブリーフィングにも対応。
+  Resume a suspended organization. Use when .state/org-state.md exists with Status: SUSPENDED,
+  or when told "resume", "continue from where we left off", or "what did we do last time?".
+  Also handles automatic briefing on startup.
 ---
 
-# org-resume: 組織の再開
+# org-resume: Resume the organization
 
-中断された組織の状態を読み込み、人間にブリーフィングし、再開する。
+Read the state of a suspended organization, brief the human, and resume.
 
-## Phase 1: 状態読み込みとブリーフィング
+## Phase 1: Load state and brief
 
-1. `.state/org-state.md` を読む
-2. 人間に簡潔なサマリーを提示する:
-   - 全体の目標
-   - 各作業アイテムの状態（完了/進行中/保留/ブロック）
-   - 中断時刻
-3. `.state/journal.jsonl` が存在すれば、org-state.md の Updated 以降のエントリを確認し、
-   スナップショット後に起きたイベントがあれば補足する
+1. Read `.state/org-state.md`.
+2. Present a concise summary to the human:
+   - The overall goal
+   - The state of each work item (completed / in progress / pending / blocked)
+   - The time of suspension
+3. If `.state/journal.jsonl` exists, check entries since the `Updated` timestamp in org-state.md,
+   and add any events that happened after the snapshot.
 
-## Phase 2: 現実との照合
+## Phase 2: Reconcile with reality
 
-各作業アイテムについて、実際のファイルシステムの状態を確認する:
+For each work item, check the actual filesystem state:
 
-1. `.state/workers/` 内の各ワーカー状態ファイルを読む
-2. 各ワーカーの作業ディレクトリで以下を確認:
-   - ディレクトリが存在するか
-   - `git status` — 未コミットの変更があるか
-   - `git log --oneline -5` — 最後のコミットは状態ファイルと一致するか
-   - ブランチは状態ファイルの記述と一致するか
-3. `knowledge/raw/` に未整理のファイルがあるか確認
-4. 差異があれば人間に報告する（例: 「状態ファイルではOAuth 60%完了とありますが、実際にはファイルが存在しません」）
+1. Read each Worker state file under `.state/workers/`.
+2. In each Worker's working directory, check:
+   - Whether the directory exists
+   - `git status` — whether there are uncommitted changes
+   - `git log --oneline -5` — whether the last commit matches the state file
+   - Whether the branch matches what is described in the state file
+3. Check whether there are un-curated files in `knowledge/raw/`.
+4. If there are discrepancies, report them to the human (e.g. "The state file says OAuth is 60% complete, but the actual file does not exist.").
 
-## Phase 3: 再開計画の提案
+## Phase 3: Propose a resume plan
 
-状態に応じて提案を分ける:
+Branch the proposal by state:
 
-- **COMPLETED**: 結果を報告するのみ
-- **IN_PROGRESS（中断済み）**: 「未コミットの変更があります。ワーカーを派遣して続行しますか？」
-- **PENDING**: ブロッカーの状態を確認し、実行可能か判断
-- **BLOCKED**: ブロッカーの解消状況を確認
+- **COMPLETED**: just report the result
+- **IN_PROGRESS (suspended)**: "There are uncommitted changes. Shall I dispatch a Worker to continue?"
+- **PENDING**: check the blocker state and judge whether it is actionable
+- **BLOCKED**: check whether the blocker has been resolved
 
-**重要: 人間の確認を待ってから行動すること。勝手にワーカーを派遣しない。**
+**Important: wait for the human's confirmation before acting. Do not dispatch Workers on your own.**
 
-## Phase 4: 組織の再構築
+## Phase 4: Rebuild the organization
 
-人間が承認した作業について:
+For work the human has approved:
 
-1. `/org-delegate` スキルでワーカーを派遣
-2. 新ワーカーには前回のワーカー状態ファイル（`.state/workers/worker-{id}.md`）の内容をコンテキストとして渡す
-3. `org-state.md` の Status を `ACTIVE` に更新
-4. JSON スナップショットを再生成する:
+1. Dispatch a Worker via the `/org-delegate` skill.
+2. Pass the contents of the previous Worker state file (`.state/workers/worker-{id}.md`) as context to the new Worker.
+3. Update Status in `org-state.md` to `ACTIVE`.
+4. Regenerate the JSON snapshot:
 
    ```bash
    py -3 dashboard/org_state_converter.py    # Windows
    python3 dashboard/org_state_converter.py   # Mac/Linux
    ```
 
-5. フォアマン・キュレーターペインの起動は /org-start が担当するため、ここでは行わない
-6. `journal.jsonl` に resume イベントを追記:
+5. Starting the Dispatcher and Curator panes is /org-start's responsibility, so do not do it here.
+6. Append a resume event to `journal.jsonl`:
    ```json
    {"ts":"<ISO timestamp>","event":"resume","resumed_items":["blog-redesign","data-analysis"]}
    ```

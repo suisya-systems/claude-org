@@ -1,125 +1,125 @@
 ---
 name: org-retro
 description: >
-  委譲プロセスの振り返り。ワーカーへの作業委譲が完了したとき、
-  委譲の進め方自体を振り返り、プロセス改善の知見を記録する。
-  さらに、完了タスクの作業パターンをwork-skillとして蓄積すべきか判断する。
-  実作業の技術的な振り返りはワーカーが自動的に行うため、ここでは扱わない。
+  Retrospective on the delegation process. After a delegation of work to a Worker is complete,
+  reflect on how the delegation itself went, and record process-improvement knowledge.
+  In addition, judge whether the work pattern of the completed task should be accumulated as a work-skill.
+  Technical retrospectives on the actual work are done by the Worker automatically and are not handled here.
 ---
 
-# org-retro: 委譲プロセスの振り返り
+# org-retro: Delegation-process retrospective
 
-ワーカーへの委譲が完了した後、委譲プロセス自体を振り返り改善する。
-加えて、完了タスクの作業パターンがwork-skillとして再利用可能か判断する。
+After a delegation to a Worker is complete, reflect on and improve the delegation process itself.
+In addition, judge whether the completed task's work pattern is reusable as a work-skill.
 
-**注意**: 実作業の技術的な知見（はまりポイント、API の癖等）はワーカーが CLAUDE.md の指示に従い
-自動的に `knowledge/raw/` に記録する。ここでは扱わない。
+**Note**: Technical knowledge from the actual work (gotchas, API quirks, etc.) is recorded automatically
+to `knowledge/raw/` by the Worker per the instructions in CLAUDE.md. It is not handled here.
 
-## Step 1: 委譲プロセスの振り返り
+## Step 1: Retrospective on the delegation process
 
-以下を整理する:
-- **タスク分解は適切だったか**: 粒度が大きすぎ/小さすぎなかったか
-- **指示は明確だったか**: ワーカーが迷わず作業できたか、質問が多くなかったか
-- **プロジェクト選定は正しかったか**: 正しいディレクトリで作業できたか
-- **並列度は適切だったか**: ワーカー数が多すぎ/少なすぎなかったか
-- **完了報告は十分だったか**: ワーカーからの報告で人間に説明するのに足りたか
+Sort through:
+- **Was the task breakdown appropriate?**: Was the granularity too large or too small?
+- **Were the instructions clear?**: Could the Worker work without confusion? Did they ask many questions?
+- **Was the project selection correct?**: Could they work in the correct directory?
+- **Was the parallelism appropriate?**: Were there too many or too few Workers?
+- **Was the completion report sufficient?**: Was the Worker's report enough to explain to the human?
 
-## Step 2: 改善すべき知見の判断
+## Step 2: Decide which knowledge to improve
 
-以下の基準で「記録すべきか」を判断する:
+Use the following criteria to decide "should this be recorded":
 
-**記録する**:
-- 同じ種類の委譲で再び遭遇しそうなパターン
-- 指示テンプレートの改善につながる気づき
-- プロジェクト固有の制約で次回も影響しそうなもの
-- ワーカーの振り返り記録が不十分/過剰だった場合の改善点
+**Record**:
+- A pattern likely to be encountered again in the same kind of delegation
+- An insight that leads to improving the instruction template
+- A project-specific constraint that will affect us next time
+- Improvement points where the Worker's retrospective record was insufficient/excessive
 
-**記録しない**:
-- タスク固有の一度きりの問題
-- ワーカーが既に技術的知見として記録済みのこと
+**Do not record**:
+- Task-specific one-off problems
+- Things the Worker has already recorded as technical knowledge
 
-## Step 3: 記録
+## Step 3: Record
 
-知見がある場合、以下のパスにファイルを作成する:
+If you have knowledge worth recording, create a file at the following path:
 
-- パス: `knowledge/raw/{YYYY-MM-DD}-delegation-{topic}.md`
-- `{topic}` は英語 kebab-case（例: `delegation-task-granularity`, `delegation-frontend-instructions`）
-- プレフィックスに `delegation-` を付けて、ワーカーの技術的知見と区別する
+- Path: `knowledge/raw/{YYYY-MM-DD}-delegation-{topic}.md`
+- `{topic}` is English kebab-case (e.g. `delegation-task-granularity`, `delegation-frontend-instructions`)
+- Prefix with `delegation-` to distinguish from the Worker's technical knowledge
 
-### ファイルフォーマット
+### File format
 
-`.claude/skills/org-curate/references/knowledge-standards.md` の「記録フォーマット」を参照すること。
+See "Recording format" in `.claude/skills/org-curate/references/knowledge-standards.md`.
 
-## Step 4: work-skill 化の判定
+## Step 4: Judging work-skill creation
 
-完了したタスクの作業パターンについて `skill-eligibility-check` を呼び出し、
-work-skill として蓄積すべきか判定する。
+Call `skill-eligibility-check` for the work pattern of the completed task and judge
+whether it should be accumulated as a work-skill.
 
-判断基準の実体は `.claude/skills/skill-eligibility-check/references/signals.md` に集約されており、
-org-retro と org-curate の両方が同じ基準を参照する（判定の乖離を防ぐため）。
+The substance of the criteria is centralized in `.claude/skills/skill-eligibility-check/references/signals.md`,
+and both org-retro and org-curate reference the same criteria (to prevent divergence in judgment).
 
-### Step 4.1: skill-eligibility-check を呼ぶ
+### Step 4.1: Call skill-eligibility-check
 
-以下の入力を組み立てて呼び出す:
+Build the following input and call:
 
 ```yaml
 context: post_retro
-pattern_name: <推定される skill 名、kebab-case>
-summary: <何を再利用できるかの 1-2 文>
-task_ids: [<今回の task_id>]
-raw_files: <ワーカーが記録した knowledge/raw/ のパス配列>
+pattern_name: <inferred skill name, kebab-case>
+summary: <1-2 sentences on what is reusable>
+task_ids: [<this task_id>]
+raw_files: <array of knowledge/raw/ paths recorded by the Worker>
 steps_outline:
-  - <主要手順 1>
-  - <主要手順 2>
+  - <main step 1>
+  - <main step 2>
   - ...
-trigger_description: <このパターンが適用される状況>
-decision_criteria: <判断基準や閾値>
-output_format: <成果物の構造>
+trigger_description: <situations where this pattern applies>
+decision_criteria: <decision criteria or thresholds>
+output_format: <structure of the deliverables>
 ```
 
-スキルは 5 シグナルで採点し、`decision` を返す:
-- `skill_recommend`（3 点以上）
-- `candidate_queue`（2 点）
-- `curated_only`（1 点以下）
+The skill scores against 5 signals and returns a `decision`:
+- `skill_recommend` (3 points or more)
+- `candidate_queue` (2 points)
+- `curated_only` (1 point or fewer)
 
-`skill_recommend` の場合は `knowledge/skill-candidates.md` への追記もスキル側で実施される。
+For `skill_recommend`, appending to `knowledge/skill-candidates.md` is also handled by the skill.
 
-### Step 4.2: decision に応じて分岐
+### Step 4.2: Branch by decision
 
 #### decision == skill_recommend
 
-1. 人間に提案する:
+1. Propose to the human:
    ```
-   [work-skill 提案] このタスクの作業パターンはwork-skillとして記録すると再利用できそうです。
-   - スキル名案: {proposed_skill_name}
-   - 理由: {matched_signals} （合計 {score}/5 点）
-   - 概要: {何を再利用できるか}
+   [work-skill proposal] The work pattern of this task looks reusable as a work-skill.
+   - Proposed skill name: {proposed_skill_name}
+   - Reason: {matched_signals} (total {score}/5)
+   - Summary: {what is reusable}
 
-   記録しますか？
+   Shall I record it?
    ```
-2. 人間が承認した場合:
-   - `.claude/skills/{skill-name}/SKILL.md` を作成する
-   - テンプレート: `.claude/skills/org-retro/references/work-skill-template.md` のフォーマットに従う
-   - ワーカーの成果物（コード、レポート、設定等）から手順を抽出・汎化する
-   - タスク固有の値（ブランド名、ファイルパス等）はプレースホルダーに置換する
-   - `knowledge/skill-candidates.md` の該当エントリの status を `approved` に更新し決定日を記入
-3. 人間が却下した場合:
-   - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
-   - `knowledge/skill-candidates.md` の該当エントリの status を `rejected` に更新し却下理由を追記
+2. If the human approves:
+   - Create `.claude/skills/{skill-name}/SKILL.md`
+   - Template: follow the format of `.claude/skills/org-retro/references/work-skill-template.md`
+   - Extract and generalize the procedure from the Worker's deliverables (code, reports, configs, etc.)
+   - Replace task-specific values (brand names, file paths, etc.) with placeholders
+   - Update the corresponding entry in `knowledge/skill-candidates.md`: status to `approved` and fill in the decision date
+3. If the human rejects:
+   - Record the reason in `knowledge/raw/` to inform future judgments
+   - Update the corresponding entry in `knowledge/skill-candidates.md`: status to `rejected` and append the rejection reason
 
 #### decision == candidate_queue
 
-候補止まり。次回同パターンが raw に再出現すれば raw_reappearance シグナルが立つため、
-この段階では skill 化しない。`knowledge/raw/` への技術的知見記録は通常どおり（ワーカー記録済みならスキップ）。
+Stop at candidate. If the same pattern reappears in raw next time, the raw_reappearance signal will fire,
+so do not create a skill at this stage. Recording technical knowledge to `knowledge/raw/` proceeds as usual (skip if the Worker has already recorded it).
 
 #### decision == curated_only
 
-`knowledge/raw/` への技術的知見記録で十分（ワーカーが既に記録している場合はスキップ）。
-報告は不要。
+Recording technical knowledge to `knowledge/raw/` is sufficient (skip if the Worker has already recorded it).
+No report needed.
 
-## Step 5: 報告
+## Step 5: Report
 
-人間に簡潔に報告する:
-- 知見を記録した場合: 「委譲プロセスについて{topic}の学びを記録しました」
-- work-skill 化を提案する場合: Step 4.2 の `skill_recommend` フォーマットで提案
-- `candidate_queue` / `curated_only` の場合: 報告不要（黙って次に進む）
+Briefly report to the human:
+- If you recorded knowledge: "I recorded a learning about {topic} for the delegation process."
+- If proposing a work-skill: propose using the `skill_recommend` format from Step 4.2
+- For `candidate_queue` / `curated_only`: no report needed (silently move on)
