@@ -1,481 +1,482 @@
 ---
 name: org-delegate
 description: >
-  ワーカーClaudeを派遣して作業を委譲する。窓口は司令塔であり、
-  手を動かす実作業は原則としてワーカーに任せる。
-  ユーザーから作業の依頼を受けたとき、ファイル編集・実装・調査等の
-  実作業が発生する場合に発動する。
+  Dispatch a Worker Claude and delegate work. The Lead is the command center;
+  hands-on work is, in principle, dispatched to a Worker.
+  Triggered when the user asks for hands-on work such as file edits,
+  implementation, or investigation.
 ---
 
-# org-delegate: ワーカー派遣
+# org-delegate: Worker dispatch
 
-作業をワーカーClaudeに委譲する。窓口はタスク分解と準備だけ行い、
-ペイン起動・指示送信はフォアマンに委託する。これにより窓口のロック時間を最小化する。
+Delegate work to a Worker Claude. The Lead only does task decomposition and
+preparation; pane spawning and instruction sending are entrusted to the
+Dispatcher. This minimizes the time the Lead is locked.
 
-## 窓口とフォアマンの役割分担
+## Lead vs. Dispatcher responsibilities
 
-| 工程 | 担当 |
+| Stage | Owner |
 |---|---|
-| プロジェクト名前解決 | **窓口** |
-| work-skill 検索 | **窓口**（新規追加） |
-| タスク分解 | **窓口** |
-| CLAUDE.md 生成 | **窓口** |
-| フォアマンへの依頼 | **窓口**（ここで窓口は解放される） |
-| ペイン起動 | **フォアマン** |
-| ピア待ち・指示送信 | **フォアマン** |
-| 状態記録 | **フォアマン** |
-| 窓口への派遣完了報告 | **フォアマン** |
-| ワーカーからの進捗/完了報告の受信 | **窓口** |
-| ワーカー完了時のペインクローズ | **フォアマン**（窓口から依頼） |
+| Project name resolution | **Lead** |
+| work-skill search | **Lead** (newly added) |
+| Task decomposition | **Lead** |
+| CLAUDE.md generation | **Lead** |
+| Request to Dispatcher | **Lead** (Lead is released here) |
+| Pane spawning | **Dispatcher** |
+| Wait for peer / send instructions | **Dispatcher** |
+| Record state | **Dispatcher** |
+| Report dispatch completion to Lead | **Dispatcher** |
+| Receive progress / completion reports from Workers | **Lead** |
+| Close pane on Worker completion | **Dispatcher** (requested by Lead) |
 
-## 委譲前チェックリスト（窓口が実行）
+## Pre-dispatch checklist (Lead executes)
 
-タスク分解に入る前に、依頼内容を以下の観点で確認する。該当する場合はユーザーに聞き返す。
+Before entering task decomposition, examine the request from the perspectives below. If any apply, ask the user back.
 
-| チェック項目 | 確認すべき状況 | 例 |
+| Check item | Situation to confirm | Example |
 |---|---|---|
-| **曖昧な用語・略語** | ツール名・サービス名・略語が複数の意味を持ちうる場合 | 「gog」→ Google OAuth? gog CLI? |
-| **OS固有の前提条件** | OS別の成果物を作る場合、デフォルト設定の明示が必要 | Mac=zsh、Windows=py -3、パス区切り |
+| **Ambiguous terms / abbreviations** | Tool / service names / abbreviations that may have multiple meanings | "gog" → Google OAuth? gog CLI? |
+| **OS-specific prerequisites** | When producing OS-specific deliverables, default settings must be made explicit | Mac=zsh, Windows=py -3, path separators |
 
-- 曖昧な用語がある場合: 「○○は△△のことですか？」とユーザーに確認してから進める
-- OS別タスクの場合: Step 1 のタスク分解時に、OS固有の前提条件をワーカーへの指示に含める
+- For ambiguous terms: confirm with the user ("Did you mean ○○ by △△?") before proceeding
+- For OS-specific tasks: include OS-specific prerequisites in the Worker instruction during Step 1 task decomposition
 
-## Step 0: プロジェクト名前解決（窓口が実行）
+## Step 0: Project name resolution (Lead executes)
 
-ユーザーの依頼からプロジェクトを特定する:
+Identify the project from the user's request:
 
-1. `registry/projects.md` を読む
-2. 依頼に含まれるキーワードから該当プロジェクトを特定する（通称・プロジェクト名・説明から照合）
-3. 特定できた場合はそのパスを使う
-4. 特定できない場合は登録済みプロジェクトの通称一覧を提示し、選ばせる
-5. 新規プロジェクトの場合:
-   - パスをユーザーに確認する
-   - 通称・説明・よくある作業例を推定し、ユーザーに確認してから `registry/projects.md` に追記する
+1. Read `registry/projects.md`
+2. From the keywords in the request, identify the matching project (match by nickname, project name, or description)
+3. If identified, use that path
+4. If not identified, present the list of registered project nicknames and have the user choose
+5. For a new project:
+   - Confirm the path with the user
+   - Estimate the nickname / description / typical tasks, confirm with the user, and append to `registry/projects.md`
 
-## Step 0.5: work-skill 検索（窓口が実行）（新規追加）
+## Step 0.5: work-skill search (Lead executes) (newly added)
 
-タスク分解の前に、関連する既存の work-skill がないか検索する。
-マッチした work-skill はワーカーへの指示に参考情報として含める。
+Before task decomposition, search for any existing related work-skill.
+Include any matched work-skill in the Worker instruction as reference.
 
-### 検索手順
+### Search procedure
 
-1. `.claude/skills/` 配下の全 SKILL.md ファイルを列挙する
-2. 各 SKILL.md の frontmatter を読み取る:
-   - `type` フィールドで work-skill を識別する（org- プレフィックスでないもの）
-   - `description` と `triggers` をタスク内容と照合する
-3. マッチング判定:
-   - ユーザーの依頼内容と `description` のキーワードを比較する
-   - `triggers` リストに依頼内容と合致する記述があるか確認する
-   - 完全一致は不要。関連性があれば候補に含める
+1. Enumerate all SKILL.md files under `.claude/skills/`
+2. Read the frontmatter of each SKILL.md:
+   - Identify work-skills via the `type` field (those without the `org-` prefix)
+   - Match `description` and `triggers` against the task content
+3. Matching judgment:
+   - Compare the keywords of the user's request with `description`
+   - Check whether `triggers` lists wording that matches the request
+   - An exact match is not required; if there is relevance, include it as a candidate
 
-### マッチ結果の活用
+### Using the match results
 
-**マッチした場合:**
-- 人間に通知する:
+**On match:**
+- Notify the human:
   ```
-  関連するwork-skillが見つかりました:
-  - {skill-name}: {description の1行目}
-  ワーカーへの指示に参考情報として含めます。
+  Related work-skill(s) found:
+  - {skill-name}: {first line of description}
+  Will include them in the Worker instruction as reference.
   ```
-- Step 1 のタスク分解時に、work-skill の手順を参考にする
-- Step 1.5 の CLAUDE.md 生成時に、以下のセクションを追加する:
+- Refer to the work-skill's procedure during Step 1 task decomposition
+- During Step 1.5 CLAUDE.md generation, add the following section:
   ```markdown
-  ## 参考 work-skill
-  以下の work-skill が参考になる可能性があります。手順や判断基準を参照してください。
-  ただし、タスクの要件に合わない部分は適宜調整すること。
-  
-  - スキル名: {skill-name}
-  - パス: .claude/skills/{skill-name}/SKILL.md
-  - 概要: {description}
+  ## Reference work-skill
+  The following work-skill(s) may be useful. Refer to its procedure and judgment criteria.
+  Adjust as appropriate where it does not fit this task's requirements.
+
+  - Skill name: {skill-name}
+  - Path: .claude/skills/{skill-name}/SKILL.md
+  - Summary: {description}
   ```
-- ワーカーへの指示（instruction-template）にも参考スキルの存在を明記する
+- Also note the existence of the reference skill in the Worker instruction (instruction-template)
 
-**マッチしなかった場合:**
-- 通知不要。そのまま Step 1 に進む
+**On no match:**
+- No notification needed. Proceed to Step 1.
 
-### 検索の注意点
+### Search caveats
 
-- work-skill の手順をそのままコピーしない。参考情報として提示し、ワーカーが判断する
-- 複数マッチした場合は関連度順に全て含める
-- org- プレフィックスのスキル（org-retro, org-delegate 等）は組織運営スキルなので検索対象外
+- Do not copy the work-skill's procedure verbatim. Present it as reference and let the Worker decide
+- If multiple match, include all of them in order of relevance
+- Skills with the `org-` prefix (org-retro, org-delegate, etc.) are organization-management skills and are excluded from the search
 
-## Step 1: タスク分解（窓口が実行）
+## Step 1: Task decomposition (Lead executes)
 
-人間の依頼を分析し、ワーカーに委譲するタスクを定義する:
+Analyze the human's request and define tasks to delegate to Workers:
 
-- 各タスクに一意のIDを振る（依頼内容から連想しやすい英語 kebab-case。例: `data-analysis`, `login-fix`, `dashboard-redesign`）
-  - 既存のIDと重複しないよう `.state/org-state.md` を確認する（重複時はサフィックスで区別: `login-fix-2`）
-- タスクごとに以下を明確にする:
-  - 目的（何を達成するか）
-  - 成果物（何ができあがるか）
-  - 作業ディレクトリ（どのプロジェクトで作業するか）
-  - 制約（ブランチ名、コーディング規約、依存関係等）
-  - **検証深度（`full` / `minimal`）** — 派遣指示には必ずどちらか 1 値を明示する。既定は `full`（コード・挙動の変更を伴うタスクはすべてこちら）。`full` では **codex の有無に関わらず** リポジトリ通常検証（テスト / lint / type-check 等）を green まで実行し通常の完了報告フォーマットで報告するのが必須ゲート。**追加ゲート（任意）** として、codex CLI が available なら commit 完了後に Codex セルフレビュー・同一指摘 3 ラウンド上限のルールが走る（未導入環境では skip）。trivial fix（CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等）のみ `minimal` を選択し、ワーカーは `git add` → `git commit` → `done` 報告のみで終わる。詳細は `references/instruction-template.md` の「検証深度」節と `references/worker-claude-template.md` の「Codex セルフレビュー手順」節参照。値の決定は窓口の責任で、ワーカーには判断させない
-  - **ディレクトリパターン（A / B / C）** — 以下の判定基準で決定する
-  - **参考 work-skill**（Step 0.5 でマッチしたもの）
-- 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）
+- Assign each task a unique ID (English kebab-case, easy to associate with the request. e.g. `data-analysis`, `login-fix`, `dashboard-redesign`)
+  - Check `.state/org-state.md` to avoid collisions with existing IDs (on collision, suffix to disambiguate: `login-fix-2`)
+- For each task, make the following clear:
+  - Goal (what to achieve)
+  - Deliverable (what will be produced)
+  - Working directory (which project to work in)
+  - Constraints (branch name, coding conventions, dependencies, etc.)
+  - **Verification depth (`full` / `minimal`)** — the dispatch instruction must always state exactly one of the two values. The default is `full` (any task that changes code or behavior). Under `full`, **regardless of whether codex is available**, the repository's normal verification (tests / lint / type-check, etc.) must be run to green and reported in the normal completion-report format; this is a required gate. As an **additional (optional) gate**, if the codex CLI is available, the rule "Codex self-review with a 3-round cap on identical findings" runs after commit completes (skipped if codex is not installed). Choose `minimal` only for trivial fixes (CI output formatting / typo / comment edits / matching to existing test format), in which case the Worker only does `git add` → `git commit` → `done` report. See the "Verification depth" section in `references/instruction-template.md` and the "Codex self-review procedure" section in `references/worker-claude-template.md` for details. The Lead is responsible for picking the value; the Worker does not decide.
+  - **Directory pattern (A / B / C)** — determined by the criteria below
+  - **Reference work-skill** (if matched in Step 0.5)
+- Note: when the task description includes file paths, make explicit that they are relative to the Worker's working directory. Do not give the value of the "Path" column in registry/projects.md as a deliverable path directly (it will cause the Worker to create paths in unintended locations).
 
-### 事前チェック: 対象ファイルが gitignored か
+### Pre-check: is the target file gitignored?
 
-判定フローに入る前に、編集対象ファイルが `.gitignore` で除外されていないか確認する。
-**「対象ファイル」は窓口がタスク説明から抽出する**（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査、対象パス未定の新規作成など）はこのチェックをスキップして通常判定に進む。
+Before entering the decision flow, check whether the file to be edited is excluded by `.gitignore`.
+**The "target file" is what the Lead extracts from the task description** (paths explicitly mentioned in the request, the issue body, or the user's utterance; do not infer mechanically). Skip this check for tasks where the target file cannot be identified (pure investigation, new creation with an undecided target path, etc.) and proceed to normal judgment.
 
-#### 適用条件
+#### Applicability
 
-このチェックは **ローカルに git repo が既に存在するプロジェクトでのみ実行する**。具体的には:
+This check is run **only for projects where a git repo already exists locally**. Specifically:
 
-- registry/projects.md の「パス」がローカル絶対パスで、かつ `.git/` を持つディレクトリ（または worktree）として解決できる場合のみ実行
-- パスが URL（未 clone）/ `-` / 解決不能なら **チェック自体をスキップ**して通常判定へ（初回 clone 後の状態は git の通常挙動に従うため、tracked 既存ファイルが gitignored になっているレアケースは別途レビューで拾う）
+- Run only when the "Path" in registry/projects.md is a local absolute path that resolves to a directory (or worktree) with `.git/`
+- If the path is a URL (not yet cloned) / `-` / unresolvable, **skip the check itself** and go to normal judgment (the rare case of a tracked existing file becoming gitignored after first clone is caught separately by review)
 
-#### 判定コマンド
+#### Decision command
 
-ローカル repo root（=「パス」が指す絶対パス）で:
+At the local repo root (= the absolute path the "Path" points to):
 
 ```
 git -C {project_path} check-ignore -q -- <target>
 ```
 
-- 終了コード 1（=ignored ではない）→ tracked または「単に未存在の新規ファイル」。**通常の A / B / C 判定に進む**
-- 終了コード 0（=ignored）→ **Pattern C 強制（gitignored サブモード）**。下記参照
-- 終了コード 128 等（コマンド失敗、repo 未初期化など）→ 適用条件外。スキップして通常判定へ
+- Exit code 1 (= not ignored) → tracked or "merely a non-existent new file". **Proceed to normal A / B / C judgment**
+- Exit code 0 (= ignored) → **Pattern C forced (gitignored submode)**. See below
+- Exit code 128 etc. (command failure, repo not initialized, etc.) → out of applicability. Skip and go to normal judgment
 
-> `git check-ignore` は「現在の `.gitignore` ルールにマッチするか」だけを判定し、ファイルが実在しなくても評価できる。`ls-files --error-unmatch` を使うと「単に未作成の新規ファイル」まで untracked 扱いで Pattern C に落としてしまうため、こちらを使わない。
+> `git check-ignore` only judges "does it match the current `.gitignore` rules"; it can be evaluated even if the file does not exist. Using `ls-files --error-unmatch` would treat "merely a not-yet-created new file" as untracked and drop it into Pattern C, so do not use that.
 
-#### Pattern C 強制（gitignored サブモード）
+#### Pattern C forced (gitignored submode)
 
-通常の Pattern C は `{workers_dir}/{task_id}/` のエフェメラル空ディレクトリだが、gitignored 対象を編集する場合はそれでは対象ファイルに届かない。次の特例運用とする:
+Normal Pattern C uses an ephemeral empty directory at `{workers_dir}/{task_id}/`, but that doesn't reach the target file when editing a gitignored target. Special operation:
 
-- **WORKER_DIR**: 既存ローカル clone の **repo root を直接指定**する（registry の「パス」値そのもの）
-- **CLAUDE.md / settings.local.json の配置先**: その repo root 直下。既に他用途の CLAUDE.md がある場合は `CLAUDE.local.md` に書く（`references/claude-org-self-edit.md` の特例参照）
-- **Worker Directory Registry**: Pattern を `C` として登録、Directory に repo root の絶対パス、Status を `in_use`。完了時はエントリ削除（ディレクトリ自体は元プロジェクトなので保持）
-- **並行作業との競合**: repo root を直接掴むため、同 repo に対する Pattern A / B のワーカーと同時起動はしない（窓口側で順次化する）
-- **窓口メモ**: 「Pattern B 不可: 対象 `<target>` が gitignored。WORKER_DIR=既存 repo root 運用」と一文残す
+- **WORKER_DIR**: directly point at the **repo root of the existing local clone** (the "Path" value from the registry as-is)
+- **Where to place CLAUDE.md / settings.local.json**: directly under that repo root. If a CLAUDE.md is already there for another purpose, write to `CLAUDE.local.md` instead (see the special case in `references/claude-org-self-edit.md`)
+- **Worker Directory Registry**: register Pattern as `C`, Directory as the absolute path of the repo root, Status as `in_use`. On completion, delete the entry (the directory itself is the original project, so it is preserved)
+- **Concurrency**: because we grab the repo root directly, do not start it concurrently with Pattern A / B Workers operating on the same repo (the Lead serializes them)
+- **Lead memo**: leave a one-liner like "Pattern B unavailable: target `<target>` is gitignored. Operating with WORKER_DIR = existing repo root"
 
-#### claude-org 自己編集との関係
+#### Relation to claude-org self-edit
 
-通常のスキル / ドキュメント編集（`.claude/skills/...`, `references/...`）は tracked なので従来どおり Pattern B が選べる。`docs/internal/`, `notes/`, `tmp/` 等の gitignored 内部メモを編集する場合のみ本事前チェックで Pattern C 強制（gitignored サブモード）となる（`references/claude-org-self-edit.md` 参照）。
+Normal skill / doc edits (`.claude/skills/...`, `references/...`) are tracked and can use Pattern B as before. Only when editing internal memos under `docs/internal/`, `notes/`, `tmp/`, etc. that are gitignored does this pre-check force Pattern C (gitignored submode). See `references/claude-org-self-edit.md`.
 
-### ディレクトリパターン判定基準
+### Directory pattern criteria
 
-| パターン | 名称 | 条件 | ディレクトリ |
+| Pattern | Name | Condition | Directory |
 |---|---|---|---|
-| A | プロジェクトディレクトリ | プロジェクトの clone が必要（初回は clone、2回目以降は再利用） | `{workers_dir}/{project_slug}/` |
-| B | worktree | 同一プロジェクトで並行作業が必要（既に別ワーカーが同じプロジェクトディレクトリを使用中） | `{workers_dir}/{project_slug}/.worktrees/{task_id}/` |
-| C | エフェメラル | 成果物を残す必要がない一時作業（調査・検証等） | `{workers_dir}/{task_id}/` |
+| A | Project directory | A clone of the project is needed (clone first time, reuse afterward) | `{workers_dir}/{project_slug}/` |
+| B | worktree | Parallel work on the same project is needed (another Worker is already using the same project directory) | `{workers_dir}/{project_slug}/.worktrees/{task_id}/` |
+| C | Ephemeral | Temporary work where the deliverable does not need to be kept (investigation, verification, etc.) | `{workers_dir}/{task_id}/` |
 
-**判定フロー:**
+**Decision flow:**
 
-0. **事前チェック（対象ファイルが特定でき、かつローカル repo が存在する場合のみ）**: 上記「事前チェック: 対象ファイルが gitignored か」を実行する。ignored でないなら下記 1 へ。ignored なら **パターン C 強制（gitignored サブモード）** で確定し、以降の判定はスキップする。適用条件外（URL のみ・対象未特定など）はチェックを skip して下記 1 から通常判定
-1. プロジェクトの clone が必要な場合（registry/projects.md にパスが登録されているプロジェクト）:
-   a. Worker Directory Registry で同プロジェクトに `in_use` のエントリがある場合 → **パターン B**（worktree で並行作業）
-   b. 同プロジェクトに `available` のエントリがある場合 → **パターン A**（既存ディレクトリを再利用）
-   c. エントリがない場合 → **パターン A**（新規 clone）
-2. 上記に該当しない場合 → **パターン C**
-   - clone 不要の一時作業、成果物不要の調査タスク等
+0. **Pre-check (only when the target file is identified and a local repo exists)**: run "Pre-check: is the target file gitignored?" above. If not ignored, proceed to step 1 below. If ignored, settle on **Pattern C forced (gitignored submode)** and skip the rest. If outside applicability (URL only, target unidentified, etc.), skip the check and go to normal judgment from step 1
+1. When a project clone is needed (the project has a registered path in registry/projects.md):
+   a. If there is an `in_use` entry for the same project in the Worker Directory Registry → **Pattern B** (parallel work via worktree)
+   b. If there is an `available` entry for the same project → **Pattern A** (reuse the existing directory)
+   c. If there is no entry → **Pattern A** (new clone)
+2. Otherwise → **Pattern C**
+   - Temporary work that doesn't need a clone, investigation tasks where no deliverable is needed, etc.
 
-## Step 1.5: ワーカーディレクトリ準備（窓口が実行）
+## Step 1.5: Prepare the Worker directory (Lead executes)
 
-各タスクのワーカー専用ディレクトリを準備し、CLAUDE.md と設定を配置する。
-テンプレートは references/worker-claude-template.md を使用する。
-**パターン（A/B/C）によって手順が異なる。**
+Prepare a dedicated directory for each task and place CLAUDE.md and settings.
+Use the template references/worker-claude-template.md.
+**The procedure differs by pattern (A/B/C).**
 
-> **claude-org 自身を編集するタスクの場合**: 通常手順に加えて `references/claude-org-self-edit.md` の特例手順（block-org-structure.sh hook の除外、CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示）を必ず適用すること。**本セクション以下で「CLAUDE.md を生成 / 配置 / 確認」と書かれている箇所はすべて `CLAUDE.local.md` に読み替える**（ルート CLAUDE.md は Secretary 用なので上書き禁止）。
+> **For tasks that edit claude-org itself**: in addition to the normal procedure, always apply the special procedure in `references/claude-org-self-edit.md` (excluding the block-org-structure.sh hook, writing instructions to CLAUDE.local.md, and explicitly noting that the root CLAUDE.md should be ignored). **In this section and below, wherever it says "generate / place / verify CLAUDE.md", read it as `CLAUDE.local.md`** (the root CLAUDE.md is for the Secretary, so do not overwrite it).
 
-### 共通手順（全パターン）
+### Common procedure (all patterns)
 
-1. `registry/org-config.md` の `workers_dir` を読み、リポジトリルートからの相対パスを絶対パスに解決する
+1. Read `workers_dir` from `registry/org-config.md` and resolve it from a path relative to the repository root to an absolute path
 
-### パターン A: プロジェクトディレクトリ
+### Pattern A: project directory
 
-プロジェクト専用ディレクトリ（`{workers_dir}/{project_slug}/`）を使う。初回は clone、2回目以降は再利用。
+Use a project-dedicated directory (`{workers_dir}/{project_slug}/`). Clone the first time, reuse afterward.
 
-**初回（ディレクトリが存在しない場合）:**
+**First time (directory does not exist):**
 
-1. `git clone {project_path} {workers_dir}/{project_slug}/` を実行
-2. ディレクトリ直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-3. ディレクトリ直下に `.claude/settings.local.json` を配置する
-   （設定内容は org-setup/references/permissions.md の「ワーカー」セクション参照）
-   - `permissions.deny` を含めること（`git push` / `rm -rf` 等の静的ブロック。`bypassPermissions` モードでも常に有効）
-   - hooks の command パスと env の値には `{claude_org_path}` と `{worker_dir}` を解決済みの絶対パスで埋め込むこと
-   - command パス内のクォート（`"bash \"{claude_org_path}/...\""`）はそのまま維持すること（スペース対策）
-4. `.state/org-state.md` の Worker Directory Registry に登録する
+1. Run `git clone {project_path} {workers_dir}/{project_slug}/`
+2. Generate CLAUDE.md directly under the directory (substituting template variables)
+3. Place `.claude/settings.local.json` directly under the directory
+   (see the "Worker" section of org-setup/references/permissions.md for the contents)
+   - Include `permissions.deny` (static blocks for `git push` / `rm -rf` etc.; always effective even in `bypassPermissions` mode)
+   - Embed `{claude_org_path}` and `{worker_dir}` in hook command paths and env values as resolved absolute paths
+   - Keep the quotes inside command paths (`"bash \"{claude_org_path}/...\""`) as-is (to handle spaces)
+4. Register an entry in the Worker Directory Registry of `.state/org-state.md`
 
-**再利用（ディレクトリが存在し、ステータスが `available` の場合）:**
+**Reuse (directory exists and status is `available`):**
 
-1. `git -C {workers_dir}/{project_slug}/ fetch origin` で最新化
-2. CLAUDE.md **のみ**を再生成する（新しいタスクID・タスク説明で上書き）
-   - settings.local.json はそのまま流用（`{worker_dir}` が変わらないため再生成不要）
-3. `.state/org-state.md` の Worker Directory Registry を更新する（新タスクIDを紐付け、ステータスを `in_use` に変更）
+1. Update with `git -C {workers_dir}/{project_slug}/ fetch origin`
+2. Regenerate **only** CLAUDE.md (overwrite with the new task ID and task description)
+   - Reuse settings.local.json as-is (no regeneration needed because `{worker_dir}` does not change)
+3. Update the Worker Directory Registry of `.state/org-state.md` (associate the new task ID, set status to `in_use`)
 
-### パターン B: worktree
+### Pattern B: worktree
 
-同一プロジェクトで並行作業が必要な場合、プロジェクトディレクトリを base clone として worktree を作成する。
+When parallel work on the same project is needed, use the project directory as a base clone and create a worktree.
 
-1. base clone（`{workers_dir}/{project_slug}/`）の存在確認:
-   - 存在しない場合 → `git clone {project_path} {workers_dir}/{project_slug}/` を実行
-   - 既に存在する場合 → `git -C {workers_dir}/{project_slug}/ fetch origin` で最新化
-2. worktree を作成:
-   - `git -C {workers_dir}/{project_slug}/ worktree add .worktrees/{task_id} -b {branch_name}` を実行
-   - `{branch_name}` は Step 1 で決定したブランチ名（指定がなければ `{task_id}` をブランチ名に使う）
-   - ワーカーディレクトリ: `{workers_dir}/{project_slug}/.worktrees/{task_id}/`
-3. worktree 直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-4. worktree 直下に `.claude/settings.local.json` を配置する
-   （設定内容は org-setup/references/permissions.md の「ワーカー」セクション参照）
-   - `permissions.deny` を含めること（`git push` / `rm -rf` 等の静的ブロック。`bypassPermissions` モードでも常に有効）
-   - hooks の command パスと env の値には `{claude_org_path}` と `{worker_dir}` を解決済みの絶対パスで埋め込むこと
-   - command パス内のクォート（`"bash \"{claude_org_path}/...\""`）はそのまま維持すること（スペース対策）
-5. `.state/org-state.md` の Worker Directory Registry に登録する
+1. Confirm the existence of the base clone (`{workers_dir}/{project_slug}/`):
+   - If it doesn't exist → run `git clone {project_path} {workers_dir}/{project_slug}/`
+   - If it already exists → update with `git -C {workers_dir}/{project_slug}/ fetch origin`
+2. Create the worktree:
+   - Run `git -C {workers_dir}/{project_slug}/ worktree add .worktrees/{task_id} -b {branch_name}`
+   - `{branch_name}` is the branch name decided in Step 1 (if unspecified, use `{task_id}` as the branch name)
+   - Worker directory: `{workers_dir}/{project_slug}/.worktrees/{task_id}/`
+3. Generate CLAUDE.md directly under the worktree (substituting template variables)
+4. Place `.claude/settings.local.json` directly under the worktree
+   (see the "Worker" section of org-setup/references/permissions.md for the contents)
+   - Include `permissions.deny` (static blocks for `git push` / `rm -rf` etc.; always effective even in `bypassPermissions` mode)
+   - Embed `{claude_org_path}` and `{worker_dir}` in hook command paths and env values as resolved absolute paths
+   - Keep the quotes inside command paths (`"bash \"{claude_org_path}/...\""`) as-is (to handle spaces)
+5. Register an entry in the Worker Directory Registry of `.state/org-state.md`
 
-### パターン C: エフェメラル
+### Pattern C: ephemeral
 
-成果物を残す必要がない一時作業（調査・検証等）で使用する。
+Use for temporary work where the deliverable does not need to be kept (investigation, verification, etc.).
 
-1. `{workers_dir}/{task_id}/` ディレクトリを作成する（例: `../workers/data-analysis/`）
-2. テンプレートから `{workers_dir}/{task_id}/CLAUDE.md` を生成する
-3. `{workers_dir}/{task_id}/.claude/settings.local.json` にワーカー用の設定を配置する
-   （設定内容は org-setup/references/permissions.md の「ワーカー」セクション参照）
-   - `permissions.deny` を含めること（`git push` / `rm -rf` 等の静的ブロック。`bypassPermissions` モードでも常に有効）
-   - hooks の command パスと env の値には `{claude_org_path}` と `{worker_dir}` を解決済みの絶対パスで埋め込むこと
-   - command パス内のクォート（`"bash \"{claude_org_path}/...\""`）はそのまま維持すること（スペース対策）
-4. `.state/org-state.md` の Worker Directory Registry に登録する
+1. Create the directory `{workers_dir}/{task_id}/` (e.g. `../workers/data-analysis/`)
+2. Generate `{workers_dir}/{task_id}/CLAUDE.md` from the template
+3. Place Worker settings at `{workers_dir}/{task_id}/.claude/settings.local.json`
+   (see the "Worker" section of org-setup/references/permissions.md for the contents)
+   - Include `permissions.deny` (static blocks for `git push` / `rm -rf` etc.; always effective even in `bypassPermissions` mode)
+   - Embed `{claude_org_path}` and `{worker_dir}` in hook command paths and env values as resolved absolute paths
+   - Keep the quotes inside command paths (`"bash \"{claude_org_path}/...\""`) as-is (to handle spaces)
+4. Register an entry in the Worker Directory Registry of `.state/org-state.md`
 
-### 共通手順（全パターン・配置後）
+### Common procedure (all patterns; after placement)
 
-テンプレートの変数を実際の値で置換する:
-- `{project_name}` → registry の通称
-- `{project_description}` → registry の説明
-- `{task_id}` → タスクID（例: `data-analysis`）
-- `{task_description}` → タスクの目的と成果物
-- `{claude_org_path}` → claude-org リポジトリの絶対パス
-- `{worker_dir}` → ワーカーディレクトリの絶対パス（パターンにより異なる、上記参照）
+Substitute the template's variables with actual values:
+- `{project_name}` → registry nickname
+- `{project_description}` → registry description
+- `{task_id}` → task ID (e.g. `data-analysis`)
+- `{task_description}` → task goal and deliverable
+- `{claude_org_path}` → absolute path of the claude-org repository
+- `{worker_dir}` → absolute path of the Worker directory (varies by pattern; see above)
 
-生成した CLAUDE.md に「作業ディレクトリ（最重要制約）」セクションが含まれていることを確認する。含まれていない場合はテンプレート適用ミスのため再生成する
+Verify that the generated CLAUDE.md contains the "Working directory (most important constraint)" section. If it doesn't, the template was not applied correctly — regenerate.
 
-**参考 work-skill がある場合（Step 0.5 でマッチ）:**
+**If a reference work-skill exists (matched in Step 0.5):**
 
-CLAUDE.md に以下のセクションを追加する（「参照すべきファイル」セクションの後に配置）:
+Add the following section to CLAUDE.md (place it after the "Files to refer to" section):
 
 ```markdown
-## 参考 work-skill
-以下の work-skill が参考になる可能性があります。手順や判断基準を参照してください。
-ただし、タスクの要件に合わない部分は適宜調整すること。
+## Reference work-skill
+The following work-skill(s) may be useful. Refer to its procedure and judgment criteria.
+Adjust as appropriate where it does not fit this task's requirements.
 
-- スキル名: {skill-name}
-- パス: {claude_org_path}/.claude/skills/{skill-name}/SKILL.md
-- 概要: {description}
+- Skill name: {skill-name}
+- Path: {claude_org_path}/.claude/skills/{skill-name}/SKILL.md
+- Summary: {description}
 ```
 
-## Step 2: フォアマンへの委託（窓口が実行 → ここで窓口は解放）
+## Step 2: Hand off to the Dispatcher (Lead executes → Lead is released here)
 
-renga-peers の `send_message` でフォアマン（pane name=`dispatcher`）に以下を送信する:
+Send the following via renga-peers `send_message` to the Dispatcher (pane name = `dispatcher`):
 
 ```
-DELEGATE: 以下のワーカーを派遣してください。
+DELEGATE: Please dispatch the following Workers.
 
-タスク一覧:
-- {task_id}: {タスク説明}
-  - ワーカーディレクトリ: {ワーカーディレクトリの絶対パス}（CLAUDE.md・設定配置済み）
-  - ディレクトリパターン: {A: プロジェクトディレクトリ / B: worktree / C: エフェメラル}
-  - プロジェクト: {clone先URL or ローカルパス or 新規作成 or worktree済み or 前タスク引継ぎ}
-  - Permission Mode: {org-config から読んだ default_permission_mode の値}
-  - 検証深度: {full | minimal}（instruction-template の同名行と同じ値を必ず記入。フォアマンはこの値をワーカーへの指示にそのまま転記する）
-  - 指示内容: {instruction-template に基づく指示の要約。「検証深度」行は必ず残したまま転送する}
+Task list:
+- {task_id}: {task description}
+  - Worker directory: {absolute path of the Worker directory} (CLAUDE.md and settings already placed)
+  - Directory pattern: {A: project directory / B: worktree / C: ephemeral}
+  - Project: {clone URL or local path or new creation or worktree-ready or carried over from previous task}
+  - Permission Mode: {value of default_permission_mode read from org-config}
+  - Verification depth: {full | minimal} (must match the same line in instruction-template; the Dispatcher transcribes this value verbatim into the Worker instruction)
+  - Instructions: {summary of the instruction based on instruction-template. Always keep the "Verification depth" line intact when forwarding}
 
-窓口ペイン名: `secretary`（renga layout で登録済み。新規タブ作成時の基準となる）
+Lead pane name: `secretary` (registered by the renga layout; serves as the basis when creating new tabs)
 ```
 
-**窓口はこの送信後すぐにユーザーとの対話に戻れる。**
-ユーザーには「フォアマンに派遣を依頼しました。準備ができ次第報告します。」と伝える。
+**The Lead can return to user dialogue immediately after this send.**
+Tell the user "Dispatch requested to the Dispatcher. I'll report back as soon as it's ready."
 
-> renga では窓口・フォアマン・キュレーター等の「長寿命ペイン」は安定名 (`--id`) で addressable。
-> 窓口 (`secretary`) / フォアマン (`dispatcher`) / キュレーター (`curator`) は `/org-start` で命名済み。
+> In renga, "long-lived panes" like Lead / Dispatcher / Curator are addressable by stable name (`--id`).
+> Lead (`secretary`) / Dispatcher (`dispatcher`) / Curator (`curator`) are named by `/org-start`.
 
-## Step 3: ワーカー起動と指示送信（フォアマンが実行）
+## Step 3: Spawn Workers and send instructions (Dispatcher executes)
 
-フォアマンが以下を実行する:
+The Dispatcher executes the following:
 
-### 3-1. balanced split で target / direction を決める
+### 3-1. Choose target / direction via balanced split
 
-旧設計は序数 `k` ベースの lookup table で target を決めていたが、ワーカーが途中で閉じた後の再派遣や想定外の退役順でテーブル前提と実レイアウトが乖離し、`[split_refused]` を誘発しやすかった。renga-peers MCP の `mcp__renga-peers__list_panes` が各ペインの `id / name / role / focused / x / y / width / height` (cell 単位) を返すため、**現在のレイアウト (rect) から動的に target と direction を選ぶ方式**を取る。詳細ルールは `references/pane-layout.md` の「ワーカーの balanced split 戦略」セクションを参照。
+The old design picked the target via an ordinal-`k`-based lookup table, but during re-dispatch after a Worker closed in the middle, or with unexpected retirement order, the table assumption diverged from the actual layout, easily inducing `[split_refused]`. Since the renga-peers MCP `mcp__renga-peers__list_panes` returns each pane's `id / name / role / focused / x / y / width / height` (in cell units), we use a **scheme that picks target and direction dynamically from the current layout (rect)**. See the "Worker balanced split strategy" section of `references/pane-layout.md` for the detailed rules.
 
-#### 3-1a. レイアウト取得
+#### 3-1a. Get the layout
 
-`mcp__renga-peers__list_panes` を呼び、返却テキストから全ペインの属性を抽出する。各ペインは以下のフィールドを持つ:
+Call `mcp__renga-peers__list_panes` and extract every pane's attributes from the returned text. Each pane has the fields:
 
-- `id`: 整数
-- `name`: 文字列（`spawn_pane` / `new_tab` で明示指定されたペインのみ、未設定なら省略）
-- `role`: 文字列 ("secretary" / "dispatcher" / "curator" / "worker" のいずれか。未設定なら省略)
-- `focused`: bool（出力行に `(focused)` が付くかで判断）
-- `x / y / width / height`: cell 単位の整数
+- `id`: integer
+- `name`: string (only for panes explicitly given a name via `spawn_pane` / `new_tab`; omitted if unset)
+- `role`: string (one of "secretary" / "dispatcher" / "curator" / "worker"; omitted if unset)
+- `focused`: bool (judged by whether `(focused)` appears on the output line)
+- `x / y / width / height`: integers in cell units
 
-#### 3-1b. balanced split アルゴリズム（Claude が判定ロジックを実行）
+#### 3-1b. Balanced split algorithm (Claude executes the decision logic)
 
-**定数**:
-- `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: renga 側の分割下限（findings: renga-split-inv）
-- `SECRETARY_MIN_WIDTH = 125` / `SECRETARY_MIN_HEIGHT = 45`: secretary を分割候補にしてよい最小幅・最小高さ（保険条項、実運用ではほぼ不発動）
+**Constants**:
+- `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: renga's split lower bounds (findings: renga-split-inv)
+- `SECRETARY_MIN_WIDTH = 125` / `SECRETARY_MIN_HEIGHT = 45`: minimum width / height for treating secretary as a split candidate (insurance clause; rarely fires in practice)
 
-**Step 1. curator を特定**: `role == "curator"` のペインを 1 つ選ぶ（複数あれば先頭）。以降 `$curator` と呼ぶ。存在しなければ `$curator = null`。
+**Step 1. Identify the curator**: pick one pane with `role == "curator"` (the first if multiple). Henceforth `$curator`. If none exists, `$curator = null`.
 
-**Step 2. 候補を絞り込む**:
-- `role ∈ {"secretary", "dispatcher", "worker"}` のペインのみ候補
-- `role == "dispatcher"` のペインは、**`$curator` と rect 隣接している場合のみ**残す（`$curator = null` なら dispatcher も除外）
-  - rect 隣接の定義（どちらかを満たす）:
-    - **縦辺共有 + y 区間重なり**: `a.x + a.width == b.x` または `b.x + b.width == a.x`、かつ `max(a.y, b.y) < min(a.y + a.height, b.y + b.height)`
-    - **横辺共有 + x 区間重なり**: `a.y + a.height == b.y` または `b.y + b.height == a.y`、かつ `max(a.x, b.x) < min(a.x + a.width, b.x + b.width)`
+**Step 2. Filter candidates**:
+- Candidates are panes with `role ∈ {"secretary", "dispatcher", "worker"}` only
+- Keep `role == "dispatcher"` panes **only if they are rect-adjacent to `$curator`** (if `$curator = null`, exclude dispatchers as well)
+  - Rect adjacency definition (one of the following):
+    - **Vertical-edge shared + y-interval overlap**: `a.x + a.width == b.x` or `b.x + b.width == a.x`, and `max(a.y, b.y) < min(a.y + a.height, b.y + b.height)`
+    - **Horizontal-edge shared + x-interval overlap**: `a.y + a.height == b.y` or `b.y + b.height == a.y`, and `max(a.x, b.x) < min(a.x + a.width, b.x + b.width)`
 
-**Step 3. 各候補に direction / new_w / new_h / metric を付与**:
+**Step 3. Attach direction / new_w / new_h / metric to each candidate**:
 - `direction = (width > height * 2) ? "vertical" : "horizontal"`
-  - ターミナル cell は縦:横 ≈ 2:1（文字が縦長）。`width > height*2` は物理的に横長 → vertical（左右分割）で綺麗に割れる
-  - それ以外は horizontal（上下分割）
+  - Terminal cells are roughly 2:1 height:width (characters are tall). `width > height*2` means physically wide → splits cleanly with vertical (left/right)
+  - Otherwise horizontal (top/bottom)
 - `new_w = (direction == "vertical") ? floor(width / 2) : width`
 - `new_h = (direction == "horizontal") ? floor(height / 2) : height`
-- `metric = (direction == "vertical") ? new_w : new_h`（分割軸方向の新サイズ）
+- `metric = (direction == "vertical") ? new_w : new_h` (new size in the split-axis direction)
 
-**Step 4. MIN_PANE 制約**:
-- `new_w >= MIN_PANE_WIDTH` かつ `new_h >= MIN_PANE_HEIGHT` のペインのみ残す
+**Step 4. MIN_PANE constraint**:
+- Keep only panes with `new_w >= MIN_PANE_WIDTH` and `new_h >= MIN_PANE_HEIGHT`
 
-**Step 5. secretary 保険条項**:
-- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` **かつ** `new_h >= SECRETARY_MIN_HEIGHT` のときだけ残す（width だけ通っても height が足りなければ除外）
+**Step 5. Secretary insurance clause**:
+- Keep `role == "secretary"` panes only when `new_w >= SECRETARY_MIN_WIDTH` **and** `new_h >= SECRETARY_MIN_HEIGHT` (passing width alone is not enough; height must also pass)
 
-**Step 6. ソート & 選択**:
-- `metric` の降順、tie-break は `id` の昇順
-- 先頭要素の `name` を `$target`、`direction` を `$direction` として使用
+**Step 6. Sort & select**:
+- Descending by `metric`, tie-break by `id` ascending
+- Use the first element's `name` as `$target` and `direction` as `$direction`
 
-初回（ワーカー 0 人）は dispatcher が唯一の候補として残り、direction は dispatcher の aspect ratio から決まる（典型的に横長なので vertical）。
+On the very first dispatch (zero workers), the dispatcher remains as the sole candidate, and direction is determined by the dispatcher's aspect ratio (typically wide → vertical).
 
-#### 3-1c. 候補が空だった場合
+#### 3-1c. When the candidate set is empty
 
-`$target` が空（候補セットが空）の場合、フォアマン Claude は **`spawn_pane` を発行せず**、代わりに renga-peers で窓口 (`secretary`) に escalate メッセージを送信する:
+When `$target` is empty (no candidates), the Dispatcher Claude **does not issue `spawn_pane`**, and instead sends an escalate message to the Lead (`secretary`) via renga-peers:
 
-1. `mcp__renga-peers__send_message(to_id="secretary", message=...)` を呼び、本文を以下にする:
+1. Call `mcp__renga-peers__send_message(to_id="secretary", message=...)` with body:
    ```
-   SPLIT_CAPACITY_EXCEEDED: {task_id} のワーカー分割対象が見つからない。
-   rect ベース balanced split の MIN_PANE / 隣接条件を満たす候補が 0。
-   ターミナルサイズ不足または想定外のレイアウトが疑われる。人間判断が必要です。
+   SPLIT_CAPACITY_EXCEEDED: no Worker split target found for {task_id}.
+   Zero candidates satisfy the rect-based balanced-split MIN_PANE / adjacency conditions.
+   Suspect insufficient terminal size or an unexpected layout. Human judgment required.
    ```
-2. 3-2 以降（`spawn_pane` / 起動確認 / `list_peers` 待ち / instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、フォアマン本体の監視ループは **継続**させる。`exit` / `return` などでフォアマンを落とさないこと
+2. **Skip** 3-2 onward (`spawn_pane` / launch confirmation / `list_peers` wait / instruction send). Cancel only this one Worker dispatch and **continue** the Dispatcher main monitoring loop. Do not let the Dispatcher exit / return.
 
-### 3-2. ワーカーペインを起動する
+### 3-2. Spawn the Worker pane
 
-3-1 で算出した `$target` / `$direction` を使って `mcp__renga-peers__spawn_claude_pane` を呼ぶ。**`$target` が空なら spawn せず 3-1c の escalate 手順に従う**:
+Use `$target` / `$direction` computed in 3-1 to call `mcp__renga-peers__spawn_claude_pane`. **If `$target` is empty, do not spawn; follow the escalate procedure in 3-1c**:
 
 ```
 mcp__renga-peers__spawn_claude_pane(
-  target=$target,                         # 3-1 で算出した既存ペイン名
+  target=$target,                         # existing pane name computed in 3-1
   direction=$direction,                   # "vertical" or "horizontal"
   role="worker",
-  name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
-  cwd="{workers_dir}/{task_id}",          # 絶対パス推奨。相対は caller pane の cwd 基点
+  name="worker-{task_id}",                # stable name referenced by subsequent ops; must contain letters
+  cwd="{workers_dir}/{task_id}",          # absolute path recommended; relative resolves from caller pane's cwd
   permission_mode="{default_permission_mode}",
-  model="opus"                            # 必須。sonnet 禁止（auto classifier が不安定）
+  model="opus"                            # required. sonnet prohibited (auto classifier unstable)
 )
 ```
 
-- **`model="opus"` は必須（sonnet 禁止）。** ワーカーの permission_mode `auto` の safety classifier は Opus でのみ安定動作するため、sonnet だと分類器が誤判定を多発し承認フローが崩れる。フォアマンだけは `bypassPermissions` 固定で分類器非経由のため sonnet 運用で問題ない
-- ペイン配置ルールは `references/pane-layout.md` を参照。rect ベースの target / direction 選出ルールはそちらに集約
-- **同一タブ内 spawn で起動する理由**: renga の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか見えない。`new_tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる（renga 側 issue: suisya-systems/renga#71）
-- `name="worker-{task_id}"`: 後続の `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` や `close_pane(target="worker-{task_id}")` で addressable にする安定名。**全桁数字は id 扱いになる** ので、`worker-` プレフィックス等で英字を必ず含める
-- `role="worker"`: `list_panes` の結果で役割識別（次回以降の balanced split の target 選出にも使われる）
-- `cwd` / `permission_mode` / `model` / `args[]` は `spawn_claude_pane` の構造化フィールド。renga が `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に渡す）は **禁止** — cwd 変更プレフィックスがあると renga の bare-`claude` auto-upgrade が発動せず、channel push が失われる
-- 起動コマンドの仕様は `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
-- `spawn_claude_pane` が内部で `--dangerously-load-development-channels` を付与するため、`Load development channel?` 確認プロンプトが初回表示される。Step 3-3b で `send_keys(enter=true)` による承認が必要
-- **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
-  - `[split_refused]` (MAX_PANES / too small): `references/renga-error-codes.md` の手順に従いキュレーター → 窓口に escalate。balanced split は best-effort の配置ヒントであり、想定外のレイアウト（途中でワーカーが閉じた後の再派遣など）では拒否され得る
-  - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
-  - `[cwd_invalid]`: 指定した cwd が存在しない / ディレクトリでない。ペイン作成前に reject されるので half-mutated layout にはならない。窓口に escalate し、ワーカーディレクトリ準備（org-delegate Step 1.5）が完了しているか確認
-  - `[invalid-params]`: `args[]` に `--permission-mode` / `--model` / `--dangerously-load-development-channels` を含めた場合の拒否。構造化フィールドで渡す
-  - その他の code は `references/renga-error-codes.md` 参照
+- **`model="opus"` is required (sonnet prohibited).** The safety classifier of the Worker's `auto` permission_mode operates reliably only on Opus; with sonnet, misclassifications happen frequently and the approval flow breaks. Only the Dispatcher is fixed at `bypassPermissions` and bypasses the classifier, so sonnet works there.
+- Pane placement rules: see `references/pane-layout.md`. The rect-based target / direction selection rules are consolidated there.
+- **Why we spawn within the same tab**: renga's `list_panes` / `focus_pane` / `send_message` / `inspect` (CLI) can only see panes in the currently focused tab. Putting Workers in a separate tab via `new_tab` makes them invisible to the Dispatcher for monitoring and instruction (renga-side issue: suisya-systems/renga#71)
+- `name="worker-{task_id}"`: stable name that makes the pane addressable for later `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` and `close_pane(target="worker-{task_id}")`. **All-digit names are treated as ids**, so always include letters via a `worker-` prefix etc.
+- `role="worker"`: identifies the role in `list_panes` output (also used for target selection in subsequent balanced splits)
+- `cwd` / `permission_mode` / `model` / `args[]` are structured fields of `spawn_claude_pane`. renga composes `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old method (passing a `cd`-prefixed command string to `spawn_pane`) is **prohibited** — a cwd-changing prefix prevents renga's bare-`claude` auto-upgrade from firing, and channel push is lost
+- See the "ClaudeCode launch commands (per role)" section of `.claude/skills/org-start/SKILL.md` for the launch-command spec
+- Because `spawn_claude_pane` internally adds `--dangerously-load-development-channels`, the `Load development channel?` confirmation prompt appears on first launch. Approval via `send_keys(enter=true)` is needed in Step 3-3b
+- **Error handling**: errors are embedded in the MCP result text in `[<code>] <msg>` form. Main codes:
+  - `[split_refused]` (MAX_PANES / too small): follow the procedure in `references/renga-error-codes.md` and escalate Curator → Lead. Balanced split is a best-effort placement hint; in unexpected layouts (e.g. re-dispatch after a Worker closed) it may be refused.
+  - `[pane_not_found]`: race in which the existing pane chosen as `$target` closed just before spawn was issued. Same — escalate via the error-code path.
+  - `[cwd_invalid]`: the specified cwd does not exist / is not a directory. Rejected before pane creation, so no half-mutated layout. Escalate to the Lead and verify Worker directory preparation (Step 1.5 of org-delegate) is complete.
+  - `[invalid-params]`: rejected when `args[]` includes `--permission-mode` / `--model` / `--dangerously-load-development-channels`. Pass via the structured fields.
+  - For other codes, see `references/renga-error-codes.md`.
 
-### 3-3. ペインが起動したことを確認
+### 3-3. Confirm the pane has started
 
-`mcp__renga-peers__poll_events` で `pane_started` イベントを最大 3 秒待つ。target 以外の worker の同時 spawn や filter 不一致イベント到着による early return に備え、**3 秒 deadline 内で再 poll するループ**として書く:
+Wait up to 3 seconds for a `pane_started` event via `mcp__renga-peers__poll_events`. To handle simultaneous spawns of other workers and early returns triggered by filter mismatches, **write it as a re-poll loop within the 3-second deadline**:
 
 ```
-cursor = None                    # 初回は since 省略（「今以降のイベントだけ」セマンティクス）
-deadline = now + 3 秒
+cursor = None                    # first call omits since (= "events from now on" semantics)
+deadline = now + 3 seconds
 while now < deadline:
-    remaining_ms = (deadline - now) ミリ秒
+    remaining_ms = (deadline - now) milliseconds
     result = mcp__renga-peers__poll_events(
-        since=cursor,                                  # 2 回目以降は前回の next_since
+        since=cursor,                                  # use last call's next_since from second iteration onward
         timeout_ms=min(remaining_ms, 3000),
         types=["pane_started"]
     )
-    cursor = result.next_since                          # 次呼び出しで使う
+    cursor = result.next_since                          # use on next call
     for ev in result.events:
         if ev.name == "worker-{task_id}":
-            return OK                                   # 起動確認完了
-# deadline 超過 → 起動イベント未検出
-# mcp__renga-peers__list_panes でペイン存在を再確認、未存在なら窓口にエスカレーション
+            return OK                                   # launch confirmed
+# deadline exceeded → no launch event detected
+# Re-confirm pane existence via mcp__renga-peers__list_panes; if absent, escalate to the Lead
 ```
 
-- 初回 `since` 省略 = `renga events --timeout` と同じ「今以降」セマンティクス（過去の起動イベントを replay しない）
-- `types=["pane_started"]` で他 type（`pane_exited` 等）を除外しつつ、cursor は全 type で advance（重複 scan なし）
-- **filter 不一致イベントが到着すると long-poll が早期終了し `events:[]` + 進んだ cursor が返る**ので、空応答のままループ継続（cursor 保持で重複なし）
-- `name == "worker-{task_id}"` の `pane_started` で break。deadline 超過で未検出なら `list_panes` で pane 存在を再確認
+- Omitting `since` on first call = same "events from now on" semantics as `renga events --timeout` (does not replay past launch events)
+- `types=["pane_started"]` excludes other types (`pane_exited` etc.) while the cursor advances on all types (no duplicate scans)
+- **Filter-mismatching events cause early termination of long-poll, returning `events:[]` + an advanced cursor**, so loop on with empty responses (no duplicates because cursor is preserved)
+- Break on `pane_started` with `name == "worker-{task_id}"`. If deadline exceeds without detection, re-confirm pane existence via `list_panes`
 
-### 3-3b. 「Load development channel?」プロンプトを Enter で承認
+### 3-3b. Approve the "Load development channel?" prompt with Enter
 
-`spawn_claude_pane` は内部で `--dangerously-load-development-channels server:renga-peers` を付与するため、初回起動で Y/n 確認プロンプトが出る。Enter で承認する:
+Because `spawn_claude_pane` internally adds `--dangerously-load-development-channels server:renga-peers`, a Y/n confirmation prompt appears on first launch. Approve with Enter:
 
 ```
 mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 ```
 
-承認しないと `server:renga-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。Enter は CR (0x0D) として PTY に書き込まれる（byte-identical to renga `append_enter`）。
+Without approval, the `server:renga-peers` channel is not enabled, the `list_peers` wait in 3-4 times out, and `send_message` in 3-5 does not arrive. Enter is written to the PTY as CR (0x0D) (byte-identical to renga `append_enter`).
 
-### 3-4. `mcp__renga-peers__list_peers` で新ピア出現を待機
+### 3-4. Wait for the new peer via `mcp__renga-peers__list_peers`
 
-pane は live でも Claude がまだ起動中の場合があるため二重確認。`mcp__renga-peers__list_peers` を呼び、`worker-{task_id}` が peer 一覧に現れるまで短い間隔（例: 2 秒）でリトライする（最大 30 秒程度）。タイムアウトした場合は `list_panes` でペイン状態を再確認し、必要なら窓口に escalate する。
+The pane may be live while Claude is still launching, so do a second confirmation. Call `mcp__renga-peers__list_peers` and retry at short intervals (e.g. 2 seconds) until `worker-{task_id}` appears in the peer list (up to ~30 seconds). On timeout, re-confirm pane state via `list_panes` and escalate to the Lead if necessary.
 
-### 3-5. `mcp__renga-peers__send_message` でワーカーに指示を送信
+### 3-5. Send the instruction to the Worker via `mcp__renga-peers__send_message`
 
-`references/instruction-template.md` のフォーマットに従う。`to_id="worker-{task_id}"` で pane name 指定。
+Follow the format in `references/instruction-template.md`. Specify the pane name with `to_id="worker-{task_id}"`.
 
-### 3-6. 複数ワーカーの順次起動
+### 3-6. Sequential launch of multiple Workers
 
-複数ワーカーがある場合は 3-1〜3-5 を順次繰り返す。`list_panes` の結果が毎回変わるので、**都度再取得して** balanced split 判定をし直す（前ワーカーの起動が完了するのを 3-3 / 3-4 で待ってから次に進むこと）。
+If there are multiple Workers, repeat 3-1 through 3-5 in order. Because the result of `list_panes` changes each time, **re-fetch every time** and redo the balanced-split decision (wait for the previous Worker's launch to complete in 3-3 / 3-4 before moving on).
 
-## Step 4: 状態記録（フォアマンが実行）
+## Step 4: Record state (Dispatcher executes)
 
-各ワーカーについて:
+For each Worker:
 
-1. `.state/workers/worker-{task_id}.md` を作成（renga-peers では pane name `worker-{task_id}` が安定識別子。旧 peer-id は使わない）:
+1. Create `.state/workers/worker-{task_id}.md` (in renga-peers, the pane name `worker-{task_id}` is the stable identifier; the legacy peer-id is no longer used):
    ```markdown
    # Worker: worker-{task_id}
    Task: {task_id}
-   Directory: {作業ディレクトリ}
+   Directory: {working directory}
    Pane ID: {pane_id}
    Started: {ISO timestamp}
 
    ## Assignment
-   {タスクの説明}
+   {task description}
 
    ## Progress Log
-   - [{time}] 派遣完了、作業開始
+   - [{time}] Dispatch complete; work started
    ```
 
-2. `.state/org-state.md` を更新（なければ新規作成）:
-   - Current Objective に人間の依頼を記載
-   - Active Work Items にタスクを追加
+2. Update `.state/org-state.md` (create if missing):
+   - Record the human's request in Current Objective
+   - Add the task to Active Work Items
 
-3. `.state/journal.jsonl` にイベント追記:
+3. Append an event to `.state/journal.jsonl`:
    ```json
    {"ts":"<ISO timestamp>","event":"worker_spawned","worker":"worker-{task_id}","dir":"<dir>","task":"{task_id}"}
    ```
 
-4. `.state/org-state.md` を更新した後、JSON スナップショットを再生成する:
+4. After updating `.state/org-state.md`, regenerate the JSON snapshot:
 
    ```bash
    py -3 dashboard/org_state_converter.py    # Windows
    python3 dashboard/org_state_converter.py   # Mac/Linux
    ```
 
-5. ワーカーペインを監視対象として登録する:
-   - 派遣後、そのペインを監視対象として記録し、`.dispatcher/CLAUDE.md` の「ワーカーペイン監視」に従って定期的に承認待ちを確認する
+5. Register the Worker pane as a monitoring target:
+   - After dispatch, record that pane as a monitoring target and periodically check for pending approvals per the "Worker pane monitoring" section of `.dispatcher/CLAUDE.md`
 
-### Worker Directory Registry（org-state.md 内のセクション定義）
+### Worker Directory Registry (section definition inside org-state.md)
 
-`.state/org-state.md` に以下のセクションを追加・管理する。ワーカーディレクトリの再利用状態を追跡する。
+Add and maintain the following section in `.state/org-state.md` to track Worker-directory reuse status.
 
 ```markdown
 ## Worker Directory Registry
@@ -487,92 +488,92 @@ pane は live でも Claude がまだ起動中の場合があるため二重確�
 | data-analysis | C | /path/to/workers/data-analysis/ | - | in_use |
 ```
 
-**フィールド説明:**
-- **Task ID**: 現在そのディレクトリを使用しているタスクID
-- **Pattern**: A（プロジェクトディレクトリ）/ B（worktree）/ C（エフェメラル）
-- **Directory**: ワーカーディレクトリの絶対パス
-- **Project**: registry/projects.md の通称（エフェメラルで無関係なら `-`）
-- **Status**: `in_use`（作業中）/ `available`（完了済み・再利用可能）
+**Field descriptions:**
+- **Task ID**: the task ID currently using that directory
+- **Pattern**: A (project directory) / B (worktree) / C (ephemeral)
+- **Directory**: absolute path of the Worker directory
+- **Project**: nickname from registry/projects.md (`-` if ephemeral and unrelated)
+- **Status**: `in_use` (in progress) / `available` (completed, reusable)
 
-**運用ルール:**
-- Step 1.5 でディレクトリ準備時にエントリを追加する
-- Step 5 (2b) で人間が承認した際にステータスを更新する（ディレクトリは削除しない）
-- Step 1 の判定フローでこのテーブルを参照し、再利用可能なディレクトリや並行作業の有無を判定する
+**Operational rules:**
+- Add the entry during directory preparation in Step 1.5
+- Update the status when the human approves in Step 5 (2b) (do not delete the directory)
+- The decision flow in Step 1 references this table to determine reusable directories and parallel-work conflicts
 
-5. 窓口 (`secretary`) に renga-peers で派遣完了を報告:
+5. Report dispatch completion to the Lead (`secretary`) via renga-peers:
    ```
-   DELEGATE_COMPLETE: {task_id} のワーカーを派遣しました。
+   DELEGATE_COMPLETE: dispatched the Worker for {task_id}.
    Pane: worker-{task_id} (id={pane_id})
    ```
 
-## Step 5: 進捗管理（窓口が実行）
+## Step 5: Progress management (Lead executes)
 
-### DELEGATE_COMPLETE 受信時
+### On receiving DELEGATE_COMPLETE
 
-フォアマンから派遣完了報告を受け取ったら、各ワーカーに挨拶メッセージを送る:
+When the Lead receives the dispatch-complete report from the Dispatcher, send a greeting message to each Worker:
 ```
 mcp__renga-peers__send_message(
   to_id="worker-{task_id}",
-  message="窓口です。{task_id} の作業をお願いしています。完了・進捗・ブロック、全ての報告は `to_id=\"secretary\"` で renga-peers 送信してください。"
+  message="This is the Lead. You're working on {task_id}. Send all reports — completion, progress, blockers — via renga-peers with `to_id=\"secretary\"`."
 )
 ```
-ワーカー側は worker-claude-template の方針通り pane name `secretary` に固定で送るため、窓口の peer-id を履歴に残す必要はない（この挨拶はあくまで作業開始確認）。
+The Worker side, per the worker-claude-template policy, sends to the fixed pane name `secretary`, so there is no need to keep the Lead's peer-id in history (this greeting is just confirmation that work has started).
 
-### ワーカーからのメッセージ受信時
+### On receiving a message from a Worker
 
-ワーカーから renga-peers でメッセージを受け取ったら:
+When the Lead receives a message from a Worker via renga-peers:
 
-1. 進捗報告の場合:
-   - `.state/workers/worker-{task_id}.md` の Progress Log に追記
-   - `journal.jsonl` にイベント追記
-2a. ワーカーから完了報告を受け取ったら:
-   - `org-state.md` の該当Work Itemを **REVIEW** に更新
-   - `journal.jsonl` にイベント追記
-   - JSON スナップショットを再生成する: `py -3 dashboard/org_state_converter.py`
-   - 結果を人間に報告する
-   - **ペインはまだ閉じない**
+1. For a progress report:
+   - Append to the Progress Log of `.state/workers/worker-{task_id}.md`
+   - Append an event to `journal.jsonl`
+2a. When a completion report is received from a Worker:
+   - Update the corresponding Work Item in `org-state.md` to **REVIEW**
+   - Append an event to `journal.jsonl`
+   - Regenerate the JSON snapshot: `py -3 dashboard/org_state_converter.py`
+   - Report results to the human
+   - **Do not close the pane yet**
 
-2b. 人間が承認した場合（「OK」「確認した」「問題ない」等）:
-   - `org-state.md` の該当Work Itemを **COMPLETED** に更新
-   - ワーカーの状態ファイルを最終更新
-   - `journal.jsonl` にイベント追記
-   - 必要に応じて窓口がプッシュ・PR作成を行う（ワーカーには権限がないため）
-   - フォアマンにペインクローズを依頼:
-     `CLOSE_PANE: {pane_id} のペインを閉じてください。`
-   - **ディレクトリパターンに応じた後処理**:
-     - パターン A（プロジェクトディレクトリ）: ディレクトリは保持する（次タスクで再利用）
-     - パターン B（worktree）: `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}` を実行。ブランチは残す（PR/マージ用）
-     - パターン C（エフェメラル）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
-   - `.state/org-state.md` の Worker Directory Registry を更新:
-     - パターン A: ステータスを `available` に更新（次タスクで再利用可能）
-     - パターン B: エントリを削除（worktree は除去済み）
-     - パターン C: エントリを削除
-   - JSON スナップショットを再生成する: `py -3 dashboard/org_state_converter.py`
+2b. On human approval ("OK", "looks good", "no problem", etc.):
+   - Update the corresponding Work Item in `org-state.md` to **COMPLETED**
+   - Make the final update to the Worker's state file
+   - Append an event to `journal.jsonl`
+   - The Lead does push / PR creation as needed (the Worker has no permission for these)
+   - Ask the Dispatcher to close the pane:
+     `CLOSE_PANE: please close pane {pane_id}.`
+   - **Post-processing per directory pattern**:
+     - Pattern A (project directory): keep the directory (reuse for the next task)
+     - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (for PR/merge use)
+     - Pattern C (ephemeral): keep the directory (consider manual deletion only when capacity becomes an issue)
+   - Update the Worker Directory Registry of `.state/org-state.md`:
+     - Pattern A: set status to `available` (reusable for the next task)
+     - Pattern B: delete the entry (worktree already removed)
+     - Pattern C: delete the entry
+   - Regenerate the JSON snapshot: `py -3 dashboard/org_state_converter.py`
 
-2c. 人間がフィードバック・修正指示を出した場合:
-   - ワーカーに renga-peers で追加指示を送る (`to_id="worker-{task_id}"`)
-   - 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは `references/instruction-template.md` / `references/worker-claude-template.md` に従う）
-   - `org-state.md` の該当Work Itemを **IN_PROGRESS** に戻す
-   - `journal.jsonl` にイベント追記
-   - JSON スナップショットを再生成する: `py -3 dashboard/org_state_converter.py`
-   - （ペインが生きているのでワーカーはそのまま作業続行）
+2c. When the human gives feedback / a correction directive:
+   - Send an additional instruction to the Worker via renga-peers (`to_id="worker-{task_id}"`)
+   - If the additional instruction is a trivial fix (CI output formatting / typo / comment edits, etc.), explicitly state **verification depth `minimal`** and tell the Worker that the completion report should be the single line `done: {short commit SHA} {changed file name}` (the format follows `references/instruction-template.md` / `references/worker-claude-template.md`)
+   - Revert the corresponding Work Item in `org-state.md` to **IN_PROGRESS**
+   - Append an event to `journal.jsonl`
+   - Regenerate the JSON snapshot: `py -3 dashboard/org_state_converter.py`
+   - (Since the pane is still alive, the Worker continues the work as-is)
 
-### ワーカー監視と介入判定（窓口が実行）
+### Worker monitoring and intervention judgment (Lead executes)
 
-派遣後、ワーカーが深掘り・過剰検証ループに入っていないか定期的に確認する:
+After dispatch, periodically check whether the Worker has fallen into a deep-dive / over-verification loop:
 
-**介入トリガー**（いずれか 1 つ以上該当したら `mcp__renga-peers__inspect_pane` で状況確認する）:
-- 同一タスクで 30 分超経過、かつ同じフェーズ（実装 / レビュー / 検証）に 3 回目以降入っている
-- 1 時間以上進捗報告なしで静穏（入力待ちでもなく、progress ログも出ない）
-- (codex を使っている場合) Codex セルフレビューが 4 ラウンド目以降に入っている（3 ラウンド上限はワーカー側指示だが、window 側でも確認）。codex 未導入環境ではこのトリガーは無関係
+**Intervention triggers** (if any one applies, check the situation via `mcp__renga-peers__inspect_pane`):
+- Same task running for over 30 minutes and entering the same phase (implementation / review / verification) for the 3rd or later time
+- No progress report for over 1 hour in silence (not waiting on input, no progress log either)
+- (When using codex) Codex self-review has entered the 4th round or later (the 3-round cap is a Worker-side directive, but the Lead also checks). Irrelevant in environments where codex is not installed
 
-**介入手順**:
-1. `inspect_pane` で画面を確認（Running / Codex 実行中 / 入力待ちのいずれか判定）
-2. 深掘りと判断したら `send_keys(target="worker-{task_id}", keys=["Escape"])` で中断
-3. `send_message` で tight な修正指示を送る。例:
-   - 「検証深度 minimal に切り替えます。Codex レビュー・追加テスト禁止。いま書いた変更を commit して `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけ返してください」
-   - 「Minor は残置で OK。README に既知制限として 1 行追記したら完了報告してください（検証深度 full のままなので通常の完了報告フォーマット）」
+**Intervention procedure**:
+1. Inspect the screen via `inspect_pane` (judge as one of: Running / Codex running / awaiting input)
+2. If judged a deep dive, interrupt with `send_keys(target="worker-{task_id}", keys=["Escape"])`
+3. Send a tight correction instruction via `send_message`. Examples:
+   - "Switching verification depth to minimal. No Codex review or additional tests. Commit what you have and reply with only the single line `done: {short commit SHA} {changed file name}`."
+   - "Minor findings can stay. Add a 1-line note as a known limitation in README, then send the completion report (verification depth stays `full`, so use the normal completion-report format)."
 
-**注意**: 窓口が自らワーカーの worktree で commit を代行することは auto-mode classifier によりブロックされる（スコープ逸脱）。介入はあくまで「指示の再送」で行うこと。
-3. ブロック報告の場合:
-   - 人間に判断を仰ぐ
+**Note**: the Lead committing on behalf of the Worker in the Worker's worktree is blocked by the auto-mode classifier (out of scope). Intervention is always via "re-sending the instruction".
+3. For a blocker report:
+   - Ask the human for judgment

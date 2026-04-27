@@ -1,60 +1,60 @@
 # renga-peers MCP error codes — Dispatcher / Secretary reference
 
-renga 0.14.0+ の `renga-peers` MCP サーバは、エラー応答に安定した machine-readable な code を載せる。フォアマン / キュレーター / 窓口は message 文字列の substring match ではなく **code で分岐する**のを推奨する。
+The renga 0.14.0+ `renga-peers` MCP server returns a stable, machine-readable code in error responses. The Dispatcher / Curator / Lead are recommended to **branch on the code**, not by substring-matching the message string.
 
 ## Wire format
 
-MCP ツール（`mcp__renga-peers__*`）が失敗すると、JSON-RPC error の human-readable message 先頭に `[<code>] <human message>` が埋まる。renga 側の `fmt_code` 関数がこの形式を保証。
+When an MCP tool (`mcp__renga-peers__*`) fails, the JSON-RPC error's human-readable message is prefixed with `[<code>] <human message>`. renga's `fmt_code` function guarantees this format.
 
 ```
 mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 → renga refused send: [pane_not_found] pane not found: Name("worker-nonexistent")
 ```
 
-抽出方法: tool result text を substring match（`[pane_not_found]` 等で case 分岐）。
+Extraction: substring-match on the tool result text (branch on `[pane_not_found]`, etc.).
 
 ## Known codes
 
-| Code | 意味 | Dispatcher の推奨挙動 |
+| Code | Meaning | Recommended Dispatcher behavior |
 |---|---|---|
-| `pane_not_found` | 指定した pane 名 / id / Focused が存在しない | そのワーカーは既に閉じた扱い。`.state/workers/worker-*.md` の status を `pane_closed` に遷移、`WORKER_PANE_EXITED` を窓口に通知。リトライしない。**注意**: `list_panes` / `focus_pane` / `send_message` / `inspect_pane` は現在フォーカス中のタブのペインしか見えない。別タブ (`new_tab` 由来) のワーカーは本 code で返るので、org-delegate では全ワーカーを同一タブ内 `spawn_pane` で起動する (suisya-systems/renga#71) |
-| `pane_vanished` | resolve 成功後に消えたレース | `pane_not_found` と同等扱い |
-| `last_pane` | `close_pane` で唯一のタブの唯一のペインを閉じようとした | 通常のワーカー停止では発生しない (窓口/フォアマン/キュレーターが同タブに同居するため)。`org-suspend` 末端で残った最後のペイン (通常は窓口) に対して発生した場合、そのペインは自分自身で `exit` して自然終了させる。強制再試行はしない |
-| `split_refused` | `spawn_pane` / `spawn_claude_pane` が MAX_PANES / too small で拒否 | ワーカー起動 (`org-delegate` Step 3) で balanced split のいずれかのステップが 16 ペイン上限 / `MIN_PANE_WIDTH` / `MIN_PANE_HEIGHT` で拒否された場合、キュレーター → 窓口に escalate。典型シナリオは (a) 9 並列以上に到達、(b) ターミナル幅が balanced split の要件 (W ≥ 160) を満たさない、(c) ワーカー退役後の再派遣でレイアウト tree が想定と乖離。`new_tab` フォールバックは tab-scoped 制約のため不可 (suisya-systems/renga#71) |
-| `cwd_invalid` | `spawn_pane` / `spawn_claude_pane` / `new_tab` の `cwd` が存在しないか、ディレクトリでない | renga 0.16.0+ で追加。ペイン作成前に reject されるので half-mutated layout にはならない。Dispatcher 側では窓口に escalate し、ワーカーディレクトリ準備（org-delegate Step 1.5）が完了しているか、相対パスの解決基準（caller pane の cwd）を取り違えていないか確認 |
-| `invalid-params` | `spawn_claude_pane` の `args[]` に conflicting flag を含めた / `send_keys` の `keys[]` に未知のキー名を含めた等、JSON-RPC レベルの input 検証失敗 | `spawn_claude_pane` では `--dangerously-load-development-channels` / `--permission-mode` / `--model` を `args[]` に入れると rejected。構造化フィールド（`permission_mode` / `model`）で渡す。発生したらコード側のバグなので journal 記録 + 窓口 escalate |
-| `name_in_use` | `set_pane_identity` で既存の別ペインが使用中の name を割り当てようとした | `/org-start` Step 0 の secretary 識別修復では、この code を拾ってユーザーに「永続修復には `/org-suspend` → 再起動」を提示する。短期回避は numeric pane id 運用 |
-| `name_invalid` | `set_pane_identity` で全桁数字 / 禁止文字を含む name を指定した | 許可文字は `[A-Za-z0-9_-]`。全桁数字は numeric pane id と曖昧化するため拒否される。バグなので journal 記録 |
-| `io_error` | PTY write / spawn / OS レベル失敗 | 1 サイクル spin して再試行。2 連続で同じ worker に出たら窓口に `IO_ERROR_DETECTED` で escalate |
-| `shutting_down` | renga 本体がシャットダウン中 | 監視ループを **即停止** する。窓口 (`secretary`) に renga-peers で `DISPATCHER_STOPPING` を通知（best-effort — renga 自体が落ちる場合は届かない） |
-| `app_timeout` | renga 内部 App スレッドが応答しなかった | 1 サイクル spin (renga 再起動は管理者判断)。連続発生なら窓口にログ |
-| `parse` / `protocol` | 通常出ない (MCP が正しく組み立てる前提) | 発生時はバグ。journal に記録して窓口に `IPC_PROTOCOL_ERROR` で報告 |
-| `internal` | renga 内部不変条件違反 (parser lock poison 等) | `app_timeout` と同じ扱い |
+| `pane_not_found` | The specified pane name / id / Focused does not exist | Treat that Worker as already closed. Transition `.state/workers/worker-*.md` status to `pane_closed` and notify the Lead with `WORKER_PANE_EXITED`. Do not retry. **Note**: `list_panes` / `focus_pane` / `send_message` / `inspect_pane` can only see panes in the currently focused tab. Workers in other tabs (originating from `new_tab`) return this code, so org-delegate launches all Workers via `spawn_pane` in the same tab (suisya-systems/renga#71) |
+| `pane_vanished` | Race in which the pane disappeared after a successful resolve | Treat the same as `pane_not_found` |
+| `last_pane` | `close_pane` tried to close the only pane in the only tab | Does not occur during normal Worker stop (Lead/Dispatcher/Curator coexist in the same tab). If it occurs at the end of `org-suspend` against the very last pane (normally the Lead), let that pane `exit` itself and terminate naturally. Do not force-retry |
+| `split_refused` | `spawn_pane` / `spawn_claude_pane` rejected by MAX_PANES / too small | When any step of balanced split during Worker launch (`org-delegate` Step 3) is refused by the 16-pane limit / `MIN_PANE_WIDTH` / `MIN_PANE_HEIGHT`, escalate Curator → Lead. Typical scenarios: (a) reached 9-parallel or more, (b) terminal width does not satisfy balanced split requirements (W ≥ 160), (c) re-dispatch after Worker retirement made the layout tree diverge from expected. `new_tab` fallback is impossible due to tab-scoped constraints (suisya-systems/renga#71) |
+| `cwd_invalid` | `cwd` of `spawn_pane` / `spawn_claude_pane` / `new_tab` does not exist or is not a directory | Added in renga 0.16.0+. Rejected before pane creation, so no half-mutated layout. The Dispatcher should escalate to the Lead and verify whether Worker directory preparation (org-delegate Step 1.5) is complete or whether the relative-path resolution base (caller pane's cwd) was misunderstood |
+| `invalid-params` | JSON-RPC level input validation failure (e.g. including a conflicting flag in `spawn_claude_pane`'s `args[]`, or an unknown key name in `send_keys`'s `keys[]`) | In `spawn_claude_pane`, putting `--dangerously-load-development-channels` / `--permission-mode` / `--model` into `args[]` is rejected. Pass them via the structured fields (`permission_mode` / `model`). When this occurs it's a code bug, so log to journal and escalate to the Lead |
+| `name_in_use` | `set_pane_identity` tried to assign a name already in use by another existing pane | In `/org-start` Step 0 secretary identity recovery, catch this code and present the user with "for permanent fix, `/org-suspend` → restart". Short-term workaround is operating with numeric pane ids |
+| `name_invalid` | `set_pane_identity` was given an all-digit / forbidden-character name | Allowed characters are `[A-Za-z0-9_-]`. All-digit names are rejected because they are ambiguous with numeric pane ids. Bug — log to journal |
+| `io_error` | PTY write / spawn / OS-level failure | Spin once and retry. If the same Worker hits it twice in a row, escalate to the Lead with `IO_ERROR_DETECTED` |
+| `shutting_down` | renga itself is shutting down | **Stop the monitoring loop immediately**. Notify the Lead (`secretary`) with `DISPATCHER_STOPPING` via renga-peers (best-effort — won't arrive if renga itself is going down) |
+| `app_timeout` | renga's internal App thread did not respond | Spin one cycle (renga restart is up to the admin). On consecutive occurrences, log to the Lead |
+| `parse` / `protocol` | Should not normally occur (MCP is expected to assemble messages correctly) | Bug if it occurs. Log to journal and report to the Lead with `IPC_PROTOCOL_ERROR` |
+| `internal` | renga internal invariant violation (parser lock poison, etc.) | Treat the same as `app_timeout` |
 
-## MCP ツール特有の ok-return ルール
+## MCP-tool-specific ok-return rules
 
-以下 2 つの MCP ツールは、renga 到達不可でも **JSON-RPC error にせず ok-text で返す** 例外扱い。
+The following 2 MCP tools are exceptions: even when renga is unreachable, they **return ok-text instead of a JSON-RPC error**.
 
-- `mcp__renga-peers__list_peers`: renga 本体未起動 / detached mode → `"(no peers — renga not reachable: <reason>)"`
-- `mcp__renga-peers__send_message`: 同上 → `"(message dropped — renga not reachable: <reason>)"`
+- `mcp__renga-peers__list_peers`: renga itself not running / detached mode → `"(no peers — renga not reachable: <reason>)"`
+- `mcp__renga-peers__send_message`: same as above → `"(message dropped — renga not reachable: <reason>)"`
 
-他の renga-peers ツール (`spawn_pane` / `close_pane` / `list_panes` / `focus_pane` / `new_tab` /
-`check_messages` / `set_summary` / `poll_events` / `inspect_pane` / `send_keys`) は `require_connected` で非接続時に JSON-RPC error になる。この 2 つだけは**ハンドリング分岐を `[code]` パターンだけでなく `(no peers` / `(message dropped` 接頭辞**でも見るべき。
+The other renga-peers tools (`spawn_pane` / `close_pane` / `list_panes` / `focus_pane` / `new_tab` /
+`check_messages` / `set_summary` / `poll_events` / `inspect_pane` / `send_keys`) become a JSON-RPC error when not connected, via `require_connected`. Only for these two should handler branches also look for the **`(no peers` / `(message dropped` prefixes** in addition to `[code]` patterns.
 
-## シェル側のハンドリング例
+## Shell-side handling example
 
-MCP ツール呼び出し結果テキスト (`content[0].text` or JSON-RPC error message) に対する case 分岐:
+Case branching on the MCP tool result text (`content[0].text` or JSON-RPC error message):
 
 ```
-# MCP ツール呼び出し後、返ってきたテキストを $out に入れた状態を想定
+# Assume the returned text is in $out after an MCP tool call
 case "$out" in
   *"[pane_not_found]"*|*"[pane_vanished]"*)
-    # worker 既に閉じた — lifecycle 処理に回す
+    # Worker already closed — route to lifecycle handling
     mark_worker_pane_closed worker-foo
     ;;
   *"[last_pane]"*)
-    # org-suspend 末端で最後のペインを閉じようとした
-    # 強制クローズしない。当該ペインは自分自身で exit
+    # org-suspend tried to close the very last pane
+    # Do not force close; that pane should self-exit
     echo "last pane — leave for self-exit"
     ;;
   *"[shutting_down]"*)
@@ -65,7 +65,7 @@ case "$out" in
     log_journal "transient renga error: $out"
     ;;
   *"(no peers"*|*"(message dropped"*)
-    # list_peers / send_message の renga 非接続時の ok-text
+    # ok-text returned by list_peers / send_message when renga is not connected
     log_journal "renga peer unreachable: $out"
     ;;
   *)
@@ -74,63 +74,63 @@ case "$out" in
 esac
 ```
 
-## なぜ code か、substring ではなく
+## Why codes, not substrings
 
-- メッセージ本文は human-facing。理由なしで変更される可能性がある
+- The message body is human-facing. It may change without notice for any reason
   (e.g. "pane not found: Id(3)" → "pane 3 does not exist")
-- renga 側の契約については、以下を正本として参照する (このリポジトリ内では検証不能な前提なので **外部依存** として扱うこと):
-  - `renga/src/ipc/mod.rs::err_code` の doc コメント — 公開 code の一覧と ABI 安定性 (rename は deprecation window 付き) の明文
-  - `renga/src/mcp_peer/mod.rs::fmt_code` — MCP 経由の `[<code>] <message>` 成形ロジック
-  - renga `Response::Err { message, code }` の wire schema — `code` は `Option<String>` で、`skip_serializing_if = "Option::is_none"`
-- 未知の code は必ず非致命扱いにする — 将来 renga が新 code を追加してもフォアマンが落ちないようにデフォルトブランチ必須
+- For the renga-side contract, refer to the following as the source of truth (treat them as **external dependencies**, since they cannot be verified inside this repository):
+  - The doc comment on `renga/src/ipc/mod.rs::err_code` — declares the public code list and ABI stability (renames go through a deprecation window)
+  - `renga/src/mcp_peer/mod.rs::fmt_code` — the formatting logic for `[<code>] <message>` over MCP
+  - The wire schema of renga's `Response::Err { message, code }` — `code` is `Option<String>` with `skip_serializing_if = "Option::is_none"`
+- Always treat unknown codes as non-fatal — even if renga adds new codes in the future, the Dispatcher must not fall over. A default branch is required
 
 ## Event stream — `poll_events` MCP
 
-pane lifecycle (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat` / forward-compat variants) は `mcp__renga-peers__poll_events` で cursor-based long-poll する:
+Pane lifecycle (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat` / forward-compat variants) is cursor-based long-polled via `mcp__renga-peers__poll_events`:
 
 ```
 mcp__renga-peers__poll_events(
-  since=<前回の next_since、初回は省略>,
+  since=<previous next_since; omit on first call>,
   timeout_ms=5000,
   types=["pane_exited", "events_dropped"]
 )
 ```
 
-戻り値の `events[]` は `type` / `role` / `name` / `id` / `ts` を含む。フォアマンは `role == "worker"` で絞り込んで `WORKER_PANE_EXITED` 通知する。`next_since` を次回 `since` に流用して idempotent resume。
+The returned `events[]` includes `type` / `role` / `name` / `id` / `ts`. The Dispatcher filters by `role == "worker"` and notifies `WORKER_PANE_EXITED`. Reuse `next_since` as the next call's `since` for idempotent resume.
 
-### type 別の扱い
+### Per-type handling
 
-| type | 扱い |
+| type | Handling |
 |---|---|
-| `pane_started` | 現状 skip (将来必要になれば追加) |
-| `pane_exited` | `role == "worker"` に絞って `WORKER_PANE_EXITED` 通知 |
-| `events_dropped` | `.state/journal.jsonl` に drop 件数を記録 (監視が追いついていないシグナル) |
-| `heartbeat` | 通常 `poll_events` のバッファに入らない (subscribe 内部で消化される) |
+| `pane_started` | Currently skipped (added later if needed) |
+| `pane_exited` | Filter by `role == "worker"` and notify `WORKER_PANE_EXITED` |
+| `events_dropped` | Record the drop count in `.state/journal.jsonl` (signal that monitoring is falling behind) |
+| `heartbeat` | Normally not put into the `poll_events` buffer (consumed inside subscribe) |
 
-### `types` フィルタの挙動
+### `types` filter behavior
 
-`types` filter は cursor を全 type で advance させるので重複 scan なし。ただし **filter 不一致イベント到着で long-poll が early return** し、`events: []` + 進んだ cursor が返る (renga PR #120 参照)。Dispatcher 監視ループでは空応答時に spin せず、`next_since` を保持したまま次のサイクルで再呼び出しする。
+The `types` filter advances the cursor on all types, so there are no duplicate scans. However, **arrival of a filter-mismatching event causes long-poll to early-return**, returning `events: []` + an advanced cursor (see renga PR #120). The Dispatcher monitoring loop must not spin on empty responses; instead, retain `next_since` and re-call on the next cycle.
 
-### 初回呼び出しのセマンティクス
+### First-call semantics
 
-`since` 省略で「今以降のイベントだけ」を返す（過去の履歴を flood しない）。旧 `renga events --timeout` と同じ契約。
+Omitting `since` returns "events from now on" (does not flood with past history). Same contract as the legacy `renga events --timeout`.
 
-## Raw キー入力 — `send_keys` MCP
+## Raw key input — `send_keys` MCP
 
-raw PTY キー送信は `mcp__renga-peers__send_keys` を使う。論理メッセージ配送の `send_message` とは**別物**（PTY に生バイトを書き込むので、そのペインで走っているアプリケーション側に見える）:
+Use `mcp__renga-peers__send_keys` for raw PTY key sending. This is **separate** from `send_message`'s logical message delivery (it writes raw bytes to the PTY, so the application running in that pane sees them):
 
 ```
 mcp__renga-peers__send_keys(
-  target: string,           # pane name or id (list_panes と同じ解決規則)
-  text?: string,            # 送信するテキスト（optional）
-  keys?: string[],          # 特殊キー名の配列（optional、text と併用可、text の後に送られる）
-  enter?: boolean           # 末尾に Enter (CR, 0x0D) を付ける（optional、keys の後に送られる）
+  target: string,           # pane name or id (same resolution rule as list_panes)
+  text?: string,            # text to send (optional)
+  keys?: string[],          # array of special key names (optional; can be combined with text; sent after text)
+  enter?: boolean           # append Enter (CR, 0x0D) at the end (optional; sent after keys)
 )
 ```
 
-### 対応キー語彙
+### Supported key vocabulary
 
-- `Enter` / `Return` (CR, `\r` = 0x0D。`enter: true` と byte-identical)
+- `Enter` / `Return` (CR, `\r` = 0x0D; byte-identical to `enter: true`)
 - `Tab`
 - `Shift+Tab` / `BackTab`
 - `Esc` / `Escape`
@@ -140,16 +140,16 @@ mcp__renga-peers__send_keys(
 - `Home` / `End`
 - `PageUp` / `PageDown`
 - `Space`
-- `Ctrl+<A-Z>`（例: `Ctrl+C`）
+- `Ctrl+<A-Z>` (e.g. `Ctrl+C`)
 
-未知の key 名は `-32602 invalid-params` error が返る。
+Unknown key names return a `-32602 invalid-params` error.
 
-### 典型的な呼び出しパターン
+### Typical call patterns
 
-| 用途 | 呼び出し |
+| Use | Call |
 |---|---|
-| 空 Enter（プロンプトへの返答） | `send_keys(target="X", enter=true)` |
-| "yes" + Enter（確認プロンプトへの応答など） | `send_keys(target="X", text="yes", enter=true)` |
-| Shift+Tab（permission mode 切替） | `send_keys(target="X", keys=["Shift+Tab"])` |
-| Esc（モーダル escape） | `send_keys(target="X", keys=["Esc"])` |
-| Ctrl+C（走行中プロセス中断） | `send_keys(target="X", keys=["Ctrl+C"])` |
+| Bare Enter (replying to a prompt) | `send_keys(target="X", enter=true)` |
+| "yes" + Enter (replying to a confirmation prompt) | `send_keys(target="X", text="yes", enter=true)` |
+| Shift+Tab (toggle permission mode) | `send_keys(target="X", keys=["Shift+Tab"])` |
+| Esc (modal escape) | `send_keys(target="X", keys=["Esc"])` |
+| Ctrl+C (interrupt running process) | `send_keys(target="X", keys=["Ctrl+C"])` |

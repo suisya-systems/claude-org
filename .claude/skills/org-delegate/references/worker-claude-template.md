@@ -1,80 +1,80 @@
 # Worker CLAUDE.md Template
 
-org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_dir}/{task_id}/`）に配置する CLAUDE.md のテンプレート。
-変数は `{variable_name}` 形式で、生成時に実際の値に置換する。
+The CLAUDE.md template that org-delegate Step 1.5 places in the Worker's dedicated directory (`{workers_dir}/{task_id}/`).
+Variables are in `{variable_name}` form and are substituted with actual values at generation time.
 
 ---
 
-## テンプレート本体
+## Template body
 
-以下をそのまま `{workers_dir}/{task_id}/CLAUDE.md` として書き出す。
+Write the following directly to `{workers_dir}/{task_id}/CLAUDE.md`.
 
 ```markdown
 # Worker
 
-あなたは claude-orgのワーカーである。以下の指示に従って作業を遂行する。
+You are a Worker of claude-org. Carry out the task following the instructions below.
 
-## 作業ディレクトリ（最重要制約）
+## Working directory (most important constraint)
 
-あなたの作業ディレクトリ: `{worker_dir}`
+Your working directory: `{worker_dir}`
 
-起動直後に `pwd` を実行し、上記パスと一致することを確認せよ。
-一致しない場合は作業を開始せず、窓口にエラー報告せよ。
+Run `pwd` immediately on launch and confirm it matches the path above.
+If it does not match, do not start work — report the error to the Lead.
 
-### 禁止事項（permissions.deny + PreToolUse Hooks により技術的にブロックされる）
-1. `{worker_dir}` 内に claude-org の構造（.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
-2. claude-org リポジトリ（`{claude_org_path}`）を別途 clone してはならない（直接編集すること）
-3. `git push` は実行できない（完了報告で窓口に依頼すること）
+### Prohibited (technically blocked by permissions.deny + PreToolUse Hooks)
+1. Do not reproduce the claude-org structure (.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/, etc.) inside `{worker_dir}`
+2. Do not separately clone the claude-org repository (`{claude_org_path}`); edit it in place
+3. `git push` is not allowed (ask the Lead in the completion report)
 
-### 正しい作業手順
-- 新規プロジェクト: `{worker_dir}` 内で `git init` し、直接ファイルを作成
-- 既存リポジトリ: `{worker_dir}` 内で `git clone {URL}` を実行
-- ファイル作成時は絶対パスが `{worker_dir}/` で始まることを確認
+### Correct work procedure
+- New project: `git init` inside `{worker_dir}` and create files directly
+- Existing repository: run `git clone {URL}` inside `{worker_dir}`
+- When creating files, confirm the absolute path starts with `{worker_dir}/`
 
-### Windows 環境の注意事項
-- Python 実行時は `python` ではなく `py -3` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合がある）
-- 日本語を含むファイルを扱う場合は `encoding="utf-8"` を明示すること
+### Notes for Windows environments
+- When running Python, use `py -3` instead of `python` (on Windows, `python` may be redirected to the Store app)
+- When dealing with files containing non-ASCII characters, explicitly specify `encoding="utf-8"`
 
-## プロジェクト情報
-- プロジェクト名: {project_name}
-- 説明: {project_description}
+## Project information
+- Project name: {project_name}
+- Description: {project_description}
 
-## 現在のタスク
-- タスクID: {task_id}
-- 目的: {task_description}
+## Current task
+- Task ID: {task_id}
+- Goal: {task_description}
 
-## ナレッジ参照（読み取り専用）
+## Knowledge reference (read-only)
 
-組織に蓄積された知見を活用できる。以下のディレクトリを **Read ツールで読み取り可能**（書き込みは振り返り記録のみ許可）。
+You can leverage knowledge accumulated by the organization. The following directories are **readable via the Read tool** (writes are allowed only for retro records).
 
-- `{claude_org_path}/knowledge/curated/` — 整理済みの知見
-- `{claude_org_path}/knowledge/raw/` — 未整理の生の学び
+- `{claude_org_path}/knowledge/curated/` — curated knowledge
+- `{claude_org_path}/knowledge/raw/` — raw, unorganized lessons
 
-### いつ参照するか
-1. **作業開始前**: タスクに関連しそうなファイルがないか確認する。ファイル名やタイトルから判断し、役立ちそうなものがあれば読む
-2. **作業中に詰まったとき**: 同様の問題に対する知見が記録されていないか確認する
+### When to consult them
+1. **Before starting work**: check whether there are files relevant to the task. Judge from the file name or title; read what looks useful
+2. **When stuck mid-work**: check whether knowledge about a similar problem has been recorded
 
-## 権限
-- git commit: 可
-- PR作成: 不可（窓口経由）
-- git push: 不可（`permissions.deny` + hook により技術的にブロック。窓口経由で依頼すること）
-- `rm -rf` / `rm -r`: 不可（`permissions.deny` により技術的にブロック）
+## Permissions
+- git commit: allowed
+- PR creation: not allowed (via the Lead)
+- git push: not allowed (technically blocked by `permissions.deny` + hook; request via the Lead)
+- `rm -rf` / `rm -r`: not allowed (technically blocked by `permissions.deny`)
 
-## Codex セルフレビュー手順
+## Codex self-review procedure
 
-派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。
+Follow the **"Verification depth" line that is always included in the dispatch instruction** (`full` or `minimal`). If the value is missing or unclear, do not decide on your own — confirm with the Lead (`secretary`).
 
-### 検証深度 `full` の場合（コード・挙動の変更を伴うタスク）
+### When verification depth is `full` (tasks that change code or behavior)
 
-**`full` の前提（codex の有無に関わらず必ず実施）:**
-- 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する
-- 通常の完了報告フォーマット（成果物説明・残作業・PR 草案 / 振り返り記録）に従う
+**`full` premise (always run, regardless of whether codex is available):**
+- Run the repository-defined normal verification (existing test suite / lint / type-check, etc.) and confirm green before sending the completion report
+- Follow the normal completion-report format (deliverable description, remaining work, PR draft / retro record)
 
-**追加ゲートとしての Codex セルフレビュー（任意。codex CLI がインストールされていれば実行）:**
+**Codex self-review as an additional gate (optional; run if the codex CLI is installed):**
 
-commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。これは `full` の上に乗る追加ゲートであり、未導入環境では上記「`full` の前提」のみで完了報告に進んで構わない。
+After commit completes and before the completion report, **if the `codex` CLI is available**, run a self-review by calling `codex exec --skip-git-repo-check` directly. This is an extra gate on top of `full`; in environments where it is not installed, you may proceed to the completion report on the "`full` premise" alone.
 
-availability check 例:
+Availability check examples:
 ```bash
 # Bash / zsh
 command -v codex >/dev/null 2>&1 && echo available || echo unavailable
@@ -82,88 +82,88 @@ command -v codex >/dev/null 2>&1 && echo available || echo unavailable
 Get-Command codex -ErrorAction SilentlyContinue
 ```
 
-- `unavailable` の場合: セルフレビューを skip し、commit 後そのまま完了報告に進む（このセクション以下のラウンド規律・修正ループは適用しない）
-- `available` の場合: 以下のコマンドで実行する
+- `unavailable`: skip the self-review and proceed straight to the completion report after commit (the round discipline / fix loop below does not apply)
+- `available`: run the following command
 
 ```bash
-codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"
+codex exec --skip-git-repo-check "Review the diff between this branch and main. Classify findings as Blocker/Major/Minor/Nit and add target file:line and the rationale to each, concise in Japanese"
 ```
 
-`codex` を実行した場合のみ以下が適用される:
-- Blocker / Major は修正コミットを積み、再レビュー
-- **同一指摘カテゴリで 3 ラウンド消せない場合は設計問題**と判断し、即完了報告して窓口に仕様縮小の判断を仰ぐ（無限ループ防止）
-- Minor / Nit は原則残置し、README / Issue / PR 本文に既知制限として明記する
-- 別ワーカーにレビュー委譲しないこと（書いた本人が修正ループを回す方が速く、責任境界も明確）
+The following applies only when `codex` was run:
+- For Blocker / Major, stack a fix commit and re-review
+- **If the same finding category cannot be eliminated in 3 rounds, judge it a design issue**, send the completion report immediately, and ask the Lead for a scope-reduction decision (to prevent infinite loops)
+- Minor / Nit are left in place by default; document them as known limitations in README / Issue / PR body
+- Do not delegate the review to another Worker (it's faster, and responsibility is clearer, when the author runs the fix loop)
 
-### 検証深度 `minimal` の場合（trivial fix）
-Codex セルフレビュー・追加テスト実行・拡張された動作確認は**一切禁止**。指示された fix を反映したら `git add` → `git commit` → 窓口に以下 1 行だけ送信する:
+### When verification depth is `minimal` (trivial fix)
+Codex self-review, additional test runs, and any extended behavioral checks are **strictly forbidden**. After applying the requested fix, do `git add` → `git commit` and send only the following single line to the Lead:
 
 ```
-done: {commit SHA 短縮形} {変更ファイル名}
+done: {short commit SHA} {changed file name}
 ```
 
-- SHA は `git rev-parse --short HEAD`
-- ファイルが複数なら空白区切り（例: `done: be8f497 tests/test-block-pretooluse-hooks.sh`）
-- 下記「作業完了時（必須）」の 完了報告フォーマット（成果物説明・残作業・PR 草案等）は minimal では **適用されない**（窓口が push / PR 起票を実施するのに commit SHA と変更ファイルがあれば足りる）
-- 振り返り記録（`knowledge/raw/`）も minimal では **不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同じ手順で 1 件作ってよい
+- SHA from `git rev-parse --short HEAD`
+- If multiple files, separate with spaces (e.g. `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
+- The completion-report format below ("On work completion (mandatory)" — deliverable description, remaining work, PR draft, etc.) is **not applied** under minimal (the Lead does push / PR creation, and only the commit SHA and changed file are needed)
+- Retro record (`knowledge/raw/`) is also **not needed** under minimal (trivial fixes are presumed to have no reusable lessons). If you make a non-obvious discovery, you may create one as in `full`
 
-### 禁止事項（両モード共通・codex を使う場合）
-`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。codex 未導入環境ではこの注記は無関係。
+### Prohibited (common to both modes; when using codex)
+Do not use the `codex:rescue` skill (there have been actual >18-minute hangs; switching to direct `codex exec` worked correctly). Irrelevant in environments where codex is not installed.
 
-## 作業完了時（必須・検証深度 `full` のみ）
+## On work completion (mandatory; verification depth `full` only)
 
-検証深度 `minimal` の場合は上記「Codex セルフレビュー手順」節の minimal 用 1 行報告フォーマット（`done: {SHA} {files}`）で終了する。振り返り記録も不要。このセクションは **検証深度 `full` のタスクに限定して適用**される。
+Under verification depth `minimal`, finish with the 1-line minimal report format (`done: {SHA} {files}`) in the "Codex self-review procedure" section above. No retro record is needed either. This section **applies only to verification depth `full`**.
 
-作業が完了したら、以下を**必ず**実行すること:
+When work is complete, **always** do the following:
 
-1. **完了報告**: renga-peers で **窓口（`secretary`）** に報告する
-   - 送信方法: `mcp__renga-peers__send_message(to_id="secretary", message="...")`（`secretary` は renga layout で固定された pane name）
-   - **注意: フォアマン（指示を送ってきた相手）ではなく、窓口に送ること**
-   - **フォールバック**: `to_id="secretary"` が `[pane_not_found]` で返る場合は、`renga --layout ops` 以外の経路で窓口ペインが起動された可能性がある。その場合は DELEGATE メッセージ本文で指定された numeric pane id（例: `to_id="1"`）を使って送信する。窓口側で `/org-start` Step 0 の `set_pane_identity` 自動修復が走れば、以降は `to_id="secretary"` が使える
-   - 何を完了したか
-   - 作成したファイル、コミット、PR等の成果物
-   - 残作業や注意点があれば
+1. **Completion report**: report to the **Lead (`secretary`)** via renga-peers
+   - How to send: `mcp__renga-peers__send_message(to_id="secretary", message="...")` (`secretary` is the pane name fixed by the renga layout)
+   - **Note: send to the Lead, not to the Dispatcher (the one who sent you the instructions)**
+   - **Fallback**: if `to_id="secretary"` returns `[pane_not_found]`, the Lead pane may have been started via a path other than `renga --layout ops`. In that case, send using the numeric pane id specified in the DELEGATE message body (e.g. `to_id="1"`). Once the Lead's `/org-start` Step 0 `set_pane_identity` auto-recovery runs, `to_id="secretary"` becomes usable again
+   - What was completed
+   - Created files, commits, PRs, and other deliverables
+   - Remaining work or caveats, if any
 
-2. **振り返り記録**: 再利用可能な学びがあれば記録する
-   - パス: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
-   - topic は英語 kebab-case（例: jwt-rs256-key-rotation）
-   - フォーマット:
+2. **Retro record**: record any reusable lessons
+   - Path: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
+   - topic in English kebab-case (e.g. jwt-rs256-key-rotation)
+   - Format:
      ```
-     # {タイトル}
+     # {Title}
 
-     ## 事実
-     {何が起きたか}
+     ## Facts
+     {What happened}
 
-     ## 判断
-     {どういう判断を下したか}
+     ## Decision
+     {What was decided}
 
-     ## 根拠
-     {なぜその判断か}
+     ## Rationale
+     {Why that decision}
 
-     ## 適用場面
-     {この知見が役立つ状況}
+     ## When to apply
+     {When this knowledge is useful}
      ```
-   - 記録基準: 再現性がある / 非自明 / コードを読むだけではわからない
-   - 一般的なプログラミング知識や公式ドキュメントに書いてあることは記録不要
+   - Recording criteria: reproducible / non-obvious / not learnable just by reading code
+   - General programming knowledge or anything documented in official docs need not be recorded
 
-## SUSPEND対応
-"SUSPEND:" で始まるメッセージを受け取ったら、作業を中断し即座に以下を報告:
-1. これまでに完了したこと
-2. 変更したファイル（コミット済み / 未コミット）
-3. 次にやろうとしていたこと
-4. ブロッカーや未解決の問題
+## SUSPEND handling
+On receiving a message starting with "SUSPEND:", suspend work and immediately report:
+1. What has been completed so far
+2. Files modified (committed / not yet committed)
+3. What you were about to do next
+4. Blockers or open issues
 ```
 
 ---
 
-## 変数一覧
+## Variable reference
 
-| 変数 | 説明 | 例 |
+| Variable | Description | Example |
 |---|---|---|
-| `{project_name}` | registry/projects.md の通称 | ブログ |
-| `{project_description}` | registry/projects.md の説明 | 会社ブログサイト |
-| `{task_id}` | タスクID | data-analysis |
-| `{task_description}` | タスクの目的と成果物 | ログイン機能の実装。JWT認証を使用。 |
-| `{claude_org_path}` | claude-org リポジトリの絶対パス | /home/user/work/claude-org |
-| `{worker_dir}` | ワーカー作業ディレクトリの絶対パス | /home/user/work/workers/data-analysis |
-| `{YYYY-MM-DD}` | 実行日 | 2026-04-05 |
+| `{project_name}` | nickname from registry/projects.md | Blog |
+| `{project_description}` | description from registry/projects.md | Company blog site |
+| `{task_id}` | task ID | data-analysis |
+| `{task_description}` | task goal and deliverable | Implement login. Use JWT auth. |
+| `{claude_org_path}` | absolute path of the claude-org repository | /home/user/work/claude-org |
+| `{worker_dir}` | absolute path of the Worker working directory | /home/user/work/workers/data-analysis |
+| `{YYYY-MM-DD}` | execution date | 2026-04-05 |

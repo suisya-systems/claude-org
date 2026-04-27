@@ -1,18 +1,18 @@
 # Pane Layout Specification (renga-peers MCP)
 
-renga のペイン / タブ配置ルール。`org-start` と `org-delegate` が参照する。
-ペイン制御は `mcp__renga-peers__*` MCP ツール経由で行う（renga 0.18.0+ 前提。`spawn_claude_pane` / `set_pane_identity` を含む 14 ツールすべて MCP で完結）。
+renga pane / tab placement rules. Referenced by `org-start` and `org-delegate`.
+Pane control happens via the `mcp__renga-peers__*` MCP tools (assumes renga 0.18.0+; all 14 tools, including `spawn_claude_pane` / `set_pane_identity`, are MCP-complete).
 
-## 初期レイアウト (`renga --layout ops` の結果 + フォアマン・キュレーター起動後)
+## Initial layout (after `renga --layout ops` plus Dispatcher / Curator launch)
 
-窓口 (`secretary`) / フォアマン / キュレーターが同一タブに立ち上がり、ワーカーも同一タブ内に split で積んでいく方針。
+The Lead (`secretary`) / Dispatcher / Curator come up in the same tab; Workers are also stacked into the same tab via splits.
 
 ```
-Tab 1: ops (ワーカー 0 人)
+Tab 1: ops (zero workers)
 ┌────────────────────┬────────────────────┐
 │                    │                    │
 │                    │     Secretary      │
-│                    │     (上半分)       │
+│                    │     (top half)     │
 │                    │                    │
 │                    ├──────────┬─────────┤
 │                    │ Dispatcher  │ Curator │
@@ -20,97 +20,97 @@ Tab 1: ops (ワーカー 0 人)
 └────────────────────┴──────────┴─────────┘
 ```
 
-> ※ 実際には `secretary` が左で `dispatcher/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`dispatcher` ペインの矩形から balanced split でワーカー zone を作っていく」という点。
+> ※ In practice, `secretary` is sometimes on the left and `dispatcher/curator` occupy the bottom half — initial layout details are entrusted to org-start. The point that matters here is "build the Worker zone via balanced splits from the dispatcher pane's rect".
 
-## 配置ルール
+## Placement rules
 
-| 対象 | 操作 | 備考 |
+| Target | Operation | Notes |
 |---|---|---|
-| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
-| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
-| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
+| Dispatcher | Horizontally split the Lead pane and take the bottom half | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
+| Curator | Vertically split the Dispatcher pane and take the right half | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
+| Each Worker | **Balanced split**: dynamically pick target and direction from the current rect returned by `list_panes`, and stack into the same tab | See "Worker balanced split strategy" below for details. `mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
 
-> **`spawn_claude_pane` を使う理由**: renga 0.18.0+ で追加された構造化 launch ツール。`cwd` / `permission_mode` / `model` / `args[]` を構造化フィールドで渡すと、renga が内部で `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に流し込む）は **禁止**（cwd 変更プレフィックスがあると renga の bare-`claude` auto-upgrade が発動せず、`send_message` の channel push が届かなくなる。窓口→フォアマン / フォアマン→ワーカーの指示が一切通らなくなる）。Secretary のみ `ops.toml` から bare `claude` で起動され auto-upgrade に任せる。
+> **Why we use `spawn_claude_pane`**: structured launch tool added in renga 0.18.0+. Passing `cwd` / `permission_mode` / `model` / `args[]` as structured fields makes renga internally compose `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old method (feeding a `cd`-prefixed command string into `spawn_pane`) is **prohibited** (the cwd-changing prefix prevents renga's bare-`claude` auto-upgrade from firing, and `send_message`'s channel push fails to arrive — Lead → Dispatcher / Dispatcher → Worker instructions stop working entirely). Only the Secretary is started as a bare `claude` from `ops.toml` and relies on auto-upgrade.
 
-## ワーカーの balanced split 戦略
+## Worker balanced split strategy
 
-### なぜ balanced split が必要か
+### Why balanced split is necessary
 
-renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `<workers_dir>/renga-split-inv/findings.md`)。
+renga splits each target pane 50/50. Going below `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` causes a `[split_refused]` rejection (investigation: `<workers_dir>/renga-split-inv/findings.md`).
 
-固定 target や序数 `k` ベースの lookup table では、dispatcher 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
+With a fixed target or an ordinal-`k`-based lookup table, the cumulative halving of dispatcher width and re-dispatch after a Worker closed in the middle made the assumed layout diverge from the actual layout, easily inducing `split_refused`.
 
-現設計は `mcp__renga-peers__list_panes` が返す各ペインの **rect 情報 (`x / y / width / height`, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する。
+The current design uses each pane's **rect (`x / y / width / height`, in cell units)** returned by `mcp__renga-peers__list_panes` and **picks target and direction dynamically from the current layout**. It is robust to shifting Worker retirement order and mid-flight closures, has no fixed "N parallel cap", continues splitting as far as terminal size and the MIN_PANE constraint allow, and auto-escalates when the limit is hit.
 
-### アルゴリズム
+### Algorithm
 
-新規ワーカーを起動するフォアマンは、`spawn_pane` を呼ぶ前に以下を実行する。判定ステップの詳細は `SKILL.md` Step 3-1 を参照（Claude が `list_panes` の結果テキストを解釈してロジックを実行する）。
+The Dispatcher launching a new Worker runs the following before calling `spawn_pane`. See SKILL.md Step 3-1 for the detailed decision steps (Claude interprets the result text of `list_panes` and runs the logic).
 
-1. `mcp__renga-peers__list_panes` で全ペインと属性 (id / name / role / focused / x / y / width / height) を取得する
-2. **候補集合**: `role ∈ {worker, dispatcher, secretary}` のペイン (curator は常に除外)
-3. **候補の絞り込み**:
-   - **dispatcher-curator 隣接維持**: dispatcher は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 dispatcher と curator の隣接配置は前提。dispatcher を分割すると隣接が崩れ得るので、既に非隣接な dispatcher は候補から外す
-   - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 125` **かつ** 新ペイン高さ `new_h >= 45` を満たす場合のみ候補化 (保険条項、実運用では通常発動しない)。width だけ通っても height が足りなければ却下する
-4. **direction 決定** (各候補の aspect ratio から):
-   - `width > height * 2` → `vertical` (左右分割)
-   - それ以外 → `horizontal` (上下分割)
-   - ターミナルセルは縦長 (縦横比 ≈ 2:1) なので、文字単位で `width = 2 * height` のとき物理的にほぼ正方形。`width > height * 2` は「物理的に横長」判定として妥当
-5. **MIN_PANE 制約**: 分割後の新ペインサイズ `(new_w, new_h)` が `new_w >= 20` かつ `new_h >= 5` を満たさない候補は除外
-   - vertical 分割: `(new_w, new_h) = (floor(width / 2), height)`
-   - horizontal 分割: `(new_w, new_h) = (width, floor(height / 2))`
-6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break はその時点の pane id 昇順 (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
-7. **候補が空なら escalate**: `SKILL.md` Step 3-1c の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`spawn_pane` は発行せず、該当ワーカー 1 件だけ派遣中止、フォアマン本体は継続)
+1. Get all panes and their attributes (id / name / role / focused / x / y / width / height) via `mcp__renga-peers__list_panes`
+2. **Candidate set**: panes with `role ∈ {worker, dispatcher, secretary}` (curator is always excluded)
+3. **Filter candidates**:
+   - **Maintain dispatcher-curator adjacency**: keep dispatcher only when it is rect-adjacent (defined below) to curator. The dispatcher-curator adjacency is an organizational premise. Splitting dispatcher could break the adjacency, so dispatchers already non-adjacent are removed from candidates
+   - **Secretary protection**: secretary is a candidate only when post-split new pane width `new_w >= 125` **and** new pane height `new_h >= 45`. Insurance clause; rarely fires in practice. Width passing alone is not enough; height must also pass
+4. **Direction decision** (from each candidate's aspect ratio):
+   - `width > height * 2` → `vertical` (left/right split)
+   - Otherwise → `horizontal` (top/bottom split)
+   - Terminal cells are tall (height:width ≈ 2:1), so per-character `width = 2 * height` is roughly square physically. `width > height * 2` is a reasonable "physically wide" criterion
+5. **MIN_PANE constraint**: remove candidates whose post-split new size `(new_w, new_h)` does not satisfy `new_w >= 20` and `new_h >= 5`
+   - vertical split: `(new_w, new_h) = (floor(width / 2), height)`
+   - horizontal split: `(new_w, new_h) = (width, floor(height / 2))`
+6. **Target selection**: pick the candidate with the largest "new size in the split-axis direction" (`new_w` for vertical, `new_h` for horizontal). Tie-break by ascending pane id at that moment (reproducible within a snapshot; cross-session stability is not guaranteed)
+7. **Empty candidate set → escalate**: escalate to the Lead via the `SPLIT_CAPACITY_EXCEEDED` path in SKILL.md Step 3-1c (do not issue `spawn_pane`; cancel only the one Worker dispatch and continue the Dispatcher main loop)
 
-### rect 隣接判定の定義
+### Definition of rect adjacency
 
-rect `A, B` が隣接するとは以下のいずれかを満たすこと:
+Rects `A, B` are adjacent if they satisfy one of:
 
-- **左右隣接**: `A.x + A.width == B.x` または `B.x + B.width == A.x`、かつ y 区間が overlap (`max(A.y, B.y) < min(A.y + A.height, B.y + B.height)`)
-- **上下隣接**: `A.y + A.height == B.y` または `B.y + B.height == A.y`、かつ x 区間が overlap (`max(A.x, B.x) < min(A.x + A.width, B.x + B.width)`)
+- **Left-right adjacency**: `A.x + A.width == B.x` or `B.x + B.width == A.x`, and y intervals overlap (`max(A.y, B.y) < min(A.y + A.height, B.y + B.height)`)
+- **Top-bottom adjacency**: `A.y + A.height == B.y` or `B.y + B.height == A.y`, and x intervals overlap (`max(A.x, B.x) < min(A.x + A.width, B.x + B.width)`)
 
-renga の cell 座標は整数なので tolerance なし完全一致で判定する。
+renga's cell coordinates are integers, so judgment uses exact equality with no tolerance.
 
-### 初期状態と典型的な挙動
+### Initial state and typical behavior
 
-ワーカー 0 人の時点では、候補は `dispatcher` のみ (secretary は `new_w >= 125` / `new_h >= 45` 条件または隣接条件で除外されるのが通常。curator は常に除外)。dispatcher は典型的に横長なので vertical 分割され、最初のワーカー zone が dispatcher の右側に作られる。
+With zero workers, the only candidate is normally `dispatcher` (secretary is normally excluded by the `new_w >= 125` / `new_h >= 45` condition or the adjacency condition; curator is always excluded). The dispatcher is typically wide, so it gets a vertical split, and the first Worker zone is created on the right side of the dispatcher.
 
-以降は既存ペインの中で「分割後サイズが最大」のものが選ばれ、direction が rect に応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
+After that, among the existing panes the one with the largest post-split size is selected, and direction alternates naturally based on the rect — yielding a near-balanced placement. Fixed 4-parallel / 8-parallel diagrams have no meaning (placement is dynamic), so they are omitted.
 
-### Edge cases / 運用時の注意
+### Edge cases / operational notes
 
-- **ワーカーが途中で閉じた後の再派遣**: 旧 k-table 方式で問題になった「閉じた slot を詰めるとテーブル前提と乖離」は rect ベースでは発生しない。常に実レイアウトから target を選ぶため、renga のレイアウト tree と判断が一致する
-- **`spawn_pane` エラー**: `[split_refused]` / `[pane_not_found]` が MCP 結果テキストで返る。`references/renga-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
-- **レース**: `list_panes` 実行から `spawn_pane` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
-- **target 選出の責務**: 計算はフォアマンが `list_panes` の rect ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない
+- **Re-dispatch after a Worker closed mid-flight**: the issue with the old k-table approach — "filling a closed slot diverges from the table assumption" — does not arise with the rect-based approach. The target is always picked from the actual layout, so judgment matches renga's layout tree
+- **`spawn_pane` errors**: `[split_refused]` / `[pane_not_found]` are returned in the MCP result text. Follow the procedure in `references/renga-error-codes.md` to escalate Curator → Lead (same policy as the old design)
+- **Race**: if other Workers are added or removed between `list_panes` and `spawn_pane`, target inconsistency surfaces as `[pane_not_found]`. Existing error-handling paths absorb it
+- **Responsibility for target selection**: the calculation is done by the Dispatcher based on `list_panes` rects. The Lead only passes a task_id in the DELEGATE message; it does not specify the target
 
-## 運用メモ
+## Operational notes
 
-- **全ペインを同一タブ内に配置する**: renga の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか扱えないため、フォアマン・キュレーター・全ワーカーを同一タブ内に split で積む。`new_tab` でワーカーを別タブに置くとフォアマン側から addressable でなくなる (2026-04-20 判明。renga 本体での解決は suisya-systems/renga#71)
-- **命名規約**:
-  - 窓口 → `secretary`
-  - フォアマン → `dispatcher`
-  - キュレーター → `curator`
-  - ワーカー → `worker-{task_id}` (task_id は kebab-case の一意識別子)
-  - **renga-peers の target 解決ルール**: 全桁数字の name は id として解釈されるため、name には英字を必ず含める (`worker-1` は OK、`1` は id 扱いになるので NG)
-- **役割ラベル (`role`)**: `secretary` / `dispatcher` / `curator` / `worker` の 4 種
-  - `list_panes` の出力で `role` フィールドが取得でき、組織状態の集計や balanced split の target 選出に使える
-- **ワーカー完了時**:
-  1. 窓口がフォアマンに `CLOSE_PANE` を依頼
-  2. フォアマンは `mcp__renga-peers__close_pane(target="worker-{task_id}")` でペインを明示破棄する
-     (renga が pane を撤去 → `Event::PaneExited` を 1 回 emit → `list_panes` からも消える。
-     `[pane_not_found]` / `[pane_vanished]` は「既に閉じた扱い」として skip する)
-- **org-suspend 時の停止順**: ワーカー → フォアマン → キュレーター (いずれも `mcp__renga-peers__close_pane` で破棄。最後の 1 ペインを閉じるときだけ `[last_pane]` が返るので、そのペインは自分自身で `exit` させる)
+- **Place every pane in the same tab**: renga's `list_panes` / `focus_pane` / `send_message` / `inspect` (CLI) can only handle panes in the currently focused tab, so stack the Dispatcher, Curator, and all Workers into the same tab via splits. Putting Workers in separate tabs via `new_tab` makes them unaddressable from the Dispatcher (discovered 2026-04-20; resolution in renga itself is suisya-systems/renga#71)
+- **Naming convention**:
+  - Lead → `secretary`
+  - Dispatcher → `dispatcher`
+  - Curator → `curator`
+  - Worker → `worker-{task_id}` (task_id is a unique identifier in kebab-case)
+  - **renga-peers target resolution rule**: all-digit names are interpreted as ids, so always include letters in the name (`worker-1` is OK; `1` is treated as an id and is therefore NG)
+- **Role labels (`role`)**: 4 kinds — `secretary` / `dispatcher` / `curator` / `worker`
+  - The `role` field is available in `list_panes` output and can be used for organizational state aggregation and target selection in balanced splits
+- **On Worker completion**:
+  1. The Lead asks the Dispatcher with `CLOSE_PANE`
+  2. The Dispatcher explicitly disposes the pane via `mcp__renga-peers__close_pane(target="worker-{task_id}")`
+     (renga removes the pane → emits `Event::PaneExited` once → it disappears from `list_panes`.
+     `[pane_not_found]` / `[pane_vanished]` are skipped as "already closed")
+- **Stop order on org-suspend**: Worker → Dispatcher → Curator (all disposed via `mcp__renga-peers__close_pane`. Only when closing the very last pane does `[last_pane]` come back; let that pane self-`exit`)
 
-## spawn_pane の direction 慣習
+## spawn_pane direction convention
 
-renga の分割方向は以下の定義（旧 `renga split --direction` と同じ）:
-- `direction="vertical"` = 左右分割 (既存ペイン=左、新ペイン=右)
-- `direction="horizontal"` = 上下分割 (既存ペイン=上、新ペイン=下)
+renga's split direction is defined as follows (same as the legacy `renga split --direction`):
+- `direction="vertical"` = left/right split (existing pane = left, new pane = right)
+- `direction="horizontal"` = top/bottom split (existing pane = top, new pane = bottom)
 
-## 将来機能 / upstream 追跡
+## Future features / upstream tracking
 
-- **ペイン lifecycle 購読**: 現在は `renga events` CLI 併用（フォアマン監視ループなど）。upstream suisya-systems/renga#117 / renga PR #120 で `mcp__renga-peers__poll_events` が追加されたら後続 Issue で MCP に切替
-- **画面スクレイプ**: `renga inspect` CLI 併用。upstream suisya-systems/renga#116 / renga PR #121 で `mcp__renga-peers__inspect_pane` が追加されたら後続 Issue で MCP に切替
-- **raw キー送信**: `renga send --text` CLI 併用（開発チャネル Enter / permission mode 切替 Shift+Tab 等）。upstream suisya-systems/renga#118 で `send_keys` MCP が設計中。追加されたら後続 Issue で MCP に切替
-- `spawn_pane --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
-- `spawn_pane --target-largest` / `--direction auto` 等の renga 側自動 target 選出 (現状はフォアマン側で `list_panes` rect から算出。upstream に移譲できれば balanced split ロジックを MCP 側に畳める)
+- **Pane lifecycle subscription**: currently used together with the `renga events` CLI (Dispatcher monitoring loop, etc.). Once `mcp__renga-peers__poll_events` lands via upstream suisya-systems/renga#117 / renga PR #120, switch to MCP in a follow-up issue
+- **Screen scraping**: used together with the `renga inspect` CLI. Once `mcp__renga-peers__inspect_pane` lands via upstream suisya-systems/renga#116 / renga PR #121, switch to MCP in a follow-up issue
+- **Raw key send**: used together with the `renga send --text` CLI (development-channel Enter / permission-mode toggle Shift+Tab, etc.). The `send_keys` MCP is being designed in upstream suisya-systems/renga#118; switch to MCP in a follow-up issue once landed
+- Ratio specification like `spawn_pane --ratio 0.2` (currently fixed at 50/50)
+- renga-side automatic target selection like `spawn_pane --target-largest` / `--direction auto` (currently computed by the Dispatcher from `list_panes` rects; if delegated to upstream, the balanced-split logic could fold into the MCP side)

@@ -1,46 +1,46 @@
-# claude-org 自身を編集するタスクの特例
+# Special handling when editing claude-org itself
 
-> **前提（Pattern 判定）**: 対象ファイルが gitignored（例: `docs/internal/`, `notes/`, `tmp/` 配下の内部メモ）の場合は、SKILL.md Step 1 の「事前チェック: 対象ファイルが git tracked か」により **Pattern C 強制**となる。本ドキュメントの特例（hook 除外・`CLAUDE.local.md`）は Pattern B / C いずれでも適用するが、Pattern C の場合 worktree は作らないため WORKER_DIR は対象ファイルにアクセスできる既存リポジトリ root を指定する。以下は Pattern B（tracked ファイル編集）を主に想定した手順。
+> **Premise (Pattern decision)**: when the target file is gitignored (e.g. internal memos under `docs/internal/`, `notes/`, `tmp/`), the "Pre-check: is the target file git-tracked?" in SKILL.md Step 1 forces **Pattern C**. The special handling in this document (hook exclusion, `CLAUDE.local.md`) applies under both Pattern B and Pattern C, but in Pattern C no worktree is created — instead, set WORKER_DIR to the existing repository root that has access to the target file. The procedure below mainly assumes Pattern B (editing tracked files).
 
-claude-org リポジトリのスキル / ドキュメント / 設定を編集するワーカーを派遣するとき、通常の worktree 準備のままでは以下の事故が発生する:
+When dispatching a Worker that edits the claude-org repository's skills / docs / settings, the normal worktree preparation alone causes the following accidents:
 
-- `block-org-structure.sh` hook が `.claude/skills/` などへの Edit / Write を拒否する（`bypassPermissions` モードでも exit code 2 により確認プロンプトが出る）
-- ルートの `CLAUDE.md` は Secretary（窓口）用の指示なので、ワーカーがこれを読んで「あなたは窓口」と誤認する
+- The `block-org-structure.sh` hook rejects Edit / Write to `.claude/skills/` and similar (a confirmation prompt fires due to exit code 2 even in `bypassPermissions` mode)
+- The root `CLAUDE.md` is the Secretary (Lead) directive, so a Worker reading it would mistakenly conclude "you are the Lead"
 
-このため、claude-org 自己編集タスクでは **Step 1.5 のワーカーディレクトリ準備時に以下 3 点を通常手順に追加する**。
+Therefore, for claude-org self-edit tasks, **the following 3 items are added to the normal procedure during Step 1.5 Worker directory preparation**.
 
-## 1. `block-org-structure.sh` hook を worktree の settings.local.json から除外する
+## 1. Exclude the `block-org-structure.sh` hook from the worktree's settings.local.json
 
-worktree 直下の `.claude/settings.local.json` を配置する際、`hooks.PreToolUse` から `block-org-structure.sh` エントリを **除外**すること。`Edit|Write` matcher と `Bash` matcher の両方で除外する必要がある。
+When placing `.claude/settings.local.json` directly under the worktree, **exclude** the `block-org-structure.sh` entry from `hooks.PreToolUse`. You must exclude it under both the `Edit|Write` matcher and the `Bash` matcher.
 
-他の hook（例: `block-git-push.sh`, `block-workers-delete.sh`, `check-worker-boundary.sh` 等）は通常どおり残してよい。除外対象はあくまで claude-org 構造のブロック hook のみ。
+Other hooks (e.g. `block-git-push.sh`, `block-workers-delete.sh`, `check-worker-boundary.sh`, etc.) may remain as usual. The exclusion target is strictly the claude-org structure-blocking hook only.
 
-## 2. ワーカー指示は `CLAUDE.md` ではなく `CLAUDE.local.md` に書く
+## 2. Write Worker instructions to `CLAUDE.local.md`, not `CLAUDE.md`
 
-ルートの `CLAUDE.md` は Secretary 用の指示なので、ワーカー用 CLAUDE.md で上書きしてはならない（他ロールが壊れる）。
-ワーカーへの指示は worktree 直下の `CLAUDE.local.md` に書く（git 管理外）。
+The root `CLAUDE.md` is the Secretary directive, so do not overwrite it with the Worker's CLAUDE.md (other roles would break).
+Write the Worker instruction to `CLAUDE.local.md` directly under the worktree (untracked by git).
 
-Claude Code は同一ディレクトリの `CLAUDE.md` と `CLAUDE.local.md` の両方を読み込むため、ワーカーには両方が見える。
+Claude Code reads both `CLAUDE.md` and `CLAUDE.local.md` in the same directory, so the Worker can see both.
 
-### 通常手順の読み替え（重要）
+### Re-reading the normal procedure (important)
 
-claude-org 自己編集タスクでは、SKILL.md Step 1.5 および `worker-claude-template.md` / `instruction-template.md` が「CLAUDE.md を生成 / 配置 / 確認」と指示している箇所を、すべて **`CLAUDE.local.md` に読み替える**こと:
+For claude-org self-edit tasks, wherever SKILL.md Step 1.5, `worker-claude-template.md`, or `instruction-template.md` says "generate / place / verify CLAUDE.md", **read it as `CLAUDE.local.md`**:
 
-- Step 1.5 共通手順の「CLAUDE.md を生成する（テンプレートの変数を置換）」 → 生成先を `CLAUDE.local.md` にする。`worker-claude-template.md` の本文をそのままテンプレートとして流用してよい
-- Step 1.5 共通手順（配置後）の「生成した CLAUDE.md に『作業ディレクトリ（最重要制約）』セクションが含まれていることを確認」 → 生成した `CLAUDE.local.md` を対象に確認する
-- `instruction-template.md` の「詳細な行動規範は CLAUDE.md に記載されています」「CLAUDE.md に記載された絶対パス」 → 該当箇所を `CLAUDE.local.md` に書き換えてワーカーへ送信する
-- 参考 work-skill セクション追加先も `CLAUDE.local.md` に向けること
+- "Generate CLAUDE.md (substitute template variables)" in Step 1.5 common procedure → make the generation target `CLAUDE.local.md`. You may reuse the body of `worker-claude-template.md` as the template
+- "Verify the generated CLAUDE.md contains the 'Working directory (most important constraint)' section" in Step 1.5 common procedure (after placement) → verify against the generated `CLAUDE.local.md`
+- "Detailed code of conduct is described in CLAUDE.md" / "absolute path described in CLAUDE.md" in `instruction-template.md` → rewrite those passages to refer to `CLAUDE.local.md` before sending to the Worker
+- The reference work-skill section is also added to `CLAUDE.local.md`
 
-ルートの `CLAUDE.md`（Secretary 指示）はいかなる場合も上書きしない。
+Do not overwrite the root `CLAUDE.md` (Secretary directive) under any circumstances.
 
-## 3. `CLAUDE.local.md` 冒頭で「ルート CLAUDE.md は無視」を明示する
+## 3. Make "ignore the root CLAUDE.md" explicit at the top of `CLAUDE.local.md`
 
-`CLAUDE.local.md` の最初に以下の趣旨を必ず書く:
+Always write the following intent at the top of `CLAUDE.local.md`:
 
-> このワーカーは claude-org リポジトリ自身の worktree で作業する。`./CLAUDE.md`（ルート CLAUDE.md）の Secretary 指示は無視せよ。あなたは窓口ではなくワーカーである。
+> This Worker operates in a worktree of the claude-org repository itself. Ignore the Secretary directive in `./CLAUDE.md` (the root CLAUDE.md). You are not the Lead — you are a Worker.
 
-この明示がないと、ワーカーがルート CLAUDE.md を先に読んで Secretary として振る舞い始める（/org-start の実行を促す等）。
+Without this notice, the Worker reads the root CLAUDE.md first and starts behaving as the Secretary (e.g. prompting `/org-start`).
 
-## 根拠
+## Rationale
 
-`knowledge/curated/delegation.md` の「claude-org 自身を編集するワーカーは worktree 内の設定を事前に調整する」セクション参照。
+See the section "When dispatching a Worker that edits claude-org itself, adjust the in-worktree settings up front" in `knowledge/curated/delegation.md`.
