@@ -1,202 +1,201 @@
-# claude-org — 技術概要
+# claude-org — Technical Overview
 
-Claude Codeの複数インスタンスを協調させる、自己成長型AI組織基盤。
-人間は窓口（Secretary）と対話するだけで、裏側でワーカーが自動派遣・管理される。
+A self-improving AI organization layer that coordinates multiple Claude Code instances. The human only converses with the Lead; Workers are dispatched and managed automatically behind the scenes.
 
 ---
 
-## アーキテクチャ
+## Architecture
 
-### インスタンス構成
+### Instance layout
 
 ```
 ┌──────────────┬──────────┬──────────┐
 │              │ Worker1  │ Worker4  │
-│  Secretary   │ Worker2  │ Worker5  │
-│  (large)     │ Worker3  │ Worker6  │
+│    Lead      │ Worker2  │ Worker5  │
+│   (large)    │ Worker3  │ Worker6  │
 ├───────┬──────┤          │          │
-│Dispatcher│Curat.│  ...     │  ...     │
+│Dspchr │Curat.│  ...     │  ...     │
 └───────┴──────┴──────────┴──────────┘
 ```
 
-| インスタンス | 常駐 | 役割 | 許可ツール |
+| Instance | Resident | Role | Permitted tools |
 |---|---|---|---|
-| **Secretary** | Yes | ユーザー対話、タスク分解、状態管理 | 全ツール（ただし実作業は委譲） |
-| **Dispatcher** | Yes | ペイン起動・指示送信・状態記録の代行 | Bash, Read, Write, Edit, Glob, Grep, Skill, renga-peers |
-| **Curator** | Yes | `/loop 30m /org-curate` で知見整理 | Read, Write, Edit, Glob, Grep, Skill, renga-peers |
-| **Worker** | No | 実作業（コード編集、調査、テスト等） | Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, renga-peers |
+| **Lead** | Yes | User dialogue, task decomposition, state management | All tools (but real work is delegated) |
+| **Dispatcher** | Yes | Pane spawning, instruction delivery, state recording on the Lead's behalf | Bash, Read, Write, Edit, Glob, Grep, Skill, renga-peers |
+| **Curator** | Yes | Knowledge curation via `/loop 30m /org-curate` | Read, Write, Edit, Glob, Grep, Skill, renga-peers |
+| **Worker** | No | Real work — code edits, investigation, tests, etc. | Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, renga-peers |
 
-### 通信
+### Communication
 
-- **インスタンス間**: `renga-peers` MCP（同タブ内 Claude 間の双方向メッセージング、プッシュ型チャネル通知）。`send_message` / `list_peers` / `check_messages` / `set_summary` を用い、peer ID にはペイン名（`secretary` / `dispatcher` / `curator` / `worker-{task_id}`）を使う
-- **ペイン管理**: `renga-peers` MCP（`spawn_pane` / `spawn_claude_pane` / `close_pane` / `list_panes` / `new_tab` / `focus_pane` / `inspect_pane` / `send_keys` / `poll_events` / `set_pane_identity` 等、renga 0.18.0+ で 14 ツール）。役割/ワーカー起動は `spawn_claude_pane` の構造化フィールド（`cwd` / `permission_mode` / `model` / `args[]`）に統一（Issue #58）。`cd X && claude ...` 合成パターンは撤去済み
-- **指示の二重化**: CLAUDE.md（永続・ベースライン）+ `renga-peers` メッセージ（リアルタイム・補足）
+- **Between instances**: the `renga-peers` MCP server provides bidirectional messaging between Claude Code instances in the same renga tab, with push-style channel notifications. Calls are made via `send_message` / `list_peers` / `check_messages` / `set_summary`. Peer IDs are pane names (`secretary` / `dispatcher` / `curator` / `worker-{task_id}`).
+- **Pane management**: also via `renga-peers` (`spawn_pane` / `spawn_claude_pane` / `close_pane` / `list_panes` / `new_tab` / `focus_pane` / `inspect_pane` / `send_keys` / `poll_events` / `set_pane_identity`, etc. — 14 tools as of renga 0.18.0+). Role and Worker startup is consolidated on the structured fields of `spawn_claude_pane` (`cwd` / `permission_mode` / `model` / `args[]`) per Issue #58. The legacy `cd X && claude ...` composition pattern has been removed.
+- **Layered instructions**: CLAUDE.md (persistent baseline) plus `renga-peers` messages (real-time, situational).
 
-### 状態管理
+### State management
 
-三層構造で揮発的なインスタンスの状態を永続化:
+A three-tier structure persists the otherwise volatile state of each instance:
 
-| 層 | ファイル | 用途 | 更新タイミング |
+| Tier | File | Purpose | Update timing |
 |---|---|---|---|
-| ジャーナル | `.state/journal.jsonl` | 全重要イベントを追記。クラッシュリカバリ用 | 各イベント発生時 |
-| スナップショット | `.state/org-state.md` | 人間可読な組織状態。Markdown形式 | マイルストーン時 |
-| サスペンド | `.state/org-state.md` (SUSPENDED) | 最高品質の状態保存 | `/org-suspend` 実行時 |
+| Journal | `.state/journal.jsonl` | Append-only log of all important events. Used for crash recovery | On every event |
+| Snapshot | `.state/org-state.md` | Human-readable Markdown snapshot of organization state | At milestones |
+| Suspend | `.state/org-state.md` (SUSPENDED) | Highest-fidelity state save | On `/org-suspend` |
 
 ---
 
-## 技術スタック
+## Tech stack
 
 - **AI**: Claude Code (Opus 4.6, 1M context)
-- **ターミナル/マルチプレクサ**: renga (ペイン分割で複数インスタンスを管理)
-- **インスタンス間通信**: `renga-peers` MCP server（同タブ内の Claude Code 間メッセージング + ペイン制御を統合）
-- **バージョン管理**: Git + GitHub（OSS / MIT License）
-- **OS**: 開発・運用想定は Windows 11 Pro (bash shell)。macOS / Linux でも基本動作は想定（パス前提のみ各自で読み替え）
+- **Terminal multiplexer**: renga (manages multiple instances via pane splits)
+- **Inter-instance communication**: the `renga-peers` MCP server (messaging between Claude Code instances in the same tab + pane control, integrated)
+- **Version control**: Git + GitHub (OSS / MIT License)
+- **OS**: Primary target is Windows 11 Pro (bash shell). macOS and Linux work too, modulo path-related adjustments.
 
 ---
 
-## ディレクトリ構造
+## Directory layout
 
 ```
 claude-org/
-├── CLAUDE.md                      # Secretary の行動指針（薄く保つ）
+├── CLAUDE.md                      # Behavior guide for the Lead (kept thin)
 ├── .claude/
-│   ├── settings.local.json        # ツール許可設定
-│   └── skills/                    # スキル群（プログレッシブ・ディスクロージャー）
-│       ├── org-start/             # 組織起動
-│       ├── org-delegate/          # ワーカー派遣（窓口→フォアマン連携）
+│   ├── settings.local.json        # Tool permissions
+│   └── skills/                    # Skill bundles (progressive disclosure)
+│       ├── org-start/             # Boot the organization
+│       ├── org-delegate/          # Dispatch a Worker (Lead → Dispatcher handoff)
 │       │   └── references/
-│       │       ├── pane-layout.md           # ペイン配置ルール
-│       │       ├── worker-claude-template.md # ワーカー用CLAUDE.mdテンプレート
-│       │       └── instruction-template.md  # ワーカーへの指示テンプレート
-│       ├── org-suspend/           # 組織中断
-│       ├── org-resume/            # 組織再開
-│       ├── org-retro/             # 委譲プロセス振り返り
-│       ├── org-curate/            # 知見整理（キュレーター用）
+│       │       ├── pane-layout.md            # Pane placement rules
+│       │       ├── worker-claude-template.md # Worker CLAUDE.md template
+│       │       └── instruction-template.md   # Worker instruction template
+│       ├── org-suspend/           # Suspend the organization
+│       ├── org-resume/            # Resume the organization
+│       ├── org-retro/             # Retrospective on the dispatch process
+│       ├── org-curate/            # Knowledge curation (Curator-side)
 │       │   └── references/
-│       │       └── knowledge-standards.md   # 知見の記録・整理基準
-│       └── org-dashboard/         # ダッシュボード生成
+│       │       └── knowledge-standards.md    # Recording / curation standards
+│       └── org-dashboard/         # Dashboard generation
 ├── .dispatcher/
-│   └── CLAUDE.md                  # Dispatcher 用の役割指示
+│   └── CLAUDE.md                  # Role guide for the Dispatcher
 ├── .curator/
-│   └── CLAUDE.md                  # Curator 用の役割指示
-├── .state/                        # セッション状態（.gitignore）
-│   ├── org-state.md               # 組織状態スナップショット
-│   ├── org-state.prev.md          # サスペンド時のバックアップ
-│   ├── journal.jsonl              # イベントジャーナル
+│   └── CLAUDE.md                  # Role guide for the Curator
+├── .state/                        # Session state (.gitignore)
+│   ├── org-state.md               # Organization-state snapshot
+│   ├── org-state.prev.md          # Pre-suspend backup
+│   ├── journal.jsonl              # Event journal
 │   └── workers/
-│       └── worker-{peer_id}.md    # 各ワーカーの状態
-├── dashboard/                     # HTMLダッシュボード
-│   ├── index.html                 # テンプレート（git管理）
-│   ├── style.css                  # スタイル（git管理）
-│   ├── app.js                     # レンダリング（git管理）
-│   └── server.py                  # ライブサーバー（/api/state / SSE）
+│       └── worker-{peer_id}.md    # Per-Worker state
+├── dashboard/                     # HTML dashboard
+│   ├── index.html                 # Template (tracked)
+│   ├── style.css                  # Styles (tracked)
+│   ├── app.js                     # Rendering (tracked)
+│   └── server.py                  # Live server (/api/state, SSE)
 ├── knowledge/
-│   ├── raw/                       # 生の学び（.gitignore、一時データ）
-│   └── curated/                   # 整理済み知見（git管理）
+│   ├── raw/                       # Raw notes (.gitignore, transient)
+│   └── curated/                   # Curated knowledge (tracked)
 ├── registry/
-│   └── projects.md                # プロジェクト一覧（通称→パスの名前解決）
+│   └── projects.md                # Project list (nickname → path resolution)
 └── docs/
-    ├── getting-started.md         # 使い方ガイド
-    └── verification.md            # テスト手順
+    ├── getting-started.md         # Usage guide
+    └── verification.md            # Test procedure
 ```
 
-### Git管理方針
+### Git tracking policy
 
-| パス | Git管理 | 理由 |
+| Path | Tracked | Reason |
 |---|---|---|
-| `.state/*` | 除外 | ペインID等のマシン固有情報を含む |
-| `knowledge/raw/*` | 除外 | 整理前の一時データ。curated に統合されれば不要 |
-| `.claude/settings.local.json` | 除外 | マシン固有のツール許可設定 |
+| `.state/*` | Excluded | Contains machine-specific data such as pane IDs |
+| `knowledge/raw/*` | Excluded | Transient pre-curation notes; redundant once curated |
+| `.claude/settings.local.json` | Excluded | Machine-specific tool permissions |
 
 ---
 
-## スキルシステム
+## Skill system
 
-CLAUDE.md は最小限（行動指針のみ）に保ち、具体的手順はスキル（`.claude/skills/*/SKILL.md`）に委ねる。
+CLAUDE.md is kept to the bare minimum (behavioral guidance only); concrete procedures live in skills (`.claude/skills/*/SKILL.md`).
 
-**設計意図**: プログレッシブ・ディスクロージャー — 必要なときだけ詳細手順がロードされ、コンテキスト消費を最小化する。
+**Design intent**: progressive disclosure — detailed procedures load only when needed, minimizing context consumption.
 
-### スキル一覧
+### Skill index
 
-| スキル | トリガー | 実行者 |
+| Skill | Trigger | Executor |
 |---|---|---|
-| `org-start` | 起動直後に手動実行 | Secretary |
-| `org-delegate` | 実作業が発生する依頼時 | Secretary → Dispatcher |
-| `org-suspend` | 「中断」「今日は終わり」等 | Secretary |
-| `org-resume` | 中断状態での起動時 | Secretary |
-| `org-retro` | 作業完了後 | Secretary |
-| `org-curate` | `/loop 30m` で定期実行 | Curator |
-| `org-dashboard` | 「ダッシュボード見せて」等 | Secretary |
+| `org-start` | Run manually right after launch | Lead |
+| `org-delegate` | When a request involves real work | Lead → Dispatcher |
+| `org-suspend` | "Suspend", "we're done for today", etc. | Lead |
+| `org-resume` | At launch when in a suspended state | Lead |
+| `org-retro` | After work completes | Lead |
+| `org-curate` | Periodic via `/loop 30m` | Curator |
+| `org-dashboard` | "Show me the dashboard", etc. | Lead |
 
-### 委譲フロー（org-delegate）
+### Dispatch flow (org-delegate)
 
 ```
-Secretary                          Dispatcher                         Worker
+Lead                               Dispatcher                         Worker
    │                                  │                              │
-   ├─ プロジェクト名前解決            │                              │
-   ├─ タスク分解（WI-xxx）            │                              │
-   ├─ CLAUDE.md 生成                  │                              │
-   ├─ DELEGATE メッセージ ──────────> │                              │
-   │  (窓口はここで解放)              ├─ ペイン起動                  │
-   │                                  ├─ ピア待ち                    │
-   │                                  ├─ 指示送信 ──────────────────>│
-   │                                  ├─ 状態記録                    │
+   ├─ Resolve project name             │                              │
+   ├─ Decompose task (WI-xxx)         │                              │
+   ├─ Generate CLAUDE.md              │                              │
+   ├─ DELEGATE message ─────────────> │                              │
+   │  (Lead is freed here)            ├─ Spawn pane                  │
+   │                                  ├─ Wait for peer               │
+   │                                  ├─ Send instructions ─────────>│
+   │                                  ├─ Record state                │
    │  <────── DELEGATE_COMPLETE ──────┤                              │
-   │                                  │                              ├─ 作業実行
-   │  <──────────────── 完了報告 ─────────────────────────────────────┤
-   ├─ ユーザーに報告                  │                              │
+   │                                  │                              ├─ Run the work
+   │  <──────────────── Completion report ─────────────────────────────┤
+   ├─ Report to user                  │                              │
    ├─ CLOSE_PANE ────────────────────>│                              │
-   │                                  ├─ ペインクローズ              │
+   │                                  ├─ Close pane                  │
 ```
 
-**設計のポイント**: 窓口はタスク分解・CLAUDE.md生成までを行い、ペイン起動以降をフォアマンに委託する。これにより窓口は即座にユーザーとの対話に復帰できる。
+**Key design point**: the Lead handles task decomposition and CLAUDE.md generation, then hands pane spawning and beyond to the Dispatcher. This frees the Lead to immediately resume dialogue with the user.
 
 ---
 
-## 自己成長ループ
+## Self-improvement loop
 
 ```
-Worker完了 → knowledge/raw/ に学び記録
-                ↓ (5件以上蓄積)
-Curator (org-curate) → knowledge/curated/ に整理・統合
-                ↓ (パターン検出)
-改善提案 → Secretary → ユーザー承認 → スキル/CLAUDE.md 更新
+Worker completes → records learning into knowledge/raw/
+                ↓ (5+ entries accumulated)
+Curator (org-curate) → consolidates into knowledge/curated/
+                ↓ (pattern detected)
+Improvement proposal → Lead → user approval → skill / CLAUDE.md update
 ```
 
-- ワーカーが技術的知見を `knowledge/raw/` に自動記録（CLAUDE.md の指示）
-- キュレーターが30分ごとに閾値チェック → 5件以上で整理実行
-- 同じ種類の知見が3件以上でプロセス改善を提案
-- 提案はユーザー承認を経てから反映（安全弁）
+- Workers automatically record technical learnings into `knowledge/raw/` (per CLAUDE.md instructions)
+- Curator checks the threshold every 30 minutes; runs curation once 5+ entries accumulate
+- When 3+ entries of the same kind appear, a process improvement is proposed
+- Proposals only take effect after user approval (the safety valve)
 
 ---
 
-## 主要な設計判断
+## Major design decisions
 
-| 判断 | 内容 | 根拠 |
+| Decision | Content | Rationale |
 |---|---|---|
-| スキル中心設計 | CLAUDE.md は薄く、手順はスキルに委ねる | コンテキスト消費の最小化 |
-| 委譲ファースト | 窓口は司令塔、実作業は全てワーカーに委譲 | 窓口のロック回避、常にユーザー対応可能 |
-| フォアマン導入 | ペイン起動・指示送信を代行する常駐インスタンス | 窓口のロック時間を最小化 |
-| 指示の二重化 | CLAUDE.md + `renga-peers` メッセージ | 揮発的通信のみへの依存を回避 |
-| Markdown状態管理 | org-state.md はJSON ではなく Markdown | 新インスタンスが読むだけで状況把握可能 |
-| `.state/` を.gitignore | マシン固有情報（ペインID等）を含む | マシン間で状態を共有する必要なし |
+| Skill-centric design | CLAUDE.md stays thin; procedures live in skills | Minimize context consumption |
+| Delegation-first | The Lead is a coordinator; all real work is delegated to Workers | Avoid locking the Lead, keep it responsive to the user |
+| Resident Dispatcher | A resident instance handles pane spawning and instruction delivery | Minimize how long the Lead is tied up |
+| Layered instructions | CLAUDE.md plus `renga-peers` messages | Avoid relying on volatile communication alone |
+| Markdown state | `org-state.md` is Markdown, not JSON | A new instance can grasp the situation just by reading it |
+| `.state/` is gitignored | Contains machine-specific data (e.g. pane IDs) | No need to share state between machines |
 
 ---
 
-## 拡張方法
+## Extending the system
 
-### 新スキルの追加
+### Adding a new skill
 
-1. `.claude/skills/{skill-name}/SKILL.md` を作成（frontmatter に name, description を記述）
-2. 必要に応じて `references/` に補助ファイルを配置
-3. CLAUDE.md への変更は不要（スキルのdescription でトリガーされる）
+1. Create `.claude/skills/{skill-name}/SKILL.md` (front matter must have `name` and `description`)
+2. If needed, place supporting files under `references/`
+3. CLAUDE.md does not need to change — the skill's `description` is what triggers it
 
-### 新プロジェクトの登録
+### Registering a new project
 
-- ユーザーが作業を依頼すると、`registry/projects.md` に自動登録される
-- 手動で `registry/projects.md` を編集してもよい
+- When the user requests work, `registry/projects.md` is populated automatically
+- You may also edit `registry/projects.md` by hand
 
-### ダッシュボードのカスタマイズ
+### Customizing the dashboard
 
-- `dashboard/index.html`, `style.css`, `app.js` を直接編集する
-- `org-dashboard` スキルは `server.py` を起動し `http://localhost:8099` をブラウザで開く。データは `/api/state`（REST）と `/api/events`（SSE）で配信される
+- Edit `dashboard/index.html`, `style.css`, and `app.js` directly
+- The `org-dashboard` skill starts `server.py` and opens `http://localhost:8099` in the browser. Data is served via `/api/state` (REST) and `/api/events` (SSE).
