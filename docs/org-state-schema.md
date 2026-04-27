@@ -1,41 +1,41 @@
-# org-state.json スキーマ定義
+# org-state.json schema definition
 
-## 概要
+## Overview
 
-`.state/org-state.json` は `.state/org-state.md` の機械可読スナップショットです。
-ダッシュボード（`dashboard/server.py`）その他のプログラム的消費者が JSON を優先的に読み込めるようにするために導入されました。
+`.state/org-state.json` is the machine-readable snapshot of `.state/org-state.md`.
+It was introduced so that programmatic consumers — the dashboard (`dashboard/server.py`) and others — can prefer reading JSON.
 
-### Source of truth ルール
+### Source-of-truth rule
 
-**Markdown が正本、JSON は派生です。**
+**Markdown is canonical; JSON is derived.**
 
-- `org-state.md` が常に正本です。Claude Code インスタンスが直接読み書きします。
-- `org-state.json` は派生ファイルです。`org_state_converter.py` が生成します。
-- `org-state.md` を手動編集した場合は、必ず converter を再実行してください。
-- 両者が矛盾する場合は `org-state.md` を信頼してください。
+- `org-state.md` is always canonical. Claude Code instances read and write it directly.
+- `org-state.json` is a derived file. `org_state_converter.py` generates it.
+- If you edit `org-state.md` by hand, re-run the converter afterwards.
+- When the two disagree, trust `org-state.md`.
 
-### JSON の再生成
+### Regenerating the JSON
 
 ```bash
 py -3 dashboard/org_state_converter.py      # Windows
 python3 dashboard/org_state_converter.py     # Mac/Linux
 ```
 
-### 更新ポイント
+### Update points
 
-以下の操作を行った後、converter を実行して JSON を更新してください:
+After the operations below, run the converter to update the JSON:
 
-| 操作 | スキル | 更新内容 |
+| Operation | Skill | What is updated |
 |---|---|---|
-| ワーカー派遣 | org-delegate Step 4 | Current Objective, Active Work Items, Worker Directory Registry |
-| ステータス変更 | org-delegate Step 5 | Work Item のステータス（REVIEW/COMPLETED/IN_PROGRESS） |
-| 組織中断 | org-suspend Phase 3 | Status=SUSPENDED, Updated, Work Items, Resume Instructions |
-| 組織再開 | org-resume Phase 4 | Status=ACTIVE |
-| 起動（Dispatcher/Curator 記録） | org-start Steps 2-3 | Dispatcher/Curator のピア ID とペイン名 |
+| Worker dispatch | org-delegate Step 4 | Current Objective, Active Work Items, Worker Directory Registry |
+| Status change | org-delegate Step 5 | Work Item status (REVIEW/COMPLETED/IN_PROGRESS) |
+| Organization suspend | org-suspend Phase 3 | Status=SUSPENDED, Updated, Work Items, Resume Instructions |
+| Organization resume | org-resume Phase 4 | Status=ACTIVE |
+| Boot (Dispatcher / Curator records) | org-start Steps 2-3 | Dispatcher / Curator peer ID and pane name |
 
 ---
 
-## スキーマ（version 1）
+## Schema (version 1)
 
 ```json
 {
@@ -75,75 +75,75 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 
 ---
 
-## フィールド説明
+## Field descriptions
 
-### トップレベル
+### Top level
 
-| フィールド | 型 | 説明 |
+| Field | Type | Description |
 |---|---|---|
-| `version` | `integer` | スキーマバージョン。現在は `1`。将来の非互換変更時にインクリメント |
-| `updated` | `string \| null` | org-state.md の `Updated:` フィールドの値（ISO 8601）。未設定なら `null` |
-| `status` | `string` | 組織の状態。`ACTIVE`（稼働中）/ `SUSPENDED`（中断）/ `IDLE`（未使用） |
-| `currentObjective` | `string \| null` | 現在の目標（`Current Objective:` フィールド）。未設定なら `null` |
-| `workItems` | `array` | 作業アイテム一覧 |
-| `workerDirectoryRegistry` | `array` | ワーカーディレクトリ再利用テーブル |
-| `dispatcher` | `object \| null` | フォアマンのピア・ペイン情報。未記録なら `null` |
-| `curator` | `object \| null` | キュレーターのピア・ペイン情報。未記録なら `null` |
-| `resumeInstructions` | `string \| null` | 再開時の注意事項（org-suspend が書く）。なければ `null` |
+| `version` | `integer` | Schema version. Currently `1`. Bumped on future incompatible changes |
+| `updated` | `string \| null` | The value of `Updated:` in org-state.md (ISO 8601). `null` if unset |
+| `status` | `string` | Organization state. `ACTIVE` (running) / `SUSPENDED` (suspended) / `IDLE` (unused) |
+| `currentObjective` | `string \| null` | Current objective (the `Current Objective:` field). `null` if unset |
+| `workItems` | `array` | List of work items |
+| `workerDirectoryRegistry` | `array` | Worker-directory reuse table |
+| `dispatcher` | `object \| null` | Dispatcher's peer and pane info. `null` if unrecorded |
+| `curator` | `object \| null` | Curator's peer and pane info. `null` if unrecorded |
+| `resumeInstructions` | `string \| null` | Notes for resume (written by org-suspend). `null` if absent |
 
-### workItems 要素
+### workItems element
 
-| フィールド | 型 | 説明 |
+| Field | Type | Description |
 |---|---|---|
-| `id` | `string` | タスク ID（kebab-case 英語）。例: `blog-redesign`, `data-analysis` |
-| `title` | `string` | タスク名（日本語可）。org-state.md の `- {id}: {title} [{status}]` から取得 |
-| `status` | `string` | タスクの状態（下記参照） |
-| `progress` | `string \| null` | 最新の進捗メモ（`- 結果:` サブ項目）。なければ `null` |
-| `worker` | `string \| null` | 担当ワーカーのピア ID（`- ワーカー:` サブ項目）。なければ `null` |
+| `id` | `string` | Task ID (kebab-case English). Examples: `blog-redesign`, `data-analysis` |
+| `title` | `string` | Task title (Japanese is allowed). Taken from `- {id}: {title} [{status}]` in org-state.md |
+| `status` | `string` | Task status (see below) |
+| `progress` | `string \| null` | Latest progress note (the `- 結果:` sub-item). `null` if absent |
+| `worker` | `string \| null` | Assigned Worker's peer ID (the `- ワーカー:` sub-item). `null` if absent |
 
-**status の値:**
+**status values:**
 
-| 値 | 意味 |
+| Value | Meaning |
 |---|---|
-| `IN_PROGRESS` | 作業中 |
-| `COMPLETED` | 完了（人間が承認済み） |
-| `PENDING` | 待機中（まだ開始していない） |
-| `BLOCKED` | ブロック中（依存関係や問題あり） |
-| `REVIEW` | レビュー中（ワーカーが完了報告済み、人間の承認待ち） |
-| `ABANDONED` | 中止 |
+| `IN_PROGRESS` | In progress |
+| `COMPLETED` | Completed (approved by the human) |
+| `PENDING` | Pending (not yet started) |
+| `BLOCKED` | Blocked (dependency or issue) |
+| `REVIEW` | Under review (Worker has reported completion; awaiting human approval) |
+| `ABANDONED` | Abandoned |
 
-### workerDirectoryRegistry 要素
+### workerDirectoryRegistry element
 
-| フィールド | 型 | 説明 |
+| Field | Type | Description |
 |---|---|---|
-| `taskId` | `string` | そのディレクトリを使用しているタスク ID |
-| `pattern` | `string` | ディレクトリパターン: `A`（プロジェクトディレクトリ）/ `B`（worktree）/ `C`（エフェメラル） |
-| `directory` | `string` | ワーカーディレクトリの絶対パス |
-| `project` | `string` | プロジェクト名。エフェメラルの場合は `-` |
-| `status` | `string` | `in_use`（作業中）/ `available`（完了済み・再利用可能） |
+| `taskId` | `string` | Task ID using the directory |
+| `pattern` | `string` | Directory pattern: `A` (project directory) / `B` (worktree) / `C` (ephemeral) |
+| `directory` | `string` | Absolute path of the Worker directory |
+| `project` | `string` | Project name. `-` for ephemeral |
+| `status` | `string` | `in_use` (active) / `available` (completed, reusable) |
 
-### dispatcher / curator
+### `dispatcher` / `curator`
 
-| フィールド | 型 | 説明 |
+| Field | Type | Description |
 |---|---|---|
-| `peerId` | `string` | renga-peers のペイン名（`worker-{task_id}` / `dispatcher` / `curator` 形式）。`mcp__renga-peers__send_message` の `to_id` に渡す値 |
-| `paneId` | `string` | renga のペイン名 (`--id` で命名したもの、例: `dispatcher`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、ccmux 移行に伴い安定名ベースに変更。現行仕様では `peerId` と同値になることが多い |
+| `peerId` | `string` | renga-peers pane name (`worker-{task_id}` / `dispatcher` / `curator` form). Pass to `mcp__renga-peers__send_message` as `to_id` |
+| `paneId` | `string` | renga pane name (the value passed via `--id`, e.g. `dispatcher`, `curator`). Older WezTerm builds stored a numeric pane-id; after migrating to ccmux this became a stable name. In the current spec this is often the same value as `peerId` |
 
 ---
 
-## ダッシュボードとの統合
+## Integration with the dashboard
 
-`dashboard/server.py` は以下の優先順位で org-state を読み込みます:
+`dashboard/server.py` reads org-state in this order of preference:
 
-1. `.state/org-state.json` が存在し、かつ mtime が `.state/org-state.md` 以上の場合 → JSON を使用
-2. それ以外 → `.state/org-state.md` を正規表現でパース（フォールバック）
+1. If `.state/org-state.json` exists and its mtime is at least `.state/org-state.md`'s → use the JSON
+2. Otherwise → parse `.state/org-state.md` with regex (fallback)
 
-この設計により、converter 未実行の環境や JSON が stale な場合でも正常動作します。
+This design works correctly even when the converter has not been run, or when the JSON is stale.
 
 ---
 
-## バージョン履歴
+## Version history
 
-| バージョン | 変更内容 |
+| Version | Changes |
 |---|---|
-| 1 | 初版。Issue #20 で導入 |
+| 1 | Initial version. Introduced in Issue #20 |

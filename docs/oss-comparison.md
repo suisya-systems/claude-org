@@ -1,31 +1,31 @@
-# マルチエージェントAI協調フレームワーク — OSS比較レポート
+# Multi-Agent AI Coordination Frameworks — OSS Comparison Report
 
-> 調査日: 2026-04-06
-> 目的: claude-orgの設計思想（複数AIインスタンスの協調・役割分担・常駐ロール・自己成長ループ・スキルによるプログレッシブディスクロージャー）と類似するOSSを網羅的に調査し、比較する
+> Survey date: 2026-04-06
+> Purpose: comprehensively survey and compare OSS projects similar to claude-org's design philosophy (multi-instance AI coordination, role separation, resident roles, self-improvement loop, progressive disclosure via skills).
 
 ---
 
-## 1. claude-orgの設計特徴（比較の基準）
+## 1. claude-org's design characteristics (the basis for comparison)
 
-claude-orgは以下の特徴を持つ:
+claude-org has the following characteristics:
 
-| 特徴 | 内容 |
+| Characteristic | Description |
 |---|---|
-| **マルチインスタンス協調** | 窓口・フォアマン・キュレーター・ワーカーの4種類のClaude Codeインスタンスが協調動作 |
-| **役割分担** | Secretary（対話）、Dispatcher（ペイン管理）、Curator（知見整理）、Worker（実作業）の明確な分業 |
-| **常駐ロール** | Secretary/Dispatcher/Curatorは常駐、Workerはオンデマンド起動 |
-| **状態管理** | ジャーナル（JSONL）＋スナップショット（Markdown）＋サスペンドの三層構造 |
-| **自己成長ループ** | Worker→raw知見→Curator整理→改善提案→ユーザー承認→スキル/CLAUDE.md更新 |
-| **通信方式** | `renga-peers` MCP（同タブ内 P2P プッシュ型）＋ CLAUDE.md（永続ベースライン） |
-| **プログレッシブディスクロージャー** | スキルシステムにより必要時のみ詳細手順をロード |
+| **Multi-instance coordination** | Four kinds of Claude Code instance — Lead, Dispatcher, Curator, Worker — coordinate together |
+| **Role separation** | Clear division of labor: Lead (dialogue), Dispatcher (pane management), Curator (knowledge curation), Worker (real work) |
+| **Resident roles** | Lead / Dispatcher / Curator are resident; Workers boot on demand |
+| **State management** | Three-layer structure: journal (JSONL) + snapshot (Markdown) + suspend |
+| **Self-improvement loop** | Worker → raw learning → Curator curation → improvement proposal → user approval → skill / CLAUDE.md update |
+| **Communication model** | `renga-peers` MCP (same-tab P2P, push-style) + CLAUDE.md (persistent baseline) |
+| **Progressive disclosure** | The skill system loads detailed procedures only when needed |
 
 ---
 
-## 2. 比較対象OSS一覧
+## 2. List of OSS projects compared
 
-### 2.1 汎用マルチエージェントフレームワーク
+### 2.1 General-purpose multi-agent frameworks
 
-| # | プロジェクト | 開発元 | GitHub Stars | ライセンス |
+| # | Project | Developer | GitHub Stars | License |
 |---|---|---|---|---|
 | 1 | [CrewAI](https://github.com/crewaiinc/crewai) | CrewAI Inc. | 44,300+ | MIT |
 | 2 | [LangGraph](https://github.com/langchain-ai/langgraph) | LangChain | 24,800+ | MIT |
@@ -34,190 +34,190 @@ claude-orgは以下の特徴を持つ:
 | 5 | [Google ADK](https://github.com/google/adk-python) | Google | — | Apache 2.0 |
 | 6 | [AWS Agent Squad](https://github.com/awslabs/agent-squad) | AWS Labs | — | Apache 2.0 |
 
-### 2.2 Claude Code特化型マルチエージェント
+### 2.2 Claude-Code-specific multi-agent
 
-| # | プロジェクト | 開発元 | 特徴 |
+| # | Project | Developer | Notes |
 |---|---|---|---|
-| 7 | [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams) | Anthropic（公式） | 公式のマルチセッション協調機能（実験的） |
-| 8 | [Ruflo](https://github.com/ruvnet/ruflo) | ruvnet | Claude Code向けスウォーム型エージェントプラットフォーム |
-| 9 | [oh-my-claudecode](https://github.com/yeachan-heo/oh-my-claudecode) | Yeachan Heo | チーム指向のマルチエージェントオーケストレーション |
-| 10 | [claude-code-by-agents](https://github.com/baryhuang/claude-code-by-agents) | baryhuang | @mentionベースのマルチエージェント協調 |
+| 7 | [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams) | Anthropic (official) | Official multi-session coordination feature (experimental) |
+| 8 | [Ruflo](https://github.com/ruvnet/ruflo) | ruvnet | Swarm-style agent platform for Claude Code |
+| 9 | [oh-my-claudecode](https://github.com/yeachan-heo/oh-my-claudecode) | Yeachan Heo | Team-oriented multi-agent orchestration |
+| 10 | [claude-code-by-agents](https://github.com/baryhuang/claude-code-by-agents) | baryhuang | @mention-based multi-agent coordination |
 
-### 2.3 自己成長・自己改善系
+### 2.3 Self-improvement / self-evolution
 
-| # | プロジェクト | 開発元 | 特徴 |
+| # | Project | Developer | Notes |
 |---|---|---|---|
-| 11 | [Agent Zero](https://github.com/agent0ai/agent-zero) | agent0ai | 自律的ツール作成と永続メモリによる学習 |
-| 12 | [OpenSpace](https://github.com/HKUDS/OpenSpace) | HKUDS（香港大学） | 自己進化型スキルエンジン |
-| 13 | [AutoAgent](https://github.com/kevinrgu/autoagent) | Kevin Gu / thirdlayer | エージェントハーネスの自律的最適化 |
-| 14 | [SuperAGI](https://github.com/TransformerOptimus/SuperAGI) | TransformerOptimus | 自律エージェントフレームワーク（パフォーマンス自動改善） |
+| 11 | [Agent Zero](https://github.com/agent0ai/agent-zero) | agent0ai | Autonomous tool creation and learning via persistent memory |
+| 12 | [OpenSpace](https://github.com/HKUDS/OpenSpace) | HKUDS (Univ. of Hong Kong) | Self-evolving skill engine |
+| 13 | [AutoAgent](https://github.com/kevinrgu/autoagent) | Kevin Gu / thirdlayer | Autonomous optimization of the agent harness |
+| 14 | [SuperAGI](https://github.com/TransformerOptimus/SuperAGI) | TransformerOptimus | Autonomous agent framework (auto performance improvement) |
 
 ---
 
-## 3. 比較軸ごとの詳細分析
+## 3. Detailed analysis along each comparison axis
 
-### 3.1 マルチエージェント協調方式
+### 3.1 Multi-agent coordination model
 
-| プロジェクト | 協調方式 | 詳細 |
+| Project | Coordination model | Detail |
 |---|---|---|
-| **claude-org** | **階層型＋P2P** | Secretary→Dispatcher→Worker の階層的委譲 ＋ `renga-peers` MCP でのP2P通信（同タブスコープ） |
-| CrewAI | ロールベース協調 | Agent に role/backstory/goal を定義し、crew として協調。Sequential / Hierarchical プロセス |
-| LangGraph | グラフベース | ノード（エージェント）とエッジ（遷移）でワークフローを定義。条件分岐・ループ対応 |
-| AutoGen | 会話ベース | エージェント間のメッセージパッシングによる協調。GroupChat で複数エージェント会話 |
-| Swarm | ハンドオフ型 | Agent 間の明示的なハンドオフ（引き継ぎ）でタスクを委譲。ステートレス |
-| Google ADK | 階層型 | エージェントを階層的に構成。Sequential / Parallel / Loop ワークフロー ＋ LLM動的ルーティング |
-| Agent Squad | スーパーバイザー型 | SupervisorAgent が agent-as-tools パターンで専門エージェントを並列調整 |
-| Agent Teams | チームリード型 | 1つのリードセッション＋最大15のチームメイト。共有タスクリスト＋P2Pメッセージング |
-| Ruflo | スウォーム型 | 最大100エージェントが並列動作。6種の協調パターン。自己学習ルーティング |
-| oh-my-claudecode | オートパイロット型 | 32専門エージェントの自動委譲。最大5並行ワーカー |
-| Agent Zero | 階層型 | 上位エージェントが下位エージェントを生成・委譲。再帰的な構造 |
-| OpenSpace | スタンドアロン＋共有 | 単体Agent ＋ MCPサーバー経由での統合。スキル共有コミュニティ |
+| **claude-org** | **Hierarchical + P2P** | Hierarchical delegation Lead→Dispatcher→Worker + P2P over `renga-peers` MCP (same-tab scope) |
+| CrewAI | Role-based coordination | Define role/backstory/goal on each Agent and coordinate as a crew. Sequential / Hierarchical processes |
+| LangGraph | Graph-based | Workflows defined as nodes (agents) and edges (transitions). Supports conditional branching and loops |
+| AutoGen | Conversation-based | Coordination via message passing between agents. GroupChat enables multi-agent conversation |
+| Swarm | Hand-off model | Tasks are explicitly handed off between Agents. Stateless |
+| Google ADK | Hierarchical | Agents composed hierarchically. Sequential / Parallel / Loop workflows + LLM dynamic routing |
+| Agent Squad | Supervisor model | A SupervisorAgent coordinates specialist agents in parallel via the agent-as-tools pattern |
+| Agent Teams | Team-lead model | One lead session + up to 15 teammates. Shared task list + P2P messaging |
+| Ruflo | Swarm | Up to 100 agents run in parallel. Six coordination patterns. Self-learning routing |
+| oh-my-claudecode | Autopilot | Auto delegation across 32 specialist agents. Up to 5 parallel workers |
+| Agent Zero | Hierarchical | Higher agents spawn and delegate to lower agents. Recursive structure |
+| OpenSpace | Standalone + sharing | Single Agent + integration via MCP server. Skill-sharing community |
 
-**claude-orgとの類似度**: Agent Teams が最も近い（P2P通信 ＋ 共有タスクリスト）。CrewAI のロールベース設計も概念的に近い。
+**Similarity to claude-org**: Agent Teams is closest (P2P communication + shared task list). CrewAI's role-based design is conceptually close as well.
 
-### 3.2 役割分担
+### 3.2 Role separation
 
-| プロジェクト | 役割モデル | 常駐ロール | 動的ロール |
+| Project | Role model | Resident roles | Dynamic roles |
 |---|---|---|---|
-| **claude-org** | **Secretary / Dispatcher / Curator / Worker** | **3（Sec/Fore/Cur）** | **Worker（オンデマンド）** |
-| CrewAI | ユーザー定義ロール（Manager / Researcher 等） | なし（実行時のみ） | 全エージェント |
-| LangGraph | ノードとして定義（固定名なし） | なし | 全ノード |
-| AutoGen | UserProxy / Assistant / GroupChatManager 等 | なし | 全エージェント |
-| Swarm | ユーザー定義（Triage / Sales 等） | なし | 全エージェント |
-| Google ADK | 階層的エージェント定義 | なし | 全エージェント |
-| Agent Squad | Supervisor ＋ 専門エージェント | なし | 全エージェント |
-| Agent Teams | Team Lead ＋ Teammates | Team Lead（1） | Teammates |
-| Ruflo | Orchestrator ＋ Specialist Swarm | なし（オンデマンド起動） | 全エージェント |
-| oh-my-claudecode | Architect ＋ 32専門エージェント | なし | 全エージェント |
-| Agent Zero | 親エージェント＋子エージェント | 親（1） | 子エージェント |
-| OpenSpace | 単体エージェント（役割分担なし） | — | — |
+| **claude-org** | **Lead / Dispatcher / Curator / Worker** | **3 (Lead / Dispatcher / Curator)** | **Worker (on demand)** |
+| CrewAI | User-defined roles (Manager / Researcher / etc.) | None (only at runtime) | All agents |
+| LangGraph | Defined as nodes (no fixed names) | None | All nodes |
+| AutoGen | UserProxy / Assistant / GroupChatManager / etc. | None | All agents |
+| Swarm | User-defined (Triage / Sales / etc.) | None | All agents |
+| Google ADK | Hierarchical agent definitions | None | All agents |
+| Agent Squad | Supervisor + specialist agents | None | All agents |
+| Agent Teams | Team Lead + Teammates | Team Lead (1) | Teammates |
+| Ruflo | Orchestrator + Specialist Swarm | None (on-demand spawn) | All agents |
+| oh-my-claudecode | Architect + 32 specialist agents | None | All agents |
+| Agent Zero | Parent agent + child agents | Parent (1) | Child agents |
+| OpenSpace | Single agent (no role separation) | — | — |
 
-**claude-orgの独自性**: **常駐ロールの多さ**（3種）と**明確な組織構造**（Secretary-Dispatcher-Curator-Worker）は他に類を見ない。特にCurator（知見整理専門の常駐プロセス）はclaude-org固有の設計。
+**What's distinctive about claude-org**: **the number of resident roles** (three) and **a clear organizational structure** (Lead-Dispatcher-Curator-Worker) is unmatched elsewhere. The Curator in particular — a resident process specialized in knowledge curation — is unique to claude-org.
 
-### 3.3 状態管理
+### 3.3 State management
 
-| プロジェクト | 状態永続化 | 形式 | クラッシュリカバリ |
+| Project | State persistence | Format | Crash recovery |
 |---|---|---|---|
-| **claude-org** | **ジャーナル＋スナップショット＋サスペンド（三層）** | **JSONL / Markdown** | **ジャーナルからの復元 ＋ org-resume** |
-| CrewAI | メモリ（短期/長期/エンティティ） | 内部DB | 限定的 |
-| LangGraph | チェックポイント（永続化） | カスタムストレージ | タイムトラベルデバッグ対応 |
-| AutoGen | セッションベース状態管理 | メモリ / シリアライズ | v0.4で改善 |
-| Swarm | **なし**（ステートレス設計） | — | なし |
-| Google ADK | セッション状態 | カスタム | Vertex AI連携 |
-| Agent Squad | コンテキスト管理 | メモリ | 限定的 |
-| Agent Teams | 共有タスクリスト（ファイルベース） | JSON / ファイル | タスクリストから復元可能 |
-| Ruflo | ニューラルメモリ（v3） | 内部DB | パターン保持（catastrophic forgetting防止） |
-| Agent Zero | 永続メモリ | ファイルベース | メモリから復元 |
-| OpenSpace | スキルDB | ファイルベース | スキルの自動修復（FIXモード） |
+| **claude-org** | **Journal + snapshot + suspend (three layers)** | **JSONL / Markdown** | **Restoration from journal + org-resume** |
+| CrewAI | Memory (short-term / long-term / entity) | Internal DB | Limited |
+| LangGraph | Checkpoints (persisted) | Custom storage | Time-travel debugging supported |
+| AutoGen | Session-based state management | Memory / serialization | Improved in v0.4 |
+| Swarm | **None** (stateless design) | — | None |
+| Google ADK | Session state | Custom | Vertex AI integration |
+| Agent Squad | Context management | Memory | Limited |
+| Agent Teams | Shared task list (file-based) | JSON / files | Recoverable from the task list |
+| Ruflo | Neural memory (v3) | Internal DB | Pattern retention (catastrophic-forgetting prevention) |
+| Agent Zero | Persistent memory | File-based | Recovery from memory |
+| OpenSpace | Skill DB | File-based | Auto skill repair (FIX mode) |
 
-**claude-orgの特徴**: **Markdown形式での状態管理**は、新規インスタンスが読むだけで状況を把握できる点がユニーク。LangGraphのチェックポイント機能が機能面では最も充実。
+**What's distinctive about claude-org**: **Markdown-based state management** is unique in that a fresh instance can grasp the situation just by reading the file. LangGraph's checkpoints are the most full-featured on the functional axis.
 
-### 3.4 自己改善メカニズム
+### 3.4 Self-improvement mechanism
 
-| プロジェクト | 自己改善 | メカニズム | 人間の承認 |
+| Project | Self-improvement | Mechanism | Human approval |
 |---|---|---|---|
-| **claude-org** | **あり（構造化ループ）** | **Worker→raw知見→Curator整理→提案→承認→スキル更新** | **必須（安全弁）** |
-| CrewAI | 限定的 | タスク間でのメモリ蓄積 | なし |
-| LangGraph | なし（外部実装は可能） | — | — |
-| AutoGen | 計画中 | エージェントの長期学習（ロードマップ） | — |
-| Swarm | なし | — | — |
-| Google ADK | なし | — | — |
-| Agent Squad | なし | — | — |
-| Agent Teams | なし | — | — |
-| Ruflo | あり | タスク実行からの自動学習、パターン保持 | なし（自動） |
-| oh-my-claudecode | 限定的 | 実行結果のフィードバック | なし |
-| Agent Zero | あり | 動的ツール作成、永続メモリによる学習 | なし（自律的） |
-| OpenSpace | **あり（最も高度）** | **FIX / DERIVED / CAPTURED の3モード進化。スキルの自動修復・派生・獲得** | **なし（自律的）** |
-| AutoAgent | あり（メタ最適化） | ハーネス自体を自律的に最適化（プロンプト・ツール・ルーティング） | なし（自律的） |
-| SuperAGI | あり | 実行ごとのパフォーマンス改善 | なし |
+| **claude-org** | **Yes (structured loop)** | **Worker → raw learning → Curator curation → proposal → approval → skill update** | **Required (safety valve)** |
+| CrewAI | Limited | Memory accumulated across tasks | None |
+| LangGraph | None (external implementation possible) | — | — |
+| AutoGen | Planned | Long-term agent learning (roadmap) | — |
+| Swarm | None | — | — |
+| Google ADK | None | — | — |
+| Agent Squad | None | — | — |
+| Agent Teams | None | — | — |
+| Ruflo | Yes | Auto learning from task execution, pattern retention | None (autonomous) |
+| oh-my-claudecode | Limited | Feedback from execution results | None |
+| Agent Zero | Yes | Dynamic tool creation, learning via persistent memory | None (autonomous) |
+| OpenSpace | **Yes (most advanced)** | **Three-mode evolution: FIX / DERIVED / CAPTURED. Auto skill repair, derivation, capture** | **None (autonomous)** |
+| AutoAgent | Yes (meta-optimization) | Autonomously optimizes the harness itself (prompts / tools / routing) | None (autonomous) |
+| SuperAGI | Yes | Per-run performance improvement | None |
 
-**claude-orgの独自性**: **人間の承認を挟む自己改善ループ**はclaude-org固有。他の自己改善系は自律的（人間介入なし）。OpenSpaceのスキル進化メカニズムはclaude-orgのスキルシステムと概念的に近いが、人間の承認プロセスがない。
+**What's distinctive about claude-org**: **a self-improvement loop with human approval in the middle** is unique to claude-org. Other self-improvement projects are autonomous (no human in the loop). OpenSpace's skill-evolution mechanism is conceptually close to claude-org's skill system, but lacks the human-approval step.
 
-### 3.5 通信方式
+### 3.5 Communication model
 
-| プロジェクト | 通信方式 | 特徴 |
+| Project | Communication model | Notes |
 |---|---|---|
-| **claude-org** | **`renga-peers` MCP（同タブ内 P2P プッシュ型）＋ CLAUDE.md（永続ベースライン）** | **二重化による信頼性。揮発的通信 ＋ 永続的指示の組み合わせ** |
-| CrewAI | コンテキスト共有・委譲 | エージェント間で context / delegation |
-| LangGraph | 共有State経由 | グラフのState オブジェクトを通じたデータ共有 |
-| AutoGen | メッセージパッシング | エージェント間の直接メッセージ。GroupChatでブロードキャスト |
-| Swarm | ハンドオフ関数 | 会話コンテキストを丸ごと引き継ぎ |
-| Google ADK | 階層的メッセージ ＋ 転送 | 親子間のメッセージ ＋ LLM動的ルーティング |
-| Agent Squad | インテントルーティング | ユーザー入力を動的に適切なエージェントへルーティング |
-| Agent Teams | P2Pメールボックス ＋ 共有タスクリスト | ファイルベースのメールボックスシステム |
-| Ruflo | スウォーム通信 | 階層的協調 ＋ コンセンサスメカニズム |
-| Agent Zero | 親子間メッセージ | 階層的なメッセージパッシング |
+| **claude-org** | **`renga-peers` MCP (same-tab P2P, push-style) + CLAUDE.md (persistent baseline)** | **Reliability via layering. Volatile communication + persistent instructions in combination** |
+| CrewAI | Shared context / delegation | context / delegation between agents |
+| LangGraph | Via shared State | Data sharing through the graph's State object |
+| AutoGen | Message passing | Direct messages between agents. GroupChat broadcasts |
+| Swarm | Hand-off function | The conversation context is handed over wholesale |
+| Google ADK | Hierarchical messages + transfer | Parent–child messages + LLM dynamic routing |
+| Agent Squad | Intent routing | User input is dynamically routed to the right agent |
+| Agent Teams | P2P mailbox + shared task list | File-based mailbox system |
+| Ruflo | Swarm communication | Hierarchical coordination + consensus mechanism |
+| Agent Zero | Parent-child messaging | Hierarchical message passing |
 
-**claude-orgの独自性**: **指示の二重化**（CLAUDE.md永続指示 ＋ `renga-peers` リアルタイム通信）は他に類を見ない設計。Agent Teams のメールボックスシステムが最も近い。
+**What's distinctive about claude-org**: **layered instructions** (CLAUDE.md persistent instructions + `renga-peers` real-time communication) are an unmatched design. Agent Teams' mailbox system is the closest.
 
 ---
 
-## 4. 総合比較表
+## 4. Summary comparison matrix
 
-| 比較軸 | claude-org | CrewAI | LangGraph | AutoGen | Agent Teams | Ruflo | OpenSpace | Agent Zero |
+| Axis | claude-org | CrewAI | LangGraph | AutoGen | Agent Teams | Ruflo | OpenSpace | Agent Zero |
 |---|---|---|---|---|---|---|---|---|
-| 協調方式 | 階層＋P2P | ロール型 | グラフ型 | 会話型 | チーム型 | スウォーム型 | 単体＋共有 | 階層型 |
-| 役割の固定度 | ◎ 4役固定 | △ 自由定義 | △ 自由定義 | △ 自由定義 | ○ Lead＋Members | △ 自由定義 | × なし | ○ 親子 |
-| 常駐ロール | ◎ 3種 | × なし | × なし | × なし | ○ 1種 | × なし | × なし | ○ 1種 |
-| 状態永続化 | ◎ 三層 | ○ メモリ | ◎ チェックポイント | ○ セッション | ○ タスクリスト | ○ ニューラルDB | ○ スキルDB | ○ メモリ |
-| 自己改善 | ◎ 構造化 | △ 限定的 | × なし | × 計画中 | × なし | ○ 自動学習 | ◎ 3モード進化 | ○ ツール生成 |
-| 人間承認 | ◎ 必須 | × なし | × なし | × なし | × なし | × なし | × なし | × なし |
-| P2P通信 | ◎ | × | × | ○ | ◎ | △ | × | × |
-| 指示の永続化 | ◎ 二重化 | × | × | × | △ | × | × | × |
+| Coordination model | Hierarchical + P2P | Role-based | Graph | Conversation | Team | Swarm | Single + share | Hierarchical |
+| Role fixity | ◎ 4 fixed | △ Free-form | △ Free-form | △ Free-form | ○ Lead + Members | △ Free-form | × None | ○ Parent / child |
+| Resident roles | ◎ 3 | × None | × None | × None | ○ 1 | × None | × None | ○ 1 |
+| State persistence | ◎ 3 layers | ○ Memory | ◎ Checkpoint | ○ Session | ○ Task list | ○ Neural DB | ○ Skill DB | ○ Memory |
+| Self-improvement | ◎ Structured | △ Limited | × None | × Planned | × None | ○ Auto-learning | ◎ 3-mode evolution | ○ Tool generation |
+| Human approval | ◎ Required | × None | × None | × None | × None | × None | × None | × None |
+| P2P communication | ◎ | × | × | ○ | ◎ | △ | × | × |
+| Persistent instructions | ◎ Layered | × | × | × | △ | × | × | × |
 
-凡例: ◎ 高度に実装 / ○ 実装あり / △ 限定的 / × なし
-
----
-
-## 5. 特筆すべき類似プロジェクト（Top 3）
-
-### 5.1 Claude Code Agent Teams（最も構造的に近い）
-
-- **類似点**: P2P通信、共有タスクリスト、チームリード＋メンバーの構造
-- **相違点**: 常駐ロールは1種（Lead）のみ、Curator相当なし、自己成長ループなし、指示の二重化なし
-- **評価**: インフラ層（通信・タスク管理）は近いが、組織設計と自己改善の層が欠けている
-
-### 5.2 OpenSpace（自己改善の思想が最も近い）
-
-- **類似点**: スキルの自動進化（FIX/DERIVED/CAPTUREDはclaude-orgのraw→curated→skill更新に類似）、スキルの再利用
-- **相違点**: マルチエージェント協調ではない（単体エージェント＋MCP連携）、人間承認プロセスなし、役割分担なし
-- **評価**: 自己改善メカニズムの成熟度はclaude-orgより高い可能性があるが、組織としての協調機能がない
-
-### 5.3 CrewAI（役割ベース設計が近い）
-
-- **類似点**: エージェントに明確なロール（role/backstory/goal）を定義、階層的プロセス、委譲（delegation）の概念
-- **相違点**: 常駐ロールなし、状態管理は限定的、自己成長ループなし、Claude Code非依存
-- **評価**: 役割ベースの協調パターンは概念的に近いが、永続的な組織としての設計思想は異なる
+Legend: ◎ Highly implemented / ○ Implemented / △ Limited / × None
 
 ---
 
-## 6. claude-orgの差別化ポイント
+## 5. Most notable similar projects (Top 3)
 
-調査の結果、claude-orgには以下の差別化要素が確認された:
+### 5.1 Claude Code Agent Teams (closest structurally)
 
-### 6.1 既存OSSにない特徴
+- **Similar**: P2P communication, shared task list, team-lead + members structure
+- **Different**: only one resident role (Lead); no Curator equivalent; no self-improvement loop; no layered instructions
+- **Verdict**: the infrastructure layer (communication / task management) is close, but the organizational design and self-improvement layers are missing
 
-1. **常駐マルチロール組織**: Secretary/Dispatcher/Curator の3種の常駐ロールを持つ組織構造は他に例がない
-2. **人間承認付き自己改善ループ**: 自己改善を持つフレームワークは複数あるが、人間の承認を安全弁として組み込んでいるのはclaude-orgのみ
-3. **指示の二重化**: CLAUDE.md（永続ベースライン）＋ `renga-peers` メッセージ（リアルタイム補足）の組み合わせは他に類を見ない
-4. **プログレッシブディスクロージャー**: スキルシステムによるコンテキスト消費の最小化戦略
-5. **Markdown状態管理**: 新インスタンスが読むだけで状況把握可能な設計（機械可読かつ人間可読）
+### 5.2 OpenSpace (closest in self-improvement philosophy)
 
-### 6.2 既存OSSから学べる点
+- **Similar**: automatic skill evolution (FIX/DERIVED/CAPTURED resembles claude-org's raw → curated → skill update); skill reuse
+- **Different**: not multi-agent (single agent + MCP integration); no human-approval step; no role separation
+- **Verdict**: the self-improvement mechanism may be more mature than claude-org's, but the project lacks coordination as an organization
 
-1. **LangGraph のチェックポイント**: タイムトラベルデバッグは状態管理の強化に有用
-2. **OpenSpace のスキル進化3モード**: FIX/DERIVED/CAPTURED の分類はclaude-orgの知見整理に適用可能
-3. **Ruflo の自己学習ルーティング**: タスクの自動振り分けの改善に参考になる
-4. **Agent Teams のファイルロック**: 複数ワーカーの同時編集時の衝突防止メカニズム
-5. **AutoAgent のメタ最適化**: ハーネス自体の自動改善は、claude-orgのスキル自動更新の高度化に応用可能
+### 5.3 CrewAI (closest in role-based design)
+
+- **Similar**: clear roles assigned to agents (role/backstory/goal), hierarchical processes, the concept of delegation
+- **Different**: no resident roles; limited state management; no self-improvement loop; not Claude-Code-specific
+- **Verdict**: the role-based coordination pattern is conceptually close, but the design philosophy of being a persistent organization differs
 
 ---
 
-## 7. まとめ
+## 6. claude-org's differentiators
 
-claude-orgは「複数AIインスタンスによる永続的な組織運営」という独自のポジションを持つ。既存OSSの多くは「タスク実行時のエージェント協調」に焦点を当てているのに対し、claude-orgは**組織そのものの継続的運営と自己改善**を目指している。
+The survey identifies the following differentiators for claude-org:
 
-最も近いプロジェクトであるClaude Code Agent Teamsでさえ、常駐キュレーターや自己成長ループを持たない。claude-orgの設計思想は、現時点のOSSランドスケープにおいて明確なギャップを埋めるものである。
+### 6.1 Features absent from existing OSS
+
+1. **A multi-role resident organization**: an organizational structure with three resident roles (Lead / Dispatcher / Curator) is not seen elsewhere
+2. **A self-improvement loop with human approval**: several frameworks have self-improvement, but only claude-org embeds human approval as a safety valve
+3. **Layered instructions**: combining CLAUDE.md (persistent baseline) with `renga-peers` messages (real-time supplement) is unmatched
+4. **Progressive disclosure**: the skill system as a strategy to minimize context consumption
+5. **Markdown-based state management**: a design where a fresh instance can read its way into the situation (machine-readable and human-readable)
+
+### 6.2 What we can learn from existing OSS
+
+1. **LangGraph's checkpoints**: time-travel debugging would help strengthen state management
+2. **OpenSpace's three skill-evolution modes**: the FIX/DERIVED/CAPTURED taxonomy is applicable to claude-org's knowledge curation
+3. **Ruflo's self-learning routing**: a useful reference for improving automatic task assignment
+4. **Agent Teams' file locking**: a conflict-prevention mechanism for simultaneous edits across multiple Workers
+5. **AutoAgent's meta-optimization**: harness self-improvement is applicable to claude-org's auto skill updates
+
+---
+
+## 7. Conclusion
+
+claude-org occupies a unique position: "persistent organizational operation by multiple AI instances". Most existing OSS focuses on "agent coordination during task execution"; claude-org instead aims at **continuous operation and self-improvement of the organization itself**.
+
+Even the closest project — Claude Code Agent Teams — lacks a resident Curator and a self-improvement loop. claude-org's design philosophy fills a clear gap in the current OSS landscape.
 
 ---
 
