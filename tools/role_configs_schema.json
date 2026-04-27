@@ -82,7 +82,7 @@
       "disallow_allow_regex": []
     },
     "secretary": {
-      "description": "Secretary (窓口) — repo .claude/settings.local.json.",
+      "description": "Lead (role id: secretary) — repo .claude/settings.local.json.",
       "docs_section": "窓口",
       "settings_paths": [".claude/settings.local.json"],
       "closed_world": true,
