@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# One-liner installer for claude-org-ja (Linux / macOS).
+# One-liner installer for claude-org (Linux / macOS).
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.sh | bash
 #   bash scripts/install.sh [--dir <path>] [--dry-run] [--skip-mcp]
 #
 # This script:
 #   1. Checks for required commands (git, claude, renga, gh) and prints
 #      installation hints when something is missing.
-#   2. Clones suisya-systems/claude-org-ja (asks before reusing an
+#   2. Clones suisya-systems/claude-org (asks before reusing an
 #      existing directory).
 #   3. Runs `renga mcp install` (user-scope) so the renga-peers MCP
 #      server is registered with Claude Code.
@@ -17,8 +17,8 @@
 # permission prompts.
 set -euo pipefail
 
-REPO_URL="https://github.com/suisya-systems/claude-org-ja.git"
-TARGET_DIR="claude-org-ja"
+REPO_URL="https://github.com/suisya-systems/claude-org.git"
+TARGET_DIR="claude-org"
 DRY_RUN=0
 SKIP_MCP=0
 # CLAUDE_ORG_REF pins the clone to a specific branch or tag for
@@ -31,7 +31,7 @@ usage() {
 Usage: install.sh [--dir <path>] [--dry-run] [--skip-mcp] [--help]
 
 Options:
-  --dir <path>   Target directory for the clone (default: ./claude-org-ja).
+  --dir <path>   Target directory for the clone (default: ./claude-org).
   --dry-run      Print the commands that would run without executing them.
   --skip-mcp     Skip `renga mcp install` (use when already registered).
   -h, --help     Show this help and exit.
@@ -104,7 +104,7 @@ require_or_warn() {
   return 1
 }
 
-echo "== claude-org-ja installer =="
+echo "== claude-org installer =="
 echo
 
 echo "Checking prerequisites..."
@@ -170,7 +170,7 @@ else
     if ! git clone --branch "$REF" "$REPO_URL" "$TARGET_DIR"; then
       echo "install.sh: failed to clone ref '$REF' from $REPO_URL." >&2
       echo "install.sh: check that CLAUDE_ORG_REF names an existing branch or tag." >&2
-      echo "install.sh: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags." >&2
+      echo "install.sh: branches and tags are accepted; see https://github.com/suisya-systems/claude-org/releases for stable tags." >&2
       exit 1
     fi
   else

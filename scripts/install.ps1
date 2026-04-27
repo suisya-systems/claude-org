@@ -1,12 +1,12 @@
-# One-liner installer for claude-org-ja (Windows / PowerShell 7+).
+# One-liner installer for claude-org (Windows / PowerShell 7+).
 # Usage:
-#   iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.ps1 | iex
 #   pwsh -NoProfile -File scripts/install.ps1 [-Dir <path>] [-DryRun] [-SkipMcp]
 #
 # This script:
 #   1. Checks for required commands (git, claude, renga, gh) and prints
 #      installation hints when something is missing.
-#   2. Clones suisya-systems/claude-org-ja (asks before reusing an
+#   2. Clones suisya-systems/claude-org (asks before reusing an
 #      existing directory).
 #   3. Runs `renga mcp install` (user-scope) so the renga-peers MCP
 #      server is registered with Claude Code.
@@ -17,7 +17,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Dir = 'claude-org-ja',
+    [string]$Dir = 'claude-org',
     [switch]$DryRun,
     [switch]$SkipMcp,
     [switch]$Help
@@ -31,7 +31,7 @@ if ($Help) {
 Usage: install.ps1 [-Dir <path>] [-DryRun] [-SkipMcp] [-Help]
 
 Options:
-  -Dir <path>   Target directory for the clone (default: .\claude-org-ja).
+  -Dir <path>   Target directory for the clone (default: .\claude-org).
   -DryRun       Print commands that would run without executing them.
   -SkipMcp      Skip `renga mcp install` (use when already registered).
   -Help         Show this help and exit.
@@ -39,7 +39,7 @@ Options:
     return
 }
 
-$RepoUrl = 'https://github.com/suisya-systems/claude-org-ja.git'
+$RepoUrl = 'https://github.com/suisya-systems/claude-org.git'
 # CLAUDE_ORG_REF pins the clone to a specific branch or tag for
 # reproducibility. Default `main` preserves latest-features behaviour
 # when the env var is unset.
@@ -82,7 +82,7 @@ function Read-YesNo {
     return ($reply -match '^(y|yes)$')
 }
 
-Write-Host '== claude-org-ja installer =='
+Write-Host '== claude-org installer =='
 Write-Host ''
 
 Write-Host 'Checking prerequisites...'
@@ -164,7 +164,7 @@ if (Test-Path -LiteralPath $Dir) {
             # message verbatim and matches install.sh's behaviour.
             [Console]::Error.WriteLine("install.ps1: failed to clone ref '$Ref' from $RepoUrl.")
             [Console]::Error.WriteLine("install.ps1: check that `$env:CLAUDE_ORG_REF names an existing branch or tag.")
-            [Console]::Error.WriteLine("install.ps1: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags.")
+            [Console]::Error.WriteLine("install.ps1: branches and tags are accepted; see https://github.com/suisya-systems/claude-org/releases for stable tags.")
             exit 1
         }
     }
