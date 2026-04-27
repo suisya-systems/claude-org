@@ -1,113 +1,113 @@
-# ワーカーへの指示テンプレート
+# Worker instruction template
 
-renga-peers の send_message（`to_id="worker-{task_id}"`）で送信する、タスク固有の指示。
-権限・報告先・SUSPEND対応・知見記録の指示は worker-claude-template.md（CLAUDE.md経由）に一元化されているため、ここでは繰り返さない。
+The task-specific instruction sent via renga-peers `send_message` (`to_id="worker-{task_id}"`).
+Permissions, reporting destinations, SUSPEND handling, and knowledge recording are consolidated in worker-claude-template.md (via CLAUDE.md), so they are not repeated here.
 
-## テンプレート
+## Template
 
 ```
-以下のタスクを遂行してください。詳細な行動規範は CLAUDE.md に記載されています。
+Please carry out the following task. Detailed code of conduct is described in CLAUDE.md.
 
-## タスク
-{タスクの目的と期待する成果物を具体的に記述}
+## Task
+{Concretely describe the task's goal and the expected deliverable}
 
-## プロジェクトの準備
-重要: あなたの作業ディレクトリは CLAUDE.md に記載された絶対パスです。
-まず `pwd` を実行し、CLAUDE.md の作業ディレクトリと一致することを確認してください。
-全てのファイル作成はこのディレクトリ内に限定。`..` への移動や claude-org 構造の再現は禁止です。
-{ディレクトリパターンに応じて以下のいずれかを指示}
+## Project preparation
+Important: your working directory is the absolute path described in CLAUDE.md.
+First, run `pwd` and confirm it matches the working directory in CLAUDE.md.
+All file creation is restricted to inside that directory. Moving to `..` and reproducing the claude-org structure is prohibited.
+{Choose one of the following based on the directory pattern}
 
-### パターン A（プロジェクトディレクトリ・初回）の場合:
-{以下のいずれかを指示}
-- ローカル既存プロジェクトの場合: カレントディレクトリ内で `git clone {ローカルパス}` を実行してください。
-- リモートリポジトリの場合: カレントディレクトリ内で `git clone {URL}` を実行してください。
-- 新規プロジェクトの場合: カレントディレクトリ（`pwd` の出力パス）で `git init` し、直接ファイルを作成してください。claude-org の構造を真似たディレクトリ（.claude/, .state/ 等）を作らないでください。
+### Pattern A (project directory, first time):
+{Choose one of the following}
+- For an existing local project: run `git clone {local path}` inside the current directory.
+- For a remote repository: run `git clone {URL}` inside the current directory.
+- For a new project: run `git init` in the current directory (the path output by `pwd`) and create files directly. Do not create directories that mimic the claude-org structure (.claude/, .state/, etc.).
 
-### パターン A（プロジェクトディレクトリ・再利用）の場合:
-このディレクトリは以前のタスクで使用されたプロジェクトディレクトリです。既存のファイルとgit履歴が残っています。
-clone は不要です。{引き継ぎ事項があれば記載}
+### Pattern A (project directory, reuse):
+This directory was used by a previous task. Existing files and git history remain.
+No clone is needed. {Note any handoff items}
 
-### パターン B（worktree）の場合:
-このディレクトリは git worktree として準備済みです。ブランチ `{branch_name}` にチェックアウトされています。
-clone は不要です。そのまま作業を開始してください。
+### Pattern B (worktree):
+This directory is prepared as a git worktree, checked out on branch `{branch_name}`.
+No clone is needed. Start working directly.
 
-### パターン C（エフェメラル）の場合:
-{以下のいずれかを指示}
-- 既存リポジトリの場合: カレントディレクトリ内で `git clone {URL}` を実行し、クローンされたディレクトリ内で作業してください
-- ローカル既存プロジェクトの場合: カレントディレクトリ内で `git clone {ローカルパス}` を実行してください
-- 新規プロジェクトの場合: カレントディレクトリ（`pwd` の出力パス）で `git init` し、直接ファイルを作成してください。claude-org の構造を真似たディレクトリ（.claude/, .state/ 等）を作らないでください
+### Pattern C (ephemeral):
+{Choose one of the following}
+- For an existing repository: run `git clone {URL}` inside the current directory and work inside the cloned directory
+- For an existing local project: run `git clone {local path}` inside the current directory
+- For a new project: run `git init` in the current directory (the path output by `pwd`) and create files directly. Do not create directories that mimic the claude-org structure (.claude/, .state/, etc.)
 
-## ブランチ戦略
-{ブランチ名の指定、またはmainで直接作業等}
+## Branch strategy
+{Specify the branch name, or work directly on main, etc.}
 
-## 作業の進め方
-auto モードで直接作業してください。Plan モードは使用しないこと。
+## How to work
+Work directly in auto mode. Do not use Plan mode.
 
-## 制約
-{使用言語、フレームワーク、テスト要件等があれば記載}
+## Constraints
+{Note any language, framework, test requirements, etc.}
 
-## 検証深度: {full | minimal}
-この行はテンプレートから**削除せず必ず送信する**。窓口は 2 値のどちらか 1 つだけを埋める。
-既定は `full`。trivial fix のときのみ `minimal` を窓口側で選択して埋めること。
+## Verification depth: {full | minimal}
+**Do not delete this line**; always send it. The Lead fills in exactly one of the two values.
+The default is `full`. Choose `minimal` only for trivial fixes; the Lead is the one filling it in.
 
-- **full**（新機能実装 / 修正 / リファクタ / テスト追加 / hook・skill・設定編集など、コードまたは挙動の変更を伴うもの）
-  - **codex の有無に関わらず必須**: 既存テストスイート / lint / type-check 等のリポジトリ通常検証を green まで実行し、通常の完了報告フォーマット（成果物説明・残作業・PR 草案 / 振り返り記録）で報告
-  - **追加ゲート（任意）**: commit 完了後に `codex` CLI が available なら `codex exec --skip-git-repo-check` で Codex セルフレビューを実行する
-    - 確認コマンド: `command -v codex`（Bash/zsh）/ `Get-Command codex -ErrorAction SilentlyContinue`（PowerShell）
-    - codex 未導入環境ではセルフレビューを skip し、上記の通常検証だけで完了報告に進む（以下のラウンド規律は適用されない）
-  - **以下は codex を実行した場合のみ適用**:
-    - Blocker / Major は修正コミットを積んでから完了報告
-    - **同一指摘カテゴリ（例: loose match 精緻化 / 型絞り等）で 3 ラウンド消せない場合は設計問題**。即完了報告し、窓口に仕様縮小の判断を仰ぐ（無限ループ防止）
-    - Minor / Nit は原則残置。README / Issue / PR 本文に既知制限として明記する
-    - `codex:rescue` スキルは使用しないこと（18 分超ハング事例あり、`codex exec` 直打ちが安定）
-  - レビュー指示例: `codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"`
+- **full** (new feature implementation / fix / refactor / adding tests / hook / skill / settings edits, etc., anything that changes code or behavior)
+  - **Required regardless of whether codex is available**: run the repository's normal verification (existing test suite / lint / type-check, etc.) to green and report in the normal completion format (deliverable description, remaining work, PR draft / retro record)
+  - **Additional gate (optional)**: after commit completes, if the `codex` CLI is available, run Codex self-review via `codex exec --skip-git-repo-check`
+    - Detection commands: `command -v codex` (Bash/zsh) / `Get-Command codex -ErrorAction SilentlyContinue` (PowerShell)
+    - In environments where codex is not installed, skip the self-review and proceed to the completion report on the normal verification alone (the round discipline below does not apply)
+  - **The following applies only when codex was run**:
+    - Stack a fix commit before the completion report for Blocker / Major
+    - **If the same finding category (e.g. loose-match precision / type narrowing, etc.) cannot be eliminated in 3 rounds, treat it as a design issue**. Send the completion report immediately and ask the Lead for a scope-reduction decision (to prevent infinite loops)
+    - Minor / Nit are left in place by default. Document them as known limitations in README / Issue / PR body
+    - Do not use the `codex:rescue` skill (there are cases of >18-minute hangs; direct `codex exec` is more stable)
+  - Example review instruction: `codex exec --skip-git-repo-check "Review the diff between this branch and main. Classify findings as Blocker/Major/Minor/Nit and add target file:line and the rationale to each, concise in Japanese"`
 
-- **minimal**（trivial fix: CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等、指示で変更箇所が 1 ファイル数行に限定されるもの）
-  - 指示された fix を反映 → `git add` → `git commit` 直行
-  - Codex セルフレビュー・追加テスト実行・差分確認を超えた動作検証は**一切禁止**
-  - 完了報告は窓口（`secretary`）に送信する 1 行:
-    - `done: {commit SHA 短縮形} {変更ファイル名}`（例: `done: be8f497 tests/test-block-pretooluse-hooks.sh`）
-    - SHA は `git rev-parse --short HEAD`、ファイル名は単独ファイルなら 1 つ、複数なら空白区切り
-    - これ以外の情報（成果物説明・PR 草案・残論点等）は不要。push / PR 起票は窓口側で実施する
-  - 振り返り記録（`knowledge/raw/`）は minimal では**不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同様 1 件作ってよい
+- **minimal** (trivial fixes: CI output formatting / typo / comment edits / matching to existing test format, etc., where the instruction limits changes to a few lines in 1 file)
+  - Apply the requested fix → `git add` → `git commit` straight through
+  - Operational checks beyond Codex self-review / additional test runs / diff inspection are **strictly forbidden**
+  - The completion report is a single line sent to the Lead (`secretary`):
+    - `done: {short commit SHA} {changed file name}` (e.g. `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
+    - SHA is from `git rev-parse --short HEAD`; file name is one if a single file, space-separated if multiple
+    - Other information (deliverable description, PR draft, remaining points, etc.) is unnecessary. push / PR creation are done on the Lead side
+  - Retro record (`knowledge/raw/`) is **not needed** for minimal (trivial fixes are presumed to have no reusable lessons). If you make a non-obvious discovery, you may create one as in `full`
 
-**選択は窓口の責任**。ワーカーは指示に書かれた値（`full` or `minimal`）にそのまま従い、自分で切り替え判断をしないこと。派遣時にこの行自体が送信されなかった・または値が不明瞭だった場合はワーカーから窓口に確認すること（勝手に `full` にフォールバックしない）。
+**Choosing the value is the Lead's responsibility.** The Worker follows the value (`full` or `minimal`) as written in the instruction; do not switch on your own. If this line itself was not sent at dispatch time, or the value is unclear, the Worker should confirm with the Lead (do not silently fall back to `full`).
 ```
 
-## cross-cutting operational change の場合の consistency grep target list
+## Consistency grep target list for cross-cutting operational changes
 
-運用モード・共通設定・命名規約のような **cross-cutting な変更**（1 ファイルに閉じず、複数のロール / skill / 設定 / ドキュメントを横断する変更）を委譲するときは、ワーカー指示の「制約」または「タスク」セクションに、整合性確認のための grep スコープを明示する。スコープを書かないと、ワーカーは目に付いたファイルだけ直して、別ロール側 / docs 側の同名参照を取りこぼす（rename / mode 変更で起きやすい）。
+When delegating a **cross-cutting change** (one that does not stay in a single file but spans multiple roles / skills / settings / docs) — such as operational mode, common settings, naming conventions — explicitly state the grep scope for consistency check in the "Constraints" or "Task" section of the Worker instruction. Without scope, the Worker fixes only the files in front of them and misses the same-name references on the other-role / docs side (often happens with renames / mode changes).
 
-### 「cross-cutting」と判定する例
+### Examples judged as "cross-cutting"
 
-- **運用モード変更**: Plan / auto / `bypassPermissions` 等のデフォルト切り替え
-- **permissions / hook 設定の wholesale 変更**: `.claude/settings*.json` の allow / deny / hooks を横断的に書き換える
-- **communication channel / MCP server 名変更**: renga-peers の peer 名・MCP サーバ名・ロール識別子の rename（例: `foreman` → `dispatcher`）
-- **共通 flag / env var の追加削除**: 全ロール / 複数 skill が読む環境変数や CLI flag
+- **Operational mode change**: switching the default of Plan / auto / `bypassPermissions` etc.
+- **Wholesale change of permissions / hook settings**: cross-cutting rewrites to allow / deny / hooks of `.claude/settings*.json`
+- **Renaming communication channels / MCP server names**: renaming peer names of renga-peers / MCP server names / role identifiers (e.g. `foreman` → `dispatcher`)
+- **Adding / removing common flags / env vars**: environment variables or CLI flags read by all roles or multiple skills
 
-逆に、1 つの skill / 1 つのロール内に閉じる挙動変更（例: `org-retro` 内のフォーマット調整）は cross-cutting ではないので、このセクションは不要。
+Conversely, behavior changes confined to a single skill or role (e.g. format adjustment within `org-retro`) are not cross-cutting, so this section is unneeded.
 
-### 推奨 grep target ディレクトリ
+### Recommended grep target directories
 
-cross-cutting と判定したら、**最低限以下を grep スコープとしてワーカー指示に列挙する**。プロジェクト構成によって存在しないものは適宜削る:
+If judged cross-cutting, **enumerate at least the following as the grep scope** in the Worker instruction. Trim those that don't exist depending on the project layout:
 
-- `.claude/` — skill 本体（`skills/`）に加えて `settings.json` / `settings.local.json` まで含めること。permissions / hook / env 変更は設定本体に残ることが多く、`.claude/skills/` だけ走査すると正典設定を取りこぼす
+- `.claude/` — in addition to skills (`skills/`), include `settings.json` / `settings.local.json`. Permissions / hook / env changes often remain in the settings themselves; scanning only `.claude/skills/` misses the canonical settings
 - `registry/` — projects.md / org-config.md / worker-directory.md
-- `knowledge/curated/` — 蓄積された運用知見（旧名で書かれた pattern が残りやすい）
-- `dashboard/` — JSON 生成スクリプト・テンプレ
-- `.dispatcher/` — フォアマン（dispatcher）ロールの runtime / プロンプト
-- `.curator/` — キュレーターロールの runtime / プロンプト
-- `.hooks/` — PreToolUse / PostToolUse の hook スクリプト本体（hook ファイル名・ロール識別子の参照が残る）
-- `docs/` — 公開ドキュメント
-- `tools/` — チェッカ・補助スクリプト（`check_role_configs.py` 等）
-- `tests/` — hook / runner / checker のテスト（rename / mode 変更で fixture 名が漏れると CI を壊す）
+- `knowledge/curated/` — accumulated operational knowledge (patterns written under old names tend to remain)
+- `dashboard/` — JSON generation scripts and templates
+- `.dispatcher/` — Dispatcher role's runtime / prompt
+- `.curator/` — Curator role's runtime / prompt
+- `.hooks/` — PreToolUse / PostToolUse hook scripts themselves (references to hook file names / role identifiers tend to remain)
+- `docs/` — public documentation
+- `tools/` — checkers / helper scripts (`check_role_configs.py`, etc.)
+- `tests/` — hook / runner / checker tests (missing fixture names from rename / mode changes can break CI)
 
-ワーカー指示の例:
+Example Worker instruction:
 
 ```
-## 制約
-- 旧名 `foo` の参照が以下のディレクトリに残っていないか grep し、見つけたら全て新名 `bar` に置換すること:
-  - .claude/                （settings.json / settings.local.json も含む）
+## Constraints
+- grep for any remaining references to old name `foo` in the following directories, and replace all with the new name `bar` if found:
+  - .claude/                (also include settings.json / settings.local.json)
   - registry/
   - knowledge/curated/
   - dashboard/
@@ -117,13 +117,13 @@ cross-cutting と判定したら、**最低限以下を grep スコープとし�
   - docs/
   - tools/
   - tests/
-- grep コマンド例（Bash / Git Bash / WSL）: `grep -rn "foo" .claude/ registry/ knowledge/curated/ dashboard/ .dispatcher/ .curator/ .hooks/ docs/ tools/ tests/`
-- grep コマンド例（PowerShell）: `Select-String -Path .claude\,registry\,knowledge\curated\,dashboard\,.dispatcher\,.curator\,.hooks\,docs\,tools\,tests\ -Pattern "foo" -Recurse`
+- Example grep command (Bash / Git Bash / WSL): `grep -rn "foo" .claude/ registry/ knowledge/curated/ dashboard/ .dispatcher/ .curator/ .hooks/ docs/ tools/ tests/`
+- Example grep command (PowerShell): `Select-String -Path .claude\,registry\,knowledge\curated\,dashboard\,.dispatcher\,.curator\,.hooks\,docs\,tools\,tests\ -Pattern "foo" -Recurse`
 ```
 
-委譲時点で旧名 / 新名が確定していない場合は、ワーカーに「対象パターンを検出して一覧化 → 窓口に確認 → 置換」の 2 段で動かすこと。
+If the old / new names are not yet decided at delegation time, run the Worker in two steps: "detect the target patterns and list them → confirm with the Lead → replace".
 
-## 使用時の注意
+## Notes on use
 
-- タスクの記述は具体的に。曖昧な指示はワーカーの判断コストを上げる
-- 制約がある場合は必ず明示する
+- Make the task description concrete; ambiguous instructions raise the Worker's judgment cost
+- Always state constraints explicitly when there are any
