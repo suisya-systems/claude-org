@@ -1,36 +1,34 @@
-# claude-org-ja
+# claude-org
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/suisya-systems/claude-org-ja/actions/workflows/tests.yml/badge.svg)](https://github.com/suisya-systems/claude-org-ja/actions/workflows/tests.yml)
-[![Install](https://img.shields.io/badge/install-one--liner-brightgreen.svg)](#クイックスタート)
+[![CI](https://github.com/suisya-systems/claude-org/actions/workflows/tests.yml/badge.svg)](https://github.com/suisya-systems/claude-org/actions/workflows/tests.yml)
+[![Install](https://img.shields.io/badge/install-one--liner-brightgreen.svg)](#quick-start)
 
-> **claude-org-ja は日本語ファーストのリファレンス配布物です。**
-> 英語版の兄弟リポジトリ `claude-org` は別途並走予定（日英 2 系統構成）。
->
-> > **TODO**: 英語版兄弟リポジトリ (`claude-org`) へのクロスリンクは Issue #110 で当該リポジトリを作成後に追加します。
+> **claude-org is the English-first reference distribution.**
+> The Japanese-first sibling repository [`suisya-systems/claude-org-ja`](https://github.com/suisya-systems/claude-org-ja) ships in lockstep. Translations between the two are tracked in [`docs/translation-manifest.md`](docs/translation-manifest.md); locked terminology lives in [`docs/glossary.md`](docs/glossary.md).
 
 ---
 
-## 30 秒ピッチ
+## The 30-second pitch
 
-**問題**: Claude Code を「窓口 1 つ + ワーカー多数」の体制で長時間運用したい。しかし Claude Code は単独セッション前提で、複数インスタンスを安全に協調させるための運用層は公式には提供されていない。tmux 風の素朴な分割や、いわゆる farm 系の全自動並列では、許可境界・知見の蓄積・状態の復元・タスクごとの環境構築といった**運用上の規律**が抜け落ちる。
+**Problem.** You want to keep Claude Code running productively for hours, with a single human-facing entry point and a small fleet of Workers behind it. Claude Code itself is built around one session at a time; coordinating multiple instances safely is left to you. Naive `tmux`-style splits and the popular "agent farm" approach both skip the operational discipline that long-running multi-agent work actually needs: narrow permission boundaries, persisted knowledge, suspend/resume of the whole organization, and a fresh per-task working directory.
 
-**解決策**: claude-org-ja は Claude Code 専用の**運用規律フレームワーク**である。1 つの窓口 Claude と対話するだけで、フォアマン・キュレーター・ワーカーが裏で自動的に派生し、許可エントリの絞り込み（narrow allowlist）+ タスクごとの作業ディレクトリ境界 + 30 分おきの自動的な知見整理 + 状態の中断・再開を**最初から強制する**。
+**Solution.** claude-org is an **operational discipline framework** for Claude Code. You talk to a single Lead Claude; behind it, a Dispatcher, a Curator, and short-lived Workers are spawned automatically. From the first command, the framework enforces narrow allowlists per role, per-task working-directory boundaries, automatic knowledge curation every 30 minutes, and full suspend/resume of organization state.
 
-**対象利用者**: Claude Code を業務で長時間回したい開発者・オペレーターのうち、「全自動より明示的な許可境界が欲しい」「3〜5 ワーカーを品質重視で動かしたい」「知見の自己成長ループを回したい」層。
+**Who it's for.** Developers and operators who want to run Claude Code as a sustained workflow — and who specifically want **explicit permission boundaries over full autonomy**, **3–5 quality-focused Workers over 20+ farm-style ones**, and a **self-improving knowledge loop** as a first-class concern.
 
 ---
 
-## 4 層アーキテクチャ
+## Four-layer architecture
 
-claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物。Layer 3（端末多重化器 + MCP サーバー = `renga`）と Layer 2（組織運用ランタイム抽象）を依存先として持ち、Layer 2 はさらに Layer 1（Claude Code 周辺の最小ユーティリティ）に依存します。Layer 3 は Layer 1 とは独立で、`renga` 単体でも端末多重化器として利用可能です。
+claude-org sits at **Layer 4** of a four-layer stack. It depends on Layer 3 (the [`renga`](https://github.com/suisya-systems/renga) terminal multiplexer plus its `renga-peers` MCP server) and Layer 2 (an organization-runtime abstraction); Layer 2 in turn depends on Layer 1 (a minimal harness around Claude Code: hooks, sandbox, settings validation). Layer 3 is independent of Layer 1 — `renga` is usable on its own as a general-purpose multiplexer.
 
 ```mermaid
 flowchart TD
-    L4["<b>Layer 4: claude-org-ja</b><br/>運用規律フレームワーク（このリポジトリ）"]
-    L3["<b>Layer 3: renga</b><br/>端末多重化器 + renga-peers MCP サーバー"]
-    L2["<b>Layer 2: org-runtime</b><br/>組織運用抽象（ロール / 派遣 / 状態 / 監視）"]
-    L1["<b>Layer 1: core-harness</b><br/>Claude Code 周辺ユーティリティ（hook / sandbox / settings 検証）"]
+    L4["<b>Layer 4: claude-org</b><br/>Operational discipline framework (this repo)"]
+    L3["<b>Layer 3: renga</b><br/>Terminal multiplexer + renga-peers MCP server"]
+    L2["<b>Layer 2: org-runtime</b><br/>Organization runtime (roles / dispatch / state / monitoring)"]
+    L1["<b>Layer 1: core-harness</b><br/>Claude Code utilities (hooks / sandbox / settings validation)"]
 
     L4 --> L3
     L4 --> L2
@@ -42,242 +40,244 @@ flowchart TD
     class L2,L1 planned
 ```
 
-緑のボックス（Layer 3 / Layer 4）は同時公開済み、黄色のボックス（Layer 1 / Layer 2）は今後 claude-org-ja 本体から段階的に抽出予定の層です。`renga` は単体で AI 開発以外の用途でも使える汎用ツールで、claude-org-ja はその上に組織運用規律を載せたリファレンス配布物として位置づけられます。各層の責務の詳細は [docs/overview-technical.md](docs/overview-technical.md) を参照。
+The green boxes (Layer 3 / Layer 4) ship today. The yellow boxes (Layer 1 / Layer 2) will be extracted from claude-org over time. `renga` is intentionally a general-purpose tool; claude-org is the reference distribution that puts organizational discipline on top of it. See [docs/overview-technical.md](docs/overview-technical.md) for per-layer responsibilities.
 
 ---
 
-## クイックスタート
+## Quick start
 
-### ワンライナー（推奨）
+### One-liner (recommended)
 
-依存ツール（`git` / `claude` / `renga` / `gh`）が導入済みなら、以下のワンライナーでクローン + `renga mcp install` までを一気に実行できます。
+If you already have `git`, `claude`, `renga`, and `gh` installed, the one-liner clones the repo and runs `renga mcp install` for you.
 
-**macOS / Linux（bash）**:
+**macOS / Linux (bash):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.sh | bash
 ```
 
-**Windows（PowerShell 7+）**:
+**Windows (PowerShell 7+):**
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.ps1 | iex
 ```
 
-スクリプトは前提コマンドの導入有無を確認し、未導入のものがあれば**導入手順を案内して終了**します（自動インストールはしません）。完了後は以下の手順で起動します:
+The installer checks for the prerequisites and **prints install instructions and exits** if anything is missing — it does not auto-install dependencies. Once it finishes:
 
 ```bash
-cd claude-org-ja
-bash scripts/install-hooks.sh   # コミット直前の秘密情報スキャナを有効化
-renga --layout ops              # 窓口（Secretary）ペインを起動
+cd claude-org
+bash scripts/install-hooks.sh   # enable the pre-commit secret scanner
+renga --layout ops              # launch the Lead pane
 ```
 
-#### 特定バージョンを固定したい場合（`CLAUDE_ORG_REF`）
+#### Pinning a specific version (`CLAUDE_ORG_REF`)
 
-デフォルトではインストーラは `main` ブランチを clone します（**最新機能**を試したい場合はこれで OK）。
+By default the installer clones `main` (use this to track the **latest features**).
 
-**再現性**を優先したい・チームで同じバージョンを揃えたい場合は、環境変数 `CLAUDE_ORG_REF` で任意の **branch / tag** を指定できます。現在の安定版 tag は [Releases ページ](https://github.com/suisya-systems/claude-org-ja/releases) を参照してください。
+For **reproducibility** — same version across a team — set `CLAUDE_ORG_REF` to any branch or tag. Stable tags are listed on the [Releases page](https://github.com/suisya-systems/claude-org/releases).
 
-完全な再現性のためには、**インストーラ本体も同じ ref から取得**することを推奨します（そうしないと clone 対象は固定されてもインストーラのロジック自体は `main` 追従になります）。
+For full reproducibility, **fetch the installer itself from the same ref** you pin; otherwise the clone target is pinned but the installer logic still tracks `main`.
 
-**macOS / Linux（bash）**:
+**macOS / Linux (bash):**
 
 ```bash
 REF=v0.1.0
-curl -fsSL "https://raw.githubusercontent.com/suisya-systems/claude-org-ja/${REF}/scripts/install.sh" | CLAUDE_ORG_REF="${REF}" bash
+curl -fsSL "https://raw.githubusercontent.com/suisya-systems/claude-org/${REF}/scripts/install.sh" | CLAUDE_ORG_REF="${REF}" bash
 ```
 
-**Windows（PowerShell 7+）**:
+**Windows (PowerShell 7+):**
 
 ```powershell
 $Ref = 'v0.1.0'
 $env:CLAUDE_ORG_REF = $Ref
-iwr -useb "https://raw.githubusercontent.com/suisya-systems/claude-org-ja/$Ref/scripts/install.ps1" | iex
+iwr -useb "https://raw.githubusercontent.com/suisya-systems/claude-org/$Ref/scripts/install.ps1" | iex
 ```
 
-未指定時の挙動は従来通り `main` の clone のままです。存在しない ref を指定した場合はインストーラが**明示的にエラーを出して中断**します（`git clone --branch` が解決に失敗した時点で abort）。
+If `CLAUDE_ORG_REF` is unset the installer clones `main` as before. A non-existent ref aborts explicitly (`git clone --branch` fails fast).
 
-### 手動手順（ワンライナーを使わない場合）
+### Manual setup (no one-liner)
 
 ```bash
-# 1. 依存ツールを導入
-#    Claude Code (https://claude.ai/code), gh, Node.js v18+, Python 3.8+, jq を各公式手順で導入
-#    renga (Layer 3) は 0.18.0 以上が必須:
+# 1. Install prerequisites
+#    Claude Code (https://claude.ai/code), gh, Node.js v18+, Python 3.8+, jq
+#    renga (Layer 3) requires 0.18.0 or newer:
 npm install -g @suisya-systems/renga@0.18.0
 
-# 2. 認証
+# 2. Authenticate
 gh auth login
-claude                          # Claude Code の初回ログイン
+claude                          # first-time Claude Code login
 
-# 3. このリポジトリを取得
-git clone https://github.com/suisya-systems/claude-org-ja.git
-cd claude-org-ja
+# 3. Clone this repo
+git clone https://github.com/suisya-systems/claude-org.git
+cd claude-org
 
-# 4. renga の MCP サーバーを Claude Code に登録（初回のみ）
+# 4. Register the renga MCP server with Claude Code (one-time)
 renga mcp install
 
-# 5. 窓口（Secretary）ペインを起動
+# 5. Launch the Lead pane
 renga --layout ops
 ```
 
-窓口ペインで Claude Code が立ち上がったら、**初回のみ** `/org-setup` を実行してロール別の許可・フックの設定を配置します:
+When Claude Code comes up in the Lead pane, run `/org-setup` **once** to lay down per-role permissions and hooks:
 
 ```
 /org-setup
 ```
 
-続いて組織を起動します:
+Then bring up the organization:
 
 ```
 /org-start
 ```
 
-これでフォアマンとキュレーターが派生し、以後は自然言語で依頼を投げるだけ。詳細は [docs/getting-started.md](docs/getting-started.md) を参照。
+This dispatches the Dispatcher and Curator. From here on, you talk to the Lead in natural language. See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough.
 
 ---
 
-## なぜこれを使うか（既存ツールとの比較）
+## Why this, and how it differs from related work
 
-| 比較対象 | 立ち位置 | claude-org-ja との違い |
+| Compared to | Their position | How claude-org differs |
 |---|---|---|
-| **Claude Code Subagents / Agent Teams（公式）** | Anthropic 公式の「リード / チームメイト」階層 + 自動メモリ + フック | claude-org-ja は公式の上に乗る運用層。**競合せず共存**する。公式が提供しない「タスクごとの作業ディレクトリ境界の強制」「スキーマ駆動の設定 drift 検出」「生の知見 → 整理済み知見への昇華パイプライン」「30 分おきの自動整理ループ」を上乗せする |
-| **ccswarm（Rust 製、多重化器なしの協調基盤）** | 固定ロールプール（フロントエンド / バックエンド / QA エージェント等）+ 大規模並列志向 | claude-org-ja は**タスクごとに作業ディレクトリと `CLAUDE.md` を都度生成**する（事前のロールプールは持たない）。3〜5 ワーカーで品質重視（farm 系とは方向が逆） |
-| **Aider / aider-codex / Cursor のエージェント** | エディタ統合の単独エージェント、または複数モデル切替対応のコーディング支援ツール | claude-org-ja はコーディング支援ツールではなく**組織運用ランタイム**。Claude Code を素で叩き、組織運用規律を強制する |
-| **tmux / zellij + 手動でのプロンプト分割** | 汎用の端末多重化器 + 人間によるペインの手動運用 | claude-org-ja は専用 MCP サーバー（`renga-peers`）で**ペイン間 P2P メッセージ + 構造化ペイン生成 + 状態の中断・再開**を提供する。手動運用には無い「役割契約」「自動知見整理」「ロール別の許可配布」が中核 |
+| **Claude Code Subagents / Agent Teams (official)** | Anthropic's own lead/teammate hierarchy with auto-memory and hooks | claude-org is an operational layer **on top of** the official feature, not a competitor. It adds what the official feature does not enforce: per-task working-directory boundaries, schema-driven detection of settings drift, a raw → curated knowledge promotion pipeline, and a 30-minute auto-curation loop. |
+| **ccswarm (Rust, multiplexer-less coordination)** | Fixed role pool (frontend / backend / QA agents, etc.) optimized for high parallelism | claude-org generates a **fresh working directory and `CLAUDE.md` per task** rather than maintaining a pre-allocated role pool. It targets 3–5 Workers with a quality-first stance — explicitly the opposite of the farm pattern. |
+| **Aider / aider-codex / Cursor agents** | Editor-integrated single agents, or coding helpers with multi-model switching | claude-org is not a coding helper. It is an **organization runtime** that drives stock Claude Code and enforces operational discipline around it. |
+| **`tmux` / `zellij` + manual prompt-splitting** | General multiplexers driven entirely by humans | claude-org adds a purpose-built MCP server (`renga-peers`) that provides **pane-to-pane P2P messaging, structured pane spawning, and full suspend/resume of state**. The role contracts, automatic knowledge curation, and per-role permission distribution are the parts you don't get from manual operation. |
 
-→ より詳細な 16 軸の比較は [docs/oss-comparison.md](docs/oss-comparison.md) を参照。
+For the full 16-axis comparison see [docs/oss-comparison.md](docs/oss-comparison.md).
 
 ---
 
-## 仕組み
+## How it works
 
 ```
-人間 <-> 窓口 Claude（司令塔）
+human <-> Lead Claude (single point of contact)
               |
-              +-> フォアマン（ワーカー起動・指示の代行）
-              +-> キュレーター（知見整理、30 分ごとに自動実行）
-              +-> ワーカー群（実作業、完了後に自動消滅）
+              +-> Dispatcher (spawns Workers and relays instructions)
+              +-> Curator (knowledge curation, runs every 30 min)
+              +-> Workers (do the actual work, exit when finished)
 ```
 
-- **窓口（Secretary）**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担う
-- **フォアマン（Dispatcher）**: ペイン起動・指示送信を代行し、窓口がブロックされる時間を最小化する
-- **キュレーター（Curator）**: 蓄積された生の知見を整理済みの知見に昇華し、スキルやプロセスの改善を提案する
-- **ワーカー（Worker）**: 実作業を担当する。タスクごとの作業ディレクトリ境界の中で自律的にコミット・プルリクエスト作成を行い、完了後に生の知見を記録する
+- **Lead.** The single human-facing role. Decomposes requests, decides what to dispatch, relays results back. Never edits code directly.
+- **Dispatcher.** Spawns Worker panes and forwards instructions, so the Lead is not blocked on per-Worker plumbing.
+- **Curator.** Promotes raw learnings into curated knowledge and proposes skill or process improvements.
+- **Worker.** Short-lived, scoped Claude instance that performs the actual editing, building, testing, and commits inside its per-task working-directory boundary, then records a raw learning when it exits.
 
-全ペインは同一タブ内で動作します（別タブを開く `new_tab` は組織運用では使いません）。
-
----
-
-## 意図的に持たない機能（要約）
-
-claude-org-ja の設計哲学を能動的に明示するため、**意図的に持たない 5 項目**:
-
-1. **ワーカーに `--dangerously-skip-permissions` を既定で撒かない** — 許可エントリの絞り込み + 多層防御を中核価値とする。実作業ロールに許可境界の全面回避を一律で配ることはしない（フォアマンのみ Sonnet 運用上やむなく `bypassPermissions` を採用、詳細は [docs/non-goals.md](docs/non-goals.md) §1）
-2. **固定ロールプール（フロントエンド / バックエンド / QA エージェント）を持たない** — タスクごとに作業ディレクトリと `CLAUDE.md` を都度生成する。事前のロールプールはタスクごとの規律と矛盾する
-3. **大規模並列（20+ エージェント）はしない** — 3〜5 ワーカー想定。品質重視で farm 系とは方向が逆
-4. **自然言語からのプロジェクト雛形生成（Auto-create app）はしない** — 運用規律フレームワークであり、雛形生成器ではない
-5. **複数プロバイダー切替（Aider / Codex / Gemini 等）はしない** — Claude 専用。`codex` は任意のレビュー用途のみ想定
-
-詳細・残り 7 項目（PTY 層 / `--add-dir` 横断 / MCP の HTTP 公開 等）と「なぜそうしないか」「代替手段は何か」は [docs/non-goals.md](docs/non-goals.md) を参照。
+All panes live in one tab; the cross-tab `new_tab` operation is intentionally not used for organization workflows.
 
 ---
 
-## スキル一覧
+## Things claude-org deliberately does not do
 
-スキルは prefix で 2 系統に分かれます。`/org-*` は組織ランタイム操作（ペイン・ワーカー・状態を直接扱う日々の運用）、`/skill-*` はスキル体系自体のメタ操作（スキルを生み出す / 整理する判断）です。新しくスキルを追加するときはこの prefix 規則に従ってください。
+To make the design philosophy explicit, **five non-goals** out of the full list:
 
-### 組織ランタイム操作（`/org-*`）
+1. **No default `--dangerously-skip-permissions` for Workers.** Narrow allowlists and defense-in-depth are core values; Workers don't get a blanket bypass of permission boundaries. Only the Dispatcher uses `bypassPermissions` (a Sonnet-runtime constraint, see [docs/non-goals.md](docs/non-goals.md) §1).
+2. **No fixed role pool** (frontend / backend / QA). A fresh working directory and `CLAUDE.md` are generated per task. A pre-allocated pool conflicts with per-task discipline.
+3. **No high parallelism** (20+ agents). The target is 3–5 Workers, quality-first — the opposite of the farm pattern.
+4. **No project-template generation from natural language** ("auto-create app"). claude-org is an operational discipline framework, not a scaffolder.
+5. **No multi-provider switching** (Aider / Codex / Gemini, etc.). Claude-only by design. `codex` is supported strictly as an optional reviewer.
 
-起動・派遣・中断・振り返りなど、組織の日々の運用に使う。
+The remaining seven non-goals (PTY layer, cross-`--add-dir` traversal, exposing MCP over HTTP, etc.), the reasoning behind them, and the available alternatives are in [docs/non-goals.md](docs/non-goals.md).
 
-| スキル | 用途 |
+---
+
+## Skills
+
+Skills are split into two prefixes. `/org-*` is day-to-day organization runtime control (panes, Workers, state). `/skill-*` is meta — operating on the skill catalog itself. New skills should follow this convention.
+
+### Organization runtime (`/org-*`)
+
+Startup, dispatch, suspend, retro — the everyday operations.
+
+| Skill | Purpose |
 |---|---|
-| `/org-setup` | ロール別の許可設定・環境変数の一括配置（初回および設定変更時） |
-| `/org-start` | 組織の起動（起動直後に 1 回実行） |
-| `/org-delegate` | 作業の割り当て（自動発動） |
-| `/org-suspend` | 作業の中断 |
-| `/org-resume` | 作業の再開 |
-| `/org-retro` | 委譲プロセスの振り返り |
-| `/org-curate` | 知見の整理（自動実行） |
-| `/org-dashboard` | ダッシュボード表示 |
+| `/org-setup` | Lay down per-role permissions and environment (one-time, plus on settings changes). |
+| `/org-start` | Bring up the organization (run once after launch). |
+| `/org-delegate` | Assign work (triggered automatically). |
+| `/org-suspend` | Suspend the organization. |
+| `/org-resume` | Resume from suspend. |
+| `/org-retro` | Retrospective on a dispatch. |
+| `/org-curate` | Knowledge curation (runs automatically). |
+| `/org-dashboard` | Show the dashboard. |
 
-### スキル体系メタ操作（`/skill-*`）
+### Skill-catalog meta (`/skill-*`)
 
-スキル自体を生み出す / 整理する判断に使う。生成（eligibility-check）→ 棚卸し（audit）の順で自己成長ループを成す。
+Used to grow and tidy the skill catalog itself. Together they form a self-improving loop: generate (eligibility-check) → audit.
 
-| スキル | 用途 |
+| Skill | Purpose |
 |---|---|
-| `/skill-eligibility-check` | 作業パターンをスキル化すべきか判定（`/org-retro` / `/org-curate` から呼ばれ、推奨 / 候補止まり / curated ノートのまま の 3 値で返す） |
-| `/skill-audit` | スキルの棚卸し（廃止候補・重複統合の検出） |
+| `/skill-eligibility-check` | Decide whether an observed pattern should become a skill. Called from `/org-retro` and `/org-curate`. Returns one of: recommended / candidate-only / leave as a curated note. |
+| `/skill-audit` | Audit the skill catalog (deprecation candidates, duplicate consolidation). |
 
 ---
 
-## ドキュメント
+## Documentation
 
-| ドキュメント | 内容 |
+| Doc | Contents |
 |---|---|
-| [docs/getting-started.md](docs/getting-started.md) | 使い方ガイド |
-| [docs/overview-technical.md](docs/overview-technical.md) | アーキテクチャ・MCP ツール詳細 |
-| [docs/non-goals.md](docs/non-goals.md) | 意図的に持たない機能の詳細 |
-| [docs/oss-comparison.md](docs/oss-comparison.md) | 関連プロジェクトとの比較レポート（16 軸） |
-| [docs/verification.md](docs/verification.md) | テスト手順・検証結果 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | コントリビュートガイド |
+| [docs/getting-started.md](docs/getting-started.md) | Walkthrough |
+| [docs/overview-technical.md](docs/overview-technical.md) | Architecture and MCP tool reference |
+| [docs/non-goals.md](docs/non-goals.md) | The full non-goals list with rationale |
+| [docs/oss-comparison.md](docs/oss-comparison.md) | 16-axis comparison with related projects |
+| [docs/verification.md](docs/verification.md) | Test procedures and verification results |
+| [docs/glossary.md](docs/glossary.md) | Locked terminology (en ↔ ja) |
+| [docs/canonical-ownership.md](docs/canonical-ownership.md) | Which side is canonical for each artifact |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
 
 ---
 
-## セキュリティと許可境界
+## Security and permission boundaries
 
-claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / サンドボックス（sandbox）/ コミット直前の秘密情報スキャナ）を採用しています。ただし**ロールごとに各層の効き方は異なります**:
+claude-org uses **four layers of defense**: `permissions.deny`, PreToolUse hooks, the Claude Code sandbox, and a pre-commit secret scanner. Each layer applies differently per role:
 
-- **ワーカー / 窓口 / キュレーター（`auto` モード）**: `permissions.deny` と `permissions.allow` がいずれも有効。PreToolUse フックも有効。4 層防御がフル稼働する
-- **フォアマン（`bypassPermissions` モード）**: `permissions.deny` と `permissions.allow` は **bypass される**（保護対象ディレクトリ `.git/`, `.claude/`, `.vscode/`, `.idea/`, `.husky/` への書き込み確認プロンプトのみ残る）。実効防御は **PreToolUse フック配備済み**: Edit/Write のスコープ限定（`.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` のみ。それ以外は exit 2 でブロック）、`git push --force` 系・破壊的 `git`・workers 再帰削除・`--no-verify` の遮断。ロール契約による自主規律と窓口監視で補完する
+- **Worker / Lead / Curator (`auto` mode).** Both `permissions.deny` and `permissions.allow` are in effect; PreToolUse hooks are active. All four layers operate at full strength.
+- **Dispatcher (`bypassPermissions` mode).** `permissions.deny` and `permissions.allow` are **bypassed** (only the write-confirmation prompts on the protected directories `.git/`, `.claude/`, `.vscode/`, `.idea/`, `.husky/` remain). The effective defense is **PreToolUse hooks**: Edit/Write are scoped to `.dispatcher/`, `.state/`, and `knowledge/raw/YYYY-MM-DD-{topic}.md` (anything else exits 2 / blocked); `git push --force` variants, destructive `git`, recursive deletion of workers, and `--no-verify` are all blocked. The role contract and Lead-side monitoring complete the picture.
 
-`git push --no-verify` 等の検証バイパス、`git push --force` 系の履歴上書き、ステージ差分への秘密情報の混入は、`auto` モードのロールについては複数層で止まります。`.env` や認証情報の読み取りについては Claude Code 側の `sandbox.enabled` の OS 依存があり、**Windows native 環境では sandbox enforcement が現時点で未実装** で `cat .env` が素通りする実測があります（[docs/verification.md §sandbox 実測結果](docs/verification.md) 参照）。macOS (Seatbelt) / Linux / WSL2 (`bubblewrap` + `socat` 導入時) のみで sandbox が有効化されます。フォアマン側のロール契約に基づく自主規律と、bypass モードでの挙動の正確な整理は [docs/non-goals.md §1](docs/non-goals.md#1-ワーカーに---dangerously-skip-permissions-を既定で撒かない) を参照。
+For roles in `auto` mode, `git push --no-verify`-style verification bypass, `git push --force` history overwrites, and secrets sneaking into staged diffs are all stopped at multiple layers. Reading `.env` or credential files via the sandbox depends on the OS support of Claude Code itself: **on Windows native, sandbox enforcement is currently not implemented**, and `cat .env` passes through (see [docs/verification.md §sandbox results](docs/verification.md)). The sandbox is enforced on macOS (Seatbelt), Linux, and WSL2 (with `bubblewrap` + `socat`). For the precise behavior of the Dispatcher's bypass mode and the role-contract self-discipline that completes it, see [docs/non-goals.md §1](docs/non-goals.md#1-no-default---dangerously-skip-permissions-for-workers).
 
-各層の責任境界・既知の残存リスク（関数定義経由の回避手段など）・PreToolUse フックの検知範囲は [docs/overview-technical.md](docs/overview-technical.md) と `.hooks/` / `.githooks/` 配下を参照。
+Per-layer responsibility boundaries, the known residual risks (e.g. function-definition routing), and PreToolUse hook coverage are documented in [docs/overview-technical.md](docs/overview-technical.md) and the `.hooks/` / `.githooks/` directories.
 
-### 攻撃ベクトル × 防御層マトリクス
+### Attack vector × defense layer matrix
 
-本リポジトリ自身の `.claude/settings.json`（窓口・キュレーター用、`auto` モード）と `.githooks/pre-commit` を基準にした、主要な攻撃ベクトルと各層の対応表です（✅ ブロック / ⚠️ 部分・条件付き / — 対象外 / ➖ 未配備）。**ワーカーロール用テンプレート（`.claude/skills/org-setup/references/permissions.md`）は `permissions.deny` が `git push` 系と `rm -r` / `rm -rf` のみで、PreToolUse フックは `check-worker-boundary.sh` / `block-org-structure.sh` / `block-git-push.sh` が配備されます**（`block-no-verify.sh` / `block-dangerous-git.sh` はワーカー側には未配備）。`--no-verify` / `git reset --hard` / `git branch -D` 系の直接遮断は本リポジトリ側の窓口・キュレーターのみが該当します。ワーカーは `git push` 自体を `block-git-push.sh` で全面遮断するため、`--force` を含む push 系は副次的に止まりますが、ローカルでの `git commit --no-verify` や `git reset --hard` はロール契約による自主規律で担保される設計です（フォアマンは `.dispatcher/` 用の独立した hook 群で別途管理）。
+Based on this repo's own `.claude/settings.json` (Lead and Curator, `auto` mode) and `.githooks/pre-commit`. (✅ blocked / ⚠️ partial or conditional / — out of scope / ➖ not deployed.) The Worker template (`.claude/skills/org-setup/references/permissions.md`) intentionally keeps `permissions.deny` thin — only `git push` variants and `rm -r` / `rm -rf` — and ships `check-worker-boundary.sh` / `block-org-structure.sh` / `block-git-push.sh` as PreToolUse hooks. (`block-no-verify.sh` and `block-dangerous-git.sh` are **not** deployed on the Worker side.) Direct blocks for `--no-verify` / `git reset --hard` / `git branch -D` apply to the Lead and Curator on this repo. Workers block `git push` entirely via `block-git-push.sh`, which incidentally also stops `--force`; local `git commit --no-verify` and `git reset --hard` on Workers are covered only by the role contract (the Dispatcher has its own independent hook set under `.dispatcher/`).
 
-| 攻撃ベクトル | `permissions.deny` | PreToolUse フック | sandbox | pre-commit |
+| Attack vector | `permissions.deny` | PreToolUse hook | sandbox | pre-commit |
 |---|---|---|---|---|
-| `git commit --no-verify` 直書き（窓口・キュレーター） | ✅ | ✅ (`block-no-verify.sh`) | — | — |
-| `eval "git commit --no-verify"` / `bash -c "..."` | — | ✅ Phase 2a [#79](https://github.com/suisya-systems/claude-org-ja/issues/79): `unwrap_eval_and_bashc` で明示パース | — | — |
-| `VAR=$(printf -- '--no-verify'); git commit $VAR` | — | ✅ assignment 収集 + `flatten_substitutions` | — | — |
-| `git push --force` / `git reset --hard` / `git branch -D`（窓口・キュレーター） | ✅ | ✅ (`block-dangerous-git.sh`) | — | — |
-| `cat .env` / 認証情報読み取り（Bash 経由） | — | — | ⚠️ macOS (Seatbelt) / Linux / WSL2 (`bubblewrap`+`socat`) のみ。**Windows native は Claude Code 側未実装で素通り**（[docs/verification.md §10.1](docs/verification.md)） | — |
-| ステージ差分への秘密情報混入 | — | — | — | ✅ ([.githooks/pre-commit](.githooks/pre-commit)) |
-| シェル関数経由の bypass（`f(){ git commit --no-verify; }; f`） | — | ➖ 関数定義の静的解析は非対応 | — | — |
+| `git commit --no-verify` direct (Lead / Curator) | ✅ | ✅ (`block-no-verify.sh`) | — | — |
+| `eval "git commit --no-verify"` / `bash -c "..."` | — | ✅ Phase 2a [#79](https://github.com/suisya-systems/claude-org/issues/79): explicit parsing via `unwrap_eval_and_bashc` | — | — |
+| `VAR=$(printf -- '--no-verify'); git commit $VAR` | — | ✅ assignment collection + `flatten_substitutions` | — | — |
+| `git push --force` / `git reset --hard` / `git branch -D` (Lead / Curator) | ✅ | ✅ (`block-dangerous-git.sh`) | — | — |
+| `cat .env` / credential reads via Bash | — | — | ⚠️ macOS (Seatbelt) / Linux / WSL2 (`bubblewrap`+`socat`) only. **Windows native is unenforced upstream and passes through** (see [docs/verification.md §10.1](docs/verification.md)). | — |
+| Secrets in staged diff | — | — | — | ✅ ([.githooks/pre-commit](.githooks/pre-commit)) |
+| Bypass via shell function (`f(){ git commit --no-verify; }; f`) | — | ➖ static analysis of function definitions is not supported | — | — |
 
-**残存リスク (residual risk)**:
-- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` / `~/.ssh/**` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません。本ベクトルは現状ロール契約による自主規律のみで担保されます。
-- **Windows native の sandbox 不在**: 上記表のとおり `cat .env` 等は Windows native では素通りします。ワーカー実行環境としては macOS / Linux / WSL2 を推奨し、Windows native では別経路（OS 側のファイル権限・GitHub Secret Scanning 等）で補完してください。
-- **ワーカーロールの薄い deny**: ワーカー用テンプレートの `permissions.deny` は意図的に小さく保たれており、ローカルでの `git commit --no-verify` / `git reset --hard` の直接遮断は配備されません（`git push` 自体は hook で全面遮断されるため `--force` は副次的に止まります）。残るリスクはロール契約と窓口側 CI の保護に依存します。
+**Residual risks.**
+- **Routing through shell function definitions.** Forbidden commands hidden inside a function body are not detected by the PreToolUse hooks' static analysis. (Phase 2c shell-layer static analysis was rejected on false-positive rate and maintenance cost.) The sandbox's `denyWrite` covers a fixed list (`~/.claude/settings.json`, `~/.ssh/**`, etc.) and does not stop in-repo side effects like `git commit`. This vector is currently covered only by the role contract.
+- **No sandbox on Windows native.** As shown in the matrix, `cat .env` and similar reads pass through on Windows native. macOS / Linux / WSL2 are recommended for Worker execution; Windows native should be backed up by other channels (OS-level file permissions, GitHub Secret Scanning, etc.).
+- **Thin Worker `permissions.deny`.** The Worker template keeps `permissions.deny` deliberately small. Local `git commit --no-verify` and `git reset --hard` are not directly blocked on Workers (`git push` itself is fully blocked by the hook, so `--force` is incidentally caught). The remaining surface is covered by the role contract and Lead-side CI.
 
-詳細と段階導入の意思決定は [Issue #79](https://github.com/suisya-systems/claude-org-ja/issues/79) と [docs/verification.md §10](docs/verification.md) を参照。
+The full decision history and staged rollout are in [Issue #79](https://github.com/suisya-systems/claude-org/issues/79) and [docs/verification.md §10](docs/verification.md).
 
-新しくクローンしたら、1 度だけ以下を実行してください:
+After cloning, run this **once**:
 
 ```bash
 bash scripts/install-hooks.sh
 ```
 
-これで `core.hooksPath` が `.githooks/` に設定され、コミット直前の秘密情報スキャナが有効になります。
+This points `core.hooksPath` at `.githooks/` and enables the pre-commit secret scanner.
 
 ---
 
-## 困ったとき
+## Troubleshooting
 
-- **`/org-start` しても反応しない** → 窓口ペインの Claude Code がログイン済みか確認（`claude` を叩いて初回認証）。`claude mcp list` に `renga-peers` が出ているかも確認
-- **`renga-peers` MCP サーバーが見えない** → `renga mcp status` で登録状態を確認し、未登録なら `renga mcp install` を再実行（ユーザースコープ登録なので全ペインに即時反映される）
-- **`gh auth status` が Not logged in** → `gh auth login` で GitHub 認証を済ませる。未認証だとワーカーがプルリクエストを作れません
-- **互換性の事前確認**: `tools/check_renga_compat.py` で `renga` のバージョンと MCP ツール群を一括確認できます
+- **`/org-start` doesn't respond.** Confirm Claude Code is logged in inside the Lead pane (`claude` triggers first-time auth). Also check that `claude mcp list` shows `renga-peers`.
+- **`renga-peers` MCP server isn't visible.** Check `renga mcp status`; if not registered, re-run `renga mcp install` (it's a user-scope registration, so all panes pick it up immediately).
+- **`gh auth status` says Not logged in.** Run `gh auth login`. Without GitHub auth, Workers cannot open pull requests.
+- **Compatibility check.** `tools/check_renga_compat.py` verifies the installed `renga` version and its MCP tool surface in one go.
 
-それでも解決しない場合は [Issues](https://github.com/suisya-systems/claude-org-ja/issues) へ。
+If none of the above apply, please open an [Issue](https://github.com/suisya-systems/claude-org/issues).
 
 ---
 
-## ライセンス
+## License
 
 [MIT License](LICENSE) © 2026 Ryo Iwama
