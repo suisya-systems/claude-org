@@ -54,7 +54,7 @@ def _parse_org_state(text):
         if m:
             objective = m.group(1).strip()
 
-        # Work items: "- task-id: タイトル [STATUS]"
+        # Work items: "- task-id: title [STATUS]"
         m = re.match(r"^- ([\w-]+):\s*(.+?)\s*\[(\w+)\]", line)
         if m:
             work_items.append({
@@ -117,11 +117,11 @@ def _parse_journal(text):
             pass
 
     EVENT_LABELS = {
-        "worker_spawned": "ワーカー派遣",
-        "worker_respawned": "ワーカー再派遣",
-        "worker_closed": "ワーカー終了",
-        "suspend": "組織を中断",
-        "resume": "組織を再開",
+        "worker_spawned": "Worker dispatched",
+        "worker_respawned": "Worker redispatched",
+        "worker_closed": "Worker closed",
+        "suspend": "Org suspended",
+        "resume": "Org resumed",
     }
 
     result = []
