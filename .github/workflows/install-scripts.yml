@@ -126,7 +126,7 @@ jobs:
           echo "$out"
           # Sanity-check the dry-run actually reached the clone step and
           # honored --skip-mcp, so a silent early-exit can't pass.
-          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+--branch[[:space:]]+main[[:space:]]+https://github\.com/suisya-systems/claude-org-ja\.git" \
+          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+--branch[[:space:]]+main[[:space:]]+https://github\.com/suisya-systems/claude-org\.git" \
             || { echo "smoke: missing 'git clone --branch main' echo from dry-run" >&2; exit 1; }
           echo "$out" | grep -q "Skipping 'renga mcp install'" \
             || { echo "smoke: --skip-mcp banner missing" >&2; exit 1; }
@@ -148,7 +148,7 @@ jobs:
             Write-Error "smoke: install.ps1 exited with $LASTEXITCODE"
             exit 1
           }
-          if ($out -notmatch 'git\s+clone\s+--branch\s+main\s+https://github\.com/suisya-systems/claude-org-ja\.git') {
+          if ($out -notmatch 'git\s+clone\s+--branch\s+main\s+https://github\.com/suisya-systems/claude-org\.git') {
             Write-Error "smoke: missing 'git clone --branch main' echo from dry-run"
             exit 1
           }
@@ -206,7 +206,7 @@ jobs:
           git -C "$work_dir" branch test-fixture-ref-v1
           git clone --bare -q "$work_dir" "$fixture_dir"
           git config --global "url.${fixture_dir}.insteadOf" \
-            "https://github.com/suisya-systems/claude-org-ja.git"
+            "https://github.com/suisya-systems/claude-org.git"
 
       - name: Set up local clone fixture (Windows)
         if: runner.os == 'Windows'
@@ -224,7 +224,7 @@ jobs:
           & git -C $workDir -c user.email=ci@example.com -c user.name=CI commit --allow-empty -q -m "fixture commit"
           & git -C $workDir branch test-fixture-ref-v1
           & git clone --bare -q $workDir $fixtureDir
-          & git config --global "url.${fixtureDir}.insteadOf" "https://github.com/suisya-systems/claude-org-ja.git"
+          & git config --global "url.${fixtureDir}.insteadOf" "https://github.com/suisya-systems/claude-org.git"
           if ($LASTEXITCODE -ne 0) { Write-Error "fixture setup failed (exit $LASTEXITCODE)"; exit 1 }
 
       # ---- Case 2: CLAUDE_ORG_REF success path (Issue #154). Pin the
@@ -243,7 +243,7 @@ jobs:
           rm -rf "$target"
           out=$(CLAUDE_ORG_REF=test-fixture-ref-v1 bash scripts/install.sh --skip-mcp --dir "$target" 2>&1)
           echo "$out"
-          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+--branch[[:space:]]+test-fixture-ref-v1[[:space:]]+https://github\.com/suisya-systems/claude-org-ja\.git" \
+          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+--branch[[:space:]]+test-fixture-ref-v1[[:space:]]+https://github\.com/suisya-systems/claude-org\.git" \
             || { echo "smoke: CLAUDE_ORG_REF success: missing 'git clone --branch test-fixture-ref-v1' echo" >&2; exit 1; }
           echo "$out" | grep -q "Done. Next steps:" \
             || { echo "smoke: CLAUDE_ORG_REF success: tail marker 'Done. Next steps:' missing" >&2; exit 1; }
@@ -270,7 +270,7 @@ jobs:
             Write-Error "smoke: CLAUDE_ORG_REF success: install.ps1 exited with $LASTEXITCODE"
             exit 1
           }
-          if ($out -notmatch 'git\s+clone\s+--branch\s+test-fixture-ref-v1\s+https://github\.com/suisya-systems/claude-org-ja\.git') {
+          if ($out -notmatch 'git\s+clone\s+--branch\s+test-fixture-ref-v1\s+https://github\.com/suisya-systems/claude-org\.git') {
             Write-Error "smoke: CLAUDE_ORG_REF success: missing 'git clone --branch test-fixture-ref-v1' echo"
             exit 1
           }
