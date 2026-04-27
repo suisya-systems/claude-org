@@ -60,13 +60,13 @@ class TestParseJournal(unittest.TestCase):
 
         # Reversed order: last valid event first
         self.assertEqual(result[0]["event"], "resume")
-        self.assertEqual(result[0]["summary"], "組織を再開")
+        self.assertEqual(result[0]["summary"], "Org resumed")
 
         self.assertEqual(result[1]["event"], "worker_closed")
-        self.assertIn("ワーカー終了", result[1]["summary"])
+        self.assertIn("Worker closed", result[1]["summary"])
 
         self.assertEqual(result[2]["event"], "worker_spawned")
-        self.assertIn("ワーカー派遣", result[2]["summary"])
+        self.assertIn("Worker dispatched", result[2]["summary"])
         # Worker ID truncated to 8 chars
         self.assertIn("abc12345", result[2]["summary"])
         self.assertNotIn("abc12345-long-id", result[2]["summary"])
