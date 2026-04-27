@@ -26,7 +26,7 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 | `name_in_use` | `set_pane_identity` で既存の別ペインが使用中の name を割り当てようとした | `/org-start` Step 0 の secretary 識別修復では、この code を拾ってユーザーに「永続修復には `/org-suspend` → 再起動」を提示する。短期回避は numeric pane id 運用 |
 | `name_invalid` | `set_pane_identity` で全桁数字 / 禁止文字を含む name を指定した | 許可文字は `[A-Za-z0-9_-]`。全桁数字は numeric pane id と曖昧化するため拒否される。バグなので journal 記録 |
 | `io_error` | PTY write / spawn / OS レベル失敗 | 1 サイクル spin して再試行。2 連続で同じ worker に出たら窓口に `IO_ERROR_DETECTED` で escalate |
-| `shutting_down` | renga 本体がシャットダウン中 | 監視ループを **即停止** する。窓口 (`secretary`) に renga-peers で `FOREMAN_STOPPING` を通知（best-effort — renga 自体が落ちる場合は届かない） |
+| `shutting_down` | renga 本体がシャットダウン中 | 監視ループを **即停止** する。窓口 (`secretary`) に renga-peers で `DISPATCHER_STOPPING` を通知（best-effort — renga 自体が落ちる場合は届かない） |
 | `app_timeout` | renga 内部 App スレッドが応答しなかった | 1 サイクル spin (renga 再起動は管理者判断)。連続発生なら窓口にログ |
 | `parse` / `protocol` | 通常出ない (MCP が正しく組み立てる前提) | 発生時はバグ。journal に記録して窓口に `IPC_PROTOCOL_ERROR` で報告 |
 | `internal` | renga 内部不変条件違反 (parser lock poison 等) | `app_timeout` と同じ扱い |
