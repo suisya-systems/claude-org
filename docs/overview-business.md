@@ -1,92 +1,92 @@
-# claude-org — できることガイド
+# claude-org — What You Can Do
 
-このリポジトリは、**AIアシスタントのチームを使って仕事を進める仕組み**です。
-あなたが話しかけるのは「窓口」の1人だけ。裏側では複数の担当者が並行して作業します。
-
----
-
-## どんなことができるか
-
-### 作業を頼む
-
-「ブログに記事を追加して」「ECサイトの商品ページを直して」のように、やりたいことをそのまま伝えるだけで作業が始まります。技術的な言葉を使う必要はありません。
-
-- 窓口が内容を理解し、適切な担当者（ワーカー）に作業を割り当てます
-- 複数の作業を同時に進めることもできます
-- どのプロジェクトか分からないときは、選択肢を出して聞いてくれます
-
-### 状況を確認する
-
-- 作業の進み具合は窓口が報告します
-- 「ダッシュボード見せて」と言えば、ブラウザで全体像を確認できます
-  - プロジェクト一覧
-  - 現在の作業状況
-  - 最近の出来事
-  - 蓄積された知見
-
-### 中断・再開する
-
-- 「今日は終わり」と言えば、全ての状態が保存されます
-- 次に起動したとき、前回の状態を報告し、続きから再開できます
-- 端末を突然閉じてしまっても、ある程度の状態は復元されます
+This repository is **a system for getting work done with a team of AI assistants**.
+You only ever talk to one role: the **Lead**. Behind the scenes, several specialized roles run in parallel.
 
 ---
 
-## 組織の役割
+## What it can do for you
 
-| 役割 | 何をするか | あなたとの関わり |
+### Hand off work
+
+Say what you want done in plain language — "add a new post to the blog", "fix the product page on the storefront" — and the work begins. You don't need to use technical vocabulary.
+
+- The Lead understands the request and routes it to the right role (a Worker)
+- Several pieces of work can run at the same time
+- If it's unclear which project you mean, the Lead asks with a short list of choices
+
+### Check on what's happening
+
+- The Lead reports progress back to you
+- Say "show me the dashboard" and you'll get a browser view of:
+  - The list of projects
+  - Currently running work
+  - A recent activity timeline
+  - Knowledge accumulated so far
+
+### Suspend and resume
+
+- Say "we're done for today" and the full state is saved
+- Next time you start, the Lead reports the previous state and you pick up where you left off
+- Even if the terminal is closed abruptly, most of the state can still be recovered
+
+---
+
+## The roles in the organization
+
+| Role | What it does | Your interaction |
 |---|---|---|
-| **窓口（Secretary）** | あなたとの対話、作業の割り当て、結果の報告 | **直接話す唯一の相手** |
-| **フォアマン（Dispatcher）** | 担当者の起動と管理を代行 | 意識する必要なし |
-| **キュレーター（Curator）** | 学びの整理、改善提案 | 意識する必要なし |
-| **ワーカー（Worker）** | 実際の作業（コード編集、調査、ファイル作成など） | 意識する必要なし |
+| **Lead** | Talks with you, assigns work, reports results | **The only role you speak to directly** |
+| **Dispatcher** | Spawns and manages Workers on the Lead's behalf | None needed |
+| **Curator** | Organizes accumulated knowledge, suggests improvements | None needed |
+| **Worker** | Does the actual work — code edits, investigation, file authoring, etc. | None needed |
 
-あなたが関わるのは窓口だけです。残りは裏側で自動的に動きます。
+You only deal with the Lead. The rest run automatically in the background.
 
 ---
 
-## 使い方の流れ
+## How a session flows
 
 ```
-1. Claude Codeを起動する
-2. /org-start を実行する（初回のみ。前回の状態があれば自動で報告される）
-3. やりたいことを伝える
-4. 結果の報告を受け取る
-5. 終わるときは「今日は終わり」と伝える
+1. Start Claude Code
+2. Run /org-start (only the first time per session — prior state is reported automatically)
+3. Tell the Lead what you want done
+4. Receive the report when it's finished
+5. Say "we're done for today" when you're stopping
 ```
 
 ---
 
-## 組織が賢くなる仕組み
+## How the organization gets smarter over time
 
-使えば使うほど、組織は学習して改善されます。
+The more you use it, the more the organization learns and improves.
 
-1. 作業が完了するたびに、担当者が学びを記録します
-2. 定期的にキュレーターが学びを整理・統合します
-3. 整理された知見はテーマ別に保存されます
-4. プロセスの改善が必要なとき、窓口を通じて提案されます
-5. あなたが承認すれば、次回から改善された状態で動きます
+1. Each time work completes, the responsible role records what was learned
+2. The Curator periodically organizes and consolidates those notes
+3. Curated knowledge is filed by topic
+4. When a process change would help, the Lead surfaces a proposal
+5. If you approve, future sessions run with the improvement in place
 
-改善提案が的外れなら「不要」と言えば却下できます。
-
----
-
-## プロジェクト管理
-
-作業を依頼すると、プロジェクト（作業対象）は自動的に登録されます。次回からは通称で呼ぶだけで認識されます。
-
-例:
-- 「ブログ」→ 会社ブログサイト
-- 「ECサイト」→ EC販売サイト
-- 「CSV集計ツール」→ CSVアップロード集計Webアプリ
-
-登録済みプロジェクトは「ダッシュボード見せて」で一覧できます。
+If a proposal misses the mark, just say "skip that" and it's discarded.
 
 ---
 
-## 困ったときは
+## Project management
 
-- **何を頼めばいいか分からない** → 「何ができる？」と聞いてみてください
-- **作業結果がおかしい** → 窓口に伝えれば、担当者に修正を指示します
-- **全体の状況が分からない** → 「ダッシュボード見せて」で確認できます
-- **前回の続きがしたい** → 起動すれば自動で前回の状態が表示されます
+When you ask for work, the project (the thing being worked on) is registered automatically. After that, you can refer to it by a short nickname.
+
+Examples:
+- "the blog" → company blog site
+- "the storefront" → e-commerce site
+- "the CSV tool" → CSV upload + aggregation web app
+
+To see what's registered, say "show me the dashboard".
+
+---
+
+## When you're stuck
+
+- **Not sure what to ask for** → Try "what can you do?"
+- **The result looks wrong** → Tell the Lead; corrections are dispatched to a Worker
+- **Want a sense of the whole picture** → "Show me the dashboard"
+- **Want to continue from last time** → Just start the session — the previous state is reported automatically
