@@ -20,7 +20,7 @@ The first skill to run after ClaudeCode launches. It restores prior state, bring
 
 ## Step 0: Initialization
 
-1. Set your own summary via `mcp__renga-peers__set_summary`: "Secretary: Lead"
+1. Set your own summary via `mcp__renga-peers__set_summary`: "Lead"
    - Required so that Workers / Dispatcher / Curator can find the Lead via `mcp__renga-peers__list_peers`
 2. Verify `renga-peers` MCP connectivity by calling `mcp__renga-peers__list_panes`.
    - If a response comes back without error, MCP is enabled. From here on, assume the renga-peers MCP tools are usable.
@@ -122,7 +122,7 @@ Pane layout follows org-delegate/references/pane-layout.md (renga edition).
    - `name="dispatcher"`: stable name used for later `mcp__renga-peers__send_message(to_id="dispatcher", ...)` and `close_pane(target="dispatcher")`. **renga-peers interprets all-digit names as ids, so always use a name that contains letters.**
    - `cwd=".dispatcher"`: resolved to `.dispatcher/` relative to the caller pane (= Lead) cwd. The old method of embedding `cd X && claude ...` in `command` is prohibited (auto-upgrade does not fire and channel push is lost).
    - `permission_mode="bypassPermissions"` / `model="sonnet"`: renga composes and runs `claude --permission-mode bypassPermissions --model sonnet --dangerously-load-development-channels server:renga-peers`
-   - `.dispatcher/CLAUDE.md` contains the role instructions for the Dispatcher (separate from the Secretary's CLAUDE.md)
+   - `.dispatcher/CLAUDE.md` contains the role instructions for the Dispatcher (separate from the Lead's CLAUDE.md)
    - Return value: text of the form `"Spawned pane id=N."`. Subsequent pane operations should reference it as `name="dispatcher"`.
    - Errors are returned as text in `[<code>] <msg>` form (e.g. `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`). See `.claude/skills/org-delegate/references/renga-error-codes.md` for the code list and branches.
 2. On the first launch of Claude Code, a "Load development channel? (Y/n)" prompt appears. Approve it by sending Enter via `mcp__renga-peers__send_keys`:

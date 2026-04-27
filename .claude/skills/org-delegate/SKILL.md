@@ -180,7 +180,7 @@ Prepare a dedicated directory for each task and place CLAUDE.md and settings.
 Use the template references/worker-claude-template.md.
 **The procedure differs by pattern (A/B/C).**
 
-> **For tasks that edit claude-org itself**: in addition to the normal procedure, always apply the special procedure in `references/claude-org-self-edit.md` (excluding the block-org-structure.sh hook, writing instructions to CLAUDE.local.md, and explicitly noting that the root CLAUDE.md should be ignored). **In this section and below, wherever it says "generate / place / verify CLAUDE.md", read it as `CLAUDE.local.md`** (the root CLAUDE.md is for the Secretary, so do not overwrite it).
+> **For tasks that edit claude-org itself**: in addition to the normal procedure, always apply the special procedure in `references/claude-org-self-edit.md` (excluding the block-org-structure.sh hook, writing instructions to CLAUDE.local.md, and explicitly noting that the root CLAUDE.md should be ignored). **In this section and below, wherever it says "generate / place / verify CLAUDE.md", read it as `CLAUDE.local.md`** (the root CLAUDE.md is for the Lead, so do not overwrite it).
 
 ### Common procedure (all patterns)
 
@@ -335,7 +335,7 @@ Call `mcp__renga-peers__list_panes` and extract every pane's attributes from the
 **Step 4. MIN_PANE constraint**:
 - Keep only panes with `new_w >= MIN_PANE_WIDTH` and `new_h >= MIN_PANE_HEIGHT`
 
-**Step 5. Secretary insurance clause**:
+**Step 5. Lead pane insurance clause**:
 - Keep `role == "secretary"` panes only when `new_w >= SECRETARY_MIN_WIDTH` **and** `new_h >= SECRETARY_MIN_HEIGHT` (passing width alone is not enough; height must also pass)
 
 **Step 6. Sort & select**:

@@ -5,7 +5,7 @@
 When dispatching a Worker that edits the claude-org repository's skills / docs / settings, the normal worktree preparation alone causes the following accidents:
 
 - The `block-org-structure.sh` hook rejects Edit / Write to `.claude/skills/` and similar (a confirmation prompt fires due to exit code 2 even in `bypassPermissions` mode)
-- The root `CLAUDE.md` is the Secretary (Lead) directive, so a Worker reading it would mistakenly conclude "you are the Lead"
+- The root `CLAUDE.md` is the Lead directive, so a Worker reading it would mistakenly conclude "you are the Lead"
 
 Therefore, for claude-org self-edit tasks, **the following 3 items are added to the normal procedure during Step 1.5 Worker directory preparation**.
 
@@ -17,7 +17,7 @@ Other hooks (e.g. `block-git-push.sh`, `block-workers-delete.sh`, `check-worker-
 
 ## 2. Write Worker instructions to `CLAUDE.local.md`, not `CLAUDE.md`
 
-The root `CLAUDE.md` is the Secretary directive, so do not overwrite it with the Worker's CLAUDE.md (other roles would break).
+The root `CLAUDE.md` is the Lead's directive, so do not overwrite it with the Worker's CLAUDE.md (other roles would break).
 Write the Worker instruction to `CLAUDE.local.md` directly under the worktree (untracked by git).
 
 Claude Code reads both `CLAUDE.md` and `CLAUDE.local.md` in the same directory, so the Worker can see both.
@@ -31,15 +31,15 @@ For claude-org self-edit tasks, wherever SKILL.md Step 1.5, `worker-claude-templ
 - "Detailed code of conduct is described in CLAUDE.md" / "absolute path described in CLAUDE.md" in `instruction-template.md` → rewrite those passages to refer to `CLAUDE.local.md` before sending to the Worker
 - The reference work-skill section is also added to `CLAUDE.local.md`
 
-Do not overwrite the root `CLAUDE.md` (Secretary directive) under any circumstances.
+Do not overwrite the root `CLAUDE.md` (the Lead's directive) under any circumstances.
 
 ## 3. Make "ignore the root CLAUDE.md" explicit at the top of `CLAUDE.local.md`
 
 Always write the following intent at the top of `CLAUDE.local.md`:
 
-> This Worker operates in a worktree of the claude-org repository itself. Ignore the Secretary directive in `./CLAUDE.md` (the root CLAUDE.md). You are not the Lead — you are a Worker.
+> This Worker operates in a worktree of the claude-org repository itself. Ignore the Lead directive in `./CLAUDE.md` (the root CLAUDE.md). You are not the Lead — you are a Worker.
 
-Without this notice, the Worker reads the root CLAUDE.md first and starts behaving as the Secretary (e.g. prompting `/org-start`).
+Without this notice, the Worker reads the root CLAUDE.md first and starts behaving as the Lead (e.g. prompting `/org-start`).
 
 ## Rationale
 

@@ -11,7 +11,7 @@ The Lead (`secretary`) / Dispatcher / Curator come up in the same tab; Workers a
 Tab 1: ops (zero workers)
 ┌────────────────────┬────────────────────┐
 │                    │                    │
-│                    │     Secretary      │
+│                    │       Lead         │
 │                    │     (top half)     │
 │                    │                    │
 │                    ├──────────┬─────────┤
@@ -20,7 +20,7 @@ Tab 1: ops (zero workers)
 └────────────────────┴──────────┴─────────┘
 ```
 
-> ※ In practice, `secretary` is sometimes on the left and `dispatcher/curator` occupy the bottom half — initial layout details are entrusted to org-start. The point that matters here is "build the Worker zone via balanced splits from the dispatcher pane's rect".
+> ※ In practice, the Lead pane is sometimes on the left and `dispatcher/curator` occupy the bottom half — initial layout details are entrusted to org-start. The point that matters here is "build the Worker zone via balanced splits from the dispatcher pane's rect".
 
 ## Placement rules
 
@@ -30,7 +30,7 @@ Tab 1: ops (zero workers)
 | Curator | Vertically split the Dispatcher pane and take the right half | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
 | Each Worker | **Balanced split**: dynamically pick target and direction from the current rect returned by `list_panes`, and stack into the same tab | See "Worker balanced split strategy" below for details. `mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
 
-> **Why we use `spawn_claude_pane`**: structured launch tool added in renga 0.18.0+. Passing `cwd` / `permission_mode` / `model` / `args[]` as structured fields makes renga internally compose `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old method (feeding a `cd`-prefixed command string into `spawn_pane`) is **prohibited** (the cwd-changing prefix prevents renga's bare-`claude` auto-upgrade from firing, and `send_message`'s channel push fails to arrive — Lead → Dispatcher / Dispatcher → Worker instructions stop working entirely). Only the Secretary is started as a bare `claude` from `ops.toml` and relies on auto-upgrade.
+> **Why we use `spawn_claude_pane`**: structured launch tool added in renga 0.18.0+. Passing `cwd` / `permission_mode` / `model` / `args[]` as structured fields makes renga internally compose `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old method (feeding a `cd`-prefixed command string into `spawn_pane`) is **prohibited** (the cwd-changing prefix prevents renga's bare-`claude` auto-upgrade from firing, and `send_message`'s channel push fails to arrive — Lead → Dispatcher / Dispatcher → Worker instructions stop working entirely). Only the Lead is started as a bare `claude` from `ops.toml` and relies on auto-upgrade.
 
 ## Worker balanced split strategy
 
@@ -50,7 +50,7 @@ The Dispatcher launching a new Worker runs the following before calling `spawn_p
 2. **Candidate set**: panes with `role ∈ {worker, dispatcher, secretary}` (curator is always excluded)
 3. **Filter candidates**:
    - **Maintain dispatcher-curator adjacency**: keep dispatcher only when it is rect-adjacent (defined below) to curator. The dispatcher-curator adjacency is an organizational premise. Splitting dispatcher could break the adjacency, so dispatchers already non-adjacent are removed from candidates
-   - **Secretary protection**: secretary is a candidate only when post-split new pane width `new_w >= 125` **and** new pane height `new_h >= 45`. Insurance clause; rarely fires in practice. Width passing alone is not enough; height must also pass
+   - **Lead pane protection**: secretary is a candidate only when post-split new pane width `new_w >= 125` **and** new pane height `new_h >= 45`. Insurance clause; rarely fires in practice. Width passing alone is not enough; height must also pass
 4. **Direction decision** (from each candidate's aspect ratio):
    - `width > height * 2` → `vertical` (left/right split)
    - Otherwise → `horizontal` (top/bottom split)
