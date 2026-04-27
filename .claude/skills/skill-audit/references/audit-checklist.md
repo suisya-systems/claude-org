@@ -1,105 +1,117 @@
-# skill-audit チェックリスト
+# skill-audit checklist
 
-`skill-audit` が 3 観点で使う具体的な判定手順。
+The concrete judgment procedures used by `skill-audit` for the three angles.
 
-## 1. 廃止候補チェック
+## 1. Deprecation candidate check
 
-各 skill について以下を順に確認する。
+For each skill, check the following in order.
 
-### 1.1 言及検索（観測可能）
-- `knowledge/raw/` および `knowledge/curated/` を `{skill-name}` で grep
-- `.state/workers/` 配下のタスクログを `{skill-name}` で grep
-- **90 日以内の言及が 1 件も無ければ**「言及なし」フラグ
+### 1.1 Mention search (observable)
+- Grep `knowledge/raw/` and `knowledge/curated/` for `{skill-name}`
+- Grep task logs under `.state/workers/` for `{skill-name}`
+- **If there is not a single mention within the last 90 days**, set the "no mention" flag
 
-注意: `org-delegate` は work-skill 検索でマッチしたら指示に埋め込むが、
-「実際にワーカーが採用したか / 使い切ったか」は永続化していない。
-したがってここで検出できるのは「直近で検索候補にすら挙がっていない skill」までで、
-「挙がったが使われなかった skill」は観測不能。この弱さは受け入れる（観測ログを
-追加するまでは）。
+Note: `org-delegate` embeds work-skills into instructions on a search match,
+but does not persist whether "the worker actually adopted / fully used it."
+Therefore what is detectable here is only "skills that did not even surface
+as search candidates recently"; skills that "surfaced but went unused" are
+not observable. This weakness is accepted (until observation logging is added).
 
-### 1.2 origin.task_id の再利用状況（origin 付き skill のみ）
-- SKILL.md frontmatter に `origin.task_id` があるか確認
-- **無い場合はこの項目をスキップ**（既存 skill の多くに該当）
-- ある場合: `origin.task_id` 以降で類似タスクが `knowledge/raw/` または `.state/workers/` にあるか
-- **1 件も無い**なら「再利用されていない」フラグ
+### 1.2 origin.task_id reuse status (origin-tagged skills only)
+- Check whether SKILL.md frontmatter has `origin.task_id`
+- **If absent, skip this item** (applies to many existing skills)
+- If present: check whether any similar task after `origin.task_id` exists in
+  `knowledge/raw/` or `.state/workers/`
+- **If there is not a single match**, set the "not reused" flag
 
-### 1.3 description と実装の乖離（観測可能）
-- frontmatter の `description` が要約する機能と、`SKILL.md` 本文 Step 群の内容が一致するか
-- 以下のいずれかがあれば「乖離あり」フラグ:
-  - description が触れている手順が本文に無い
-  - 本文の Step 群が description の触れない別機能を追加している
-  - 具体例・ツール・ライブラリが description と本文で矛盾している
+### 1.3 Divergence between description and implementation (observable)
+- Check whether the function summarized in the frontmatter `description` matches
+  the contents of the Step group in the body of `SKILL.md`
+- Set the "divergence" flag if any of the following holds:
+  - The description references a procedure that does not appear in the body
+  - The Step group in the body adds a separate function that the description
+    does not mention
+  - Concrete examples / tools / libraries contradict between description and body
 
-### 廃止候補の判定
-1.1 / 1.2 / 1.3 のうち **1 つ以上に該当**すれば「廃止候補」としてリストアップ。
-ただし **決定はしない**。人間が最終判断する前提で、各フラグの根拠を添えて報告する。
-1.2 が skip された skill は、1.1 / 1.3 のみの評価結果で候補化する。
+### Deprecation candidate judgment
+List as a "deprecation candidate" if **one or more** of 1.1 / 1.2 / 1.3 applies.
+However **no decision is made**. Report each candidate with its flag rationale
+on the assumption that a human makes the final call.
+For skills where 1.2 is skipped, list candidacy based only on the 1.1 / 1.3 results.
 
-## 2. 重複統合候補チェック
+## 2. Merge candidate check
 
-### 2.1 description 類似度
-2 つの skill description をペアで比較:
+### 2.1 Description similarity
+Compare two skill descriptions pairwise:
 
-- 動詞が一致（「判定する」vs「判定する」「分析する」vs「解析する」等）
-- 目的語が重なる（扱う対象・出力物が類似）
-- 修飾語のみ違う（「X の」「Y の」で主機能が同じ）
+- Verbs match (e.g. "judge" vs "judge", "analyze" vs "analyze")
+- Objects overlap (the targets / outputs handled are similar)
+- Only the modifiers differ ("of X" / "of Y" with the same main function)
 
-該当すれば「description 重複」フラグ。
+If applicable, set the "description overlap" flag.
 
-### 2.2 triggers 重複
-frontmatter の `triggers:` がある skill 同士で:
+### 2.2 Triggers overlap
+Among skills that have `triggers:` in frontmatter:
 
-- トリガー条件の語彙が 50% 以上重なる
-- 同じ入力形式（Excel, PDF, CSV 等）を対象としている
-- 同じ場面（タスク完了時、エラー発生時、定期実行等）で発動する
+- Trigger-condition vocabulary overlaps by 50% or more
+- Targets the same input format (Excel, PDF, CSV, etc.)
+- Fires in the same situation (task completion, error occurrence, scheduled run, etc.)
 
-該当すれば「triggers 重複」フラグ。
+If applicable, set the "triggers overlap" flag.
 
-### 2.3 特殊化・汎化関係
-- 片方の skill が他方に**パラメータ**を足せば実行できる
-- 片方が他方の**特定ブランド・特定データ**への適用に過ぎない
+### 2.3 Specialization / generalization relationship
+- One skill could run with **parameters** added on top of the other
+- One is just the application of the other to a **specific brand or specific
+  data set**
 
-該当すれば「統合可能性あり」フラグ。
+If applicable, set the "merge feasibility" flag.
 
-### 統合候補の判定
-上記 3 項目のうち **2 つ以上に該当**するペアのみ統合候補とする。
-1 項目だけでは「似ている」程度で統合判断には弱い。
+### Merge candidate judgment
+Only list pairs where **two or more** of the three items above apply as merge
+candidates. A single hit is "they look similar" and is too weak to support a
+merge decision.
 
-## 3. owner 未明記チェック
+## 3. Owner-missing check
 
-### 3.1 frontmatter 読み取り
-各 skill の `SKILL.md` の先頭 YAML frontmatter を読む。
+### 3.1 Read frontmatter
+Read the leading YAML frontmatter of each skill's `SKILL.md`.
 
-### 3.2 フィールド確認
-以下のいずれかのフィールドがあり、非空値を持つこと:
+### 3.2 Field check
+Either of the following fields must be present with a non-empty value:
 
 - `owner:`
 - `maintainer:`
 
-### 3.3 リストアップ
-上記いずれも持たない / 値が空 / 値が `TBD` 等のプレースホルダなら「owner 未明記」。
+### 3.3 Listing
+If neither is present / the value is empty / the value is a placeholder such
+as `TBD`, mark as "owner missing."
 
-## 報告フォーマット
+## Report format
 
-`SKILL.md` Step 5 のメッセージテンプレに従うが、各候補の後ろに判定根拠を添える:
+Follow the message template from `SKILL.md` Step 5, but append the rationale
+after each candidate:
 
 ```
-## 廃止候補
-- `example-skill`: 呼び出し履歴なし（90 日内 0 件）、origin 再利用なし
+## Deprecation candidates
+- `example-skill`: no call history (0 in 90 days), no origin reuse
 - ...
 
-## 統合候補
-- `skill-a` × `skill-b`: description 重複 + 特殊化関係
+## Merge candidates
+- `skill-a` × `skill-b`: description overlap + specialization relationship
 - ...
 
-## owner 未明記
+## Owner missing
 - `skill-c`, `skill-d`, ...
 ```
 
-## 判定しきい値のメモ
+## Notes on judgment thresholds
 
-- **90 日**: 呼び出し履歴の観察窓。本プロジェクトの活動頻度で調整可。
-- **50%**: triggers 語彙重複。厳しくし過ぎると偽陰性、緩すぎると偽陽性。
-- **2 つ以上 / 3 項目中**: 統合判定の閾値。1 つでも該当なら候補にすると誤検出が増える。
+- **90 days**: observation window for call history. Tunable for this project's
+  activity rate.
+- **50%**: triggers vocabulary overlap. Too strict gives false negatives, too
+  lax gives false positives.
+- **2 of 3**: merge judgment threshold. A single hit produces too many false
+  detections.
 
-上記数値は運用で乖離が見えたら調整し、`knowledge/raw/` に「audit 運用の学び」として記録する。
+If divergences appear in operation, adjust the numbers above and record the
+adjustment in `knowledge/raw/` as "audit operation lessons."

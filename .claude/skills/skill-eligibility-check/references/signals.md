@@ -1,80 +1,92 @@
-# 昇格シグナル定義
+# Promotion signal definitions
 
-`skill-eligibility-check` が参照する 5 シグナルの採点基準。
-いずれも 0 点 / 1 点の二値で採点し、合計点で 3 値分岐する。
+Scoring criteria for the 5 signals referenced by `skill-eligibility-check`.
+All are scored as 0 or 1, and the total decides the 3-value branch.
 
-## 1. raw_reappearance（raw 再出現）
+## 1. raw_reappearance
 
-**1 点の条件**: 同じパターンに関する記録が `knowledge/raw/` に **3 件以上**ある。
+**Condition for 1 point**: there are **3 or more** records of the same pattern
+in `knowledge/raw/`.
 
-**判定手順**:
-1. 入力の `raw_files` と、`pattern_name` を既存 raw/ 中で grep した結果をマージ
-2. 同パターンを扱う独立したファイルが 3 件以上あるか確認
-3. 同一タスクの連続記録（同 task_id 由来）は 1 件として数える
+**Procedure**:
+1. Merge the input `raw_files` with the result of grepping existing raw/ for
+   `pattern_name`.
+2. Confirm there are 3 or more independent files covering the same pattern.
+3. Successive records from a single task (with the same task_id) count as one.
 
-**根拠**: 3 件あればパターン化したと言える（`knowledge-standards.md` と同基準）。
-2 件以下だと偶然の一致の可能性が残る。
+**Rationale**: with 3 entries we can call it a pattern (same baseline as
+`knowledge-standards.md`). At 2 or fewer, coincidence remains plausible.
 
-## 2. steps_complexity（手順の複雑さ）
+## 2. steps_complexity
 
-**1 点の条件**: `steps_outline` が **3 項目以上** かつ非自明な判断を含む。
+**Condition for 1 point**: `steps_outline` has **3 or more items** AND includes
+non-trivial judgment.
 
-**判定手順**:
-1. `steps_outline` の項目数をカウント（3 未満なら 0 点で確定）
-2. 各ステップが「IDE やドキュメントを読めば誰でも再現できる」範囲か確認
-3. 1 つ以上のステップに以下が含まれれば 1 点:
-   - 条件分岐（「エラー A なら B、エラー C なら D」等）
-   - ツール選定の根拠
-   - 他の手段では失敗する理由
+**Procedure**:
+1. Count items in `steps_outline` (fewer than 3 ⇒ confirmed 0 points).
+2. Check whether each step is "reproducible by anyone reading the IDE or
+   documentation."
+3. Score 1 point if at least one step contains:
+   - Conditional branching ("if error A then B, if error C then D", etc.)
+   - Rationale for tool selection
+   - Reasons why other approaches fail
 
-**根拠**: 単なる手順列は README で十分。skill として切り出す価値は「判断の結晶化」にある。
+**Rationale**: a plain procedure list is fine in a README. The value of carving
+out a skill lies in "crystallizing judgment."
 
-## 3. trigger_articulable（トリガー条件明文化）
+## 3. trigger_articulable
 
-**1 点の条件**: `trigger_description` が具体的かつ検索可能な語彙で書ける。
+**Condition for 1 point**: `trigger_description` can be written in concrete,
+searchable vocabulary.
 
-**判定手順**:
-1. `trigger_description` が空 / 「必要なとき」「適切な場面」等の曖昧表現のみなら 0 点
-2. 具体物（ファイル形式、タスク種別、入力パターン）で書かれていれば 1 点
-3. `org-delegate` の work-skill 検索で他の skill の description と区別がつく語彙か確認
+**Procedure**:
+1. 0 points if `trigger_description` is empty / contains only vague phrases
+   like "when needed" or "in suitable situations."
+2. 1 point if written in concrete terms (file format, task type, input pattern).
+3. Verify the vocabulary is distinguishable from other skills' descriptions in
+   `org-delegate`'s work-skill search.
 
-**根拠**: 発見されない skill は無いのと同じ。「検索面のノイズ」を
-増やさないためには、triggers が具体的で重ならないことが前提。
+**Rationale**: a skill that is never discovered may as well not exist. To avoid
+adding "noise on the search surface," triggers must be concrete and
+non-overlapping.
 
-## 4. criteria_articulable（判断基準明文化）
+## 4. criteria_articulable
 
-**1 点の条件**: `decision_criteria` に定量閾値または分類ルールがある。
+**Condition for 1 point**: `decision_criteria` has a quantitative threshold or
+a classification rule.
 
-**判定手順**:
-1. 空または「適切に判断する」等の曖昧表現のみなら 0 点
-2. 以下のいずれかがあれば 1 点:
-   - 数値閾値（「95% 以上」「3 回以上」等）
-   - 明示的分類（「A / B / C のいずれか」）
-   - 優先順位ルール（「X が X' より優先」）
+**Procedure**:
+1. 0 points if empty or only a vague phrase like "judge appropriately."
+2. 1 point if any of the following exists:
+   - Numeric threshold ("95% or higher", "3 or more times", etc.)
+   - Explicit classification ("one of A / B / C")
+   - Priority rule ("X has priority over X'")
 
-**根拠**: 判断基準が言語化できないスキルは人間が読んでも再現できず、
-curated ノート（参考情報）で十分。
+**Rationale**: a skill whose judgment criteria cannot be put into words cannot
+be reproduced by a human reader either, so a curated note (reference
+information) is enough.
 
-## 5. reusable_output（成果物フォーマット再利用可能）
+## 5. reusable_output
 
-**1 点の条件**: `output_format` が他タスクで転用可能な構造を持つ。
+**Condition for 1 point**: `output_format` has a structure transferable to
+other tasks.
 
-**判定手順**:
-1. `output_format` が空なら 0 点
-2. 以下のいずれかがあれば 1 点:
-   - セクション構成が定義されている（「背景 / 判断 / 根拠」等）
-   - スキーマが定義されている（表・YAML・JSON 等）
-   - 命名規則が明示されている
+**Procedure**:
+1. 0 points if `output_format` is empty.
+2. 1 point if any of the following exists:
+   - A defined section structure ("Background / Decision / Rationale", etc.)
+   - A defined schema (table, YAML, JSON, etc.)
+   - An explicit naming convention
 
-**根拠**: 成果物が毎回バラバラだと後続タスクで比較・引用できず、
-skill 化しても再利用が発生しない。
+**Rationale**: if outputs vary every time, downstream tasks cannot compare or
+cite them, so even after promotion to a skill no reuse occurs.
 
-## 採点結果の扱い
+## Handling of scoring results
 
-- 3 点以上: `skill_recommend`
-- 2 点: `candidate_queue`
-- 1 点以下: `curated_only`
+- 3 or more: `skill_recommend`
+- 2: `candidate_queue`
+- 1 or fewer: `curated_only`
 
-各シグナルの 0/1 は `matched_signals` として呼び出し元に返し、
-候補キュー `knowledge/skill-candidates.md` にも残る。
-これにより後の棚卸し（`skill-audit`）で「どのシグナルが弱かったか」を追跡できる。
+The 0/1 of each signal is returned to the caller as `matched_signals` and
+also remains in the candidate queue `knowledge/skill-candidates.md`.
+This lets a later inventory audit (`skill-audit`) trace "which signal was weak."

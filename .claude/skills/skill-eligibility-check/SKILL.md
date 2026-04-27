@@ -1,130 +1,151 @@
 ---
 name: skill-eligibility-check
 description: >
-  作業パターンを skill 化すべきか判定する共通スキル。org-retro と org-curate から呼ばれ、
-  「skill 化推奨 / 候補止まり / curated ノートのまま」の 3 値と根拠を返す。
-  自動 skill 化はせず、推奨は knowledge/skill-candidates.md に追記し、
-  窓口が候補キューが溜まった時点でバッチで人間に問い合わせる二段構え。
+  Common skill for judging whether a work pattern should be promoted to a skill.
+  Called from org-retro and org-curate; returns a 3-value verdict
+  (skill_recommend / candidate_queue / curated_only) with rationale.
+  Does not auto-create skills: a recommendation is appended to
+  knowledge/skill-candidates.md, and the Lead asks the human in batch once the
+  candidate queue has accumulated — a two-stage workflow.
 ---
 
-# skill-eligibility-check: skill 化判定
+# skill-eligibility-check: skill promotion judgment
 
-作業パターンが新規 work-skill として切り出す価値があるかを 5 シグナルで採点し、
-3 値（skill_recommend / candidate_queue / curated_only）で返す。
-このスキル自体は skill 生成も人間問い合わせもしない — 判定専用。
+Score a work pattern across 5 signals to decide whether it is worth carving out
+as a new work-skill, returning a 3-value verdict
+(skill_recommend / candidate_queue / curated_only).
+This skill itself does not generate skills nor query humans — judgment only.
 
-## なぜ共通スキルか
+## Why a common skill
 
-判定基準が org-retro と org-curate の 2 箇所に分散すると必ず乖離するため。
-このスキルを single source of truth として双方から呼ぶ。
+If the judgment criteria were split between org-retro and org-curate, they
+would inevitably drift apart. This skill is the single source of truth invoked
+from both.
 
-## 入力契約
+## Input contract
 
-呼び出し元は以下の構造を渡す:
+The caller passes the following structure:
 
 ```yaml
 context: post_retro | curation
-pattern_name: <kebab-case の候補 skill 名>
-summary: <何を再利用できるかの 1-2 文>
-task_ids: [<関連タスク ID>, ...]          # optional。post_retro は通常 1 件、curation は空配列可
-raw_files: [<knowledge/raw/ のファイルパス>, ...]
-steps_outline:                              # 主要手順の箇条書き
+pattern_name: <kebab-case candidate skill name>
+summary: <1-2 sentences on what is reusable>
+task_ids: [<related task id>, ...]          # optional. post_retro is usually 1 entry; curation may pass an empty list
+raw_files: [<knowledge/raw/ file path>, ...]
+steps_outline:                              # bullet list of major steps
   - <step 1>
   - <step 2>
   - ...
-trigger_description: <このパターンが適用される状況を言語化できるか / できないなら空>
-decision_criteria: <判断基準や閾値があるか / できないなら空>
-output_format: <成果物の再利用可能フォーマット / なければ空>
+trigger_description: <can the situation where this pattern applies be articulated? empty if not>
+decision_criteria: <are there judgment criteria or thresholds? empty if not>
+output_format: <reusable artifact format / empty if none>
 ```
 
-**必須は `context` / `pattern_name` / `summary` / `raw_files` / `steps_outline` のみ**。
-`task_ids` は raw ノートの標準スキーマに含まれないため curation 文脈では空配列でよい。
-`trigger_description` / `decision_criteria` / `output_format` は採点対象そのもので、
-空のまま渡すと該当シグナルが 0 点になる。
+**Required fields are only `context` / `pattern_name` / `summary` / `raw_files`
+/ `steps_outline`**.
+`task_ids` is not part of the standard schema for raw notes, so an empty list
+is fine in the curation context.
+`trigger_description` / `decision_criteria` / `output_format` are themselves
+the subjects of scoring; passing them empty makes the corresponding signal
+score 0.
 
-## Step 1: 5 シグナル評価
+## Step 1: Score the 5 signals
 
-`references/signals.md` の定義に従い、各シグナル 0 点 / 1 点で採点する。
+Score each signal as 0 or 1 following the definitions in `references/signals.md`.
 
-| シグナル | 1 点の条件 |
+| Signal | Condition for 1 point |
 |---|---|
-| raw_reappearance | 同パターンの raw 記録が 3 件以上ある |
-| steps_complexity | `steps_outline` が 3 項目以上かつ非自明な判断を含む |
-| trigger_articulable | `trigger_description` が具体的かつ検索可能な語彙で書ける |
-| criteria_articulable | `decision_criteria` に定量閾値または分類ルールがある |
-| reusable_output | `output_format` が他タスクで転用可能な構造を持つ |
+| raw_reappearance | Three or more raw records exist for the same pattern |
+| steps_complexity | `steps_outline` has 3 or more items and includes non-trivial judgment |
+| trigger_articulable | `trigger_description` can be written in concrete, searchable vocabulary |
+| criteria_articulable | `decision_criteria` has a quantitative threshold or a classification rule |
+| reusable_output | `output_format` has a structure transferable to other tasks |
 
-詳細な判定手順は `references/signals.md` を参照。
+For detailed judgment procedures, see `references/signals.md`.
 
-## Step 2: 合計点から 3 値に分岐
+## Step 2: Branch from total score into 3 values
 
-| 合計点 | 判定 | 意味 |
+| Total | Verdict | Meaning |
 |---|---|---|
-| 3 点以上 | `skill_recommend` | skill 化推奨。候補キューに追加 |
-| 2 点 | `candidate_queue` | 候補止まり。raw に追記し次回の raw_reappearance を待つ |
-| 1 点以下 | `curated_only` | curated ノートのままで十分 |
+| 3 or more | `skill_recommend` | Skill recommended. Add to candidate queue |
+| 2 | `candidate_queue` | Stays a candidate. Append to raw and wait for the next raw_reappearance |
+| 1 or fewer | `curated_only` | A curated note is sufficient |
 
-閾値を 3 点に置いた根拠: org-retro 旧版の「2 つ以上で推奨」よりやや保守的にし、
-候補止まり層を明示的に作ることで、「skill 検索面のノイズ」を予防する。
+Rationale for the threshold of 3: slightly more conservative than the previous
+"2-or-more recommends" of org-retro, intentionally creating an explicit
+"candidate-only" tier to prevent "noise on the skill search surface."
 
-## Step 3: 出力
+## Step 3: Output
 
-以下の構造を呼び出し元に返す:
+Return the following structure to the caller:
 
 ```yaml
 decision: skill_recommend | candidate_queue | curated_only
 score: 0-5
-matched_signals: [<1 点が付いたシグナル名>, ...]
-rationale: <1-2 行の根拠文>
-proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue のみ
+matched_signals: [<signal name that scored 1>, ...]
+rationale: <1-2 line rationale>
+proposed_skill_name: <pattern_name>    # only for skill_recommend / candidate_queue
 ```
 
-## Step 4: 候補キュー書き込み（skill_recommend の場合のみ）
+## Step 4: Write to candidate queue (skill_recommend only)
 
-`knowledge/skill-candidates.md` に以下のエントリを追記する。
-`candidate_queue` / `curated_only` の場合は書き込まない。
+Append the following entry to `knowledge/skill-candidates.md`.
+Do not write for `candidate_queue` / `curated_only`.
 
 ```markdown
 ### {YYYY-MM-DD} {pattern-name}
-- **判定スコア**: {score}/5
-- **該当シグナル**: {matched_signals}
-- **根拠**: {rationale}
-- **関連タスク**: {task_ids、curation 文脈では空 "[]" 可}
-- **関連 raw ファイル**: {raw_files}
-- **呼び出し元**: {context}
-- **提案 skill 名**: {proposed_skill_name}
+- **Score**: {score}/5
+- **Matched signals**: {matched_signals}
+- **Rationale**: {rationale}
+- **Related tasks**: {task_ids; "[]" allowed in the curation context}
+- **Related raw files**: {raw_files}
+- **Caller**: {context}
+- **Proposed skill name**: {proposed_skill_name}
 - **status**: pending
-- **決定日**: 未定
-- **却下理由**: （status が rejected に遷移したとき記入、それ以外は省略）
-- **統合先**: （status が merged-into-* のとき記入、それ以外は省略）
+- **Decision date**: undecided
+- **Reject reason**: (fill in when status transitions to rejected; otherwise omit)
+- **Merged into**: (fill in when status is merged-into-*; otherwise omit)
 ```
 
-書き込み後も呼び出し元には出力 YAML を返す（キュー追記は副作用として完了）。
+The output YAML is still returned to the caller after writing
+(the queue append completes as a side effect).
 
-## 呼び出し元の責務
+## Caller responsibilities
 
-このスキルは判定とキュー追記だけを行う。以降のアクションは呼び出し元の責務:
+This skill performs only the judgment and the queue append. Subsequent actions
+are the caller's responsibility:
 
-- **org-retro（post_retro）**:
-  - `skill_recommend` → 人間に提案し、承認なら work-skill-template.md で skill 新規作成
-  - `candidate_queue` → raw/ に技術的知見のみ記録
-  - `curated_only` → raw/ への記録で十分（報告不要）
+- **org-retro (post_retro)**:
+  - `skill_recommend` → propose to the human; on approval, create a new
+    work-skill using work-skill-template.md
+  - `candidate_queue` → record only the technical knowledge in raw/
+  - `curated_only` → recording in raw/ is sufficient (no report needed)
 
-- **org-curate（curation）**: decision 値に関わらず通常の Step 3 で curated/ 統合 + Step 4 で `<!-- curated -->` 付与を行う（skill 化と curated ノート化は両立）。
-  - `skill_recommend` → 候補キュー追記のみ（skill 側で自動書き込み済み）。
-    人間への問い合わせは窓口の役目で、キュー閾値 N=5 に達したら窓口が行う
-  - `candidate_queue` → 追加アクションなし（次回の raw_reappearance を待つのはシグナル上の話であり、raw を未整理のまま残すことではない）
-  - `curated_only` → 追加アクションなし
+- **org-curate (curation)**: regardless of the decision value, the normal
+  Step 3 carries out the curated/ integration and Step 4 attaches the
+  `<!-- curated -->` marker (skill promotion and curated-note creation
+  coexist).
+  - `skill_recommend` → only the candidate queue append (already written by
+    this skill). The query to the human is the Lead's job, performed when the
+    queue threshold N=5 is reached
+  - `candidate_queue` → no additional action (waiting for the next
+    raw_reappearance is a signal-level matter, not a license to leave raw
+    unprocessed)
+  - `curated_only` → no additional action
 
-## 重複呼び出しの扱い
+## Handling duplicate calls
 
-同一 `pattern_name` が既に `knowledge/skill-candidates.md` に `status: pending` で
-存在する場合、Step 4 では新規エントリを追加せず既存エントリの `関連タスク`・`関連 raw ファイル` を
-追記マージする。status が `approved` / `rejected` / `merged-into-*` になっているエントリは
-履歴として保持し、新しいエントリを別日付で追加する（過去の却下理由を失わない）。
+When the same `pattern_name` already exists in `knowledge/skill-candidates.md`
+with `status: pending`, Step 4 does not add a new entry — it merges the new
+`Related tasks` / `Related raw files` into the existing entry.
+Entries whose status is `approved` / `rejected` / `merged-into-*` are kept as
+history, and a new entry is added under a different date (so the past reject
+reason is not lost).
 
-## スキルを呼ばないケース
+## When not to call this skill
 
-- ワーカーが単に「便利だった関数」をメモするだけ → これは `knowledge/raw/` の記録で十分で、
-  本スキルの入力 5 項目（特に `steps_outline` と `trigger_description`）が埋まらない
-- 一度きりの調査・デバッグ → パターン化する見込みがなく、判定コストの無駄
+- A worker simply jotting down "a useful function" → this is sufficient as a
+  `knowledge/raw/` record; the 5 input items required by this skill (especially
+  `steps_outline` and `trigger_description`) cannot be filled in
+- A one-off investigation / debugging session → no expectation of pattern
+  emergence, so the judgment cost is wasted

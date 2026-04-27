@@ -1,63 +1,67 @@
 # Automated Tests
 
-Python ベースのパーサー/コンバーター回帰検知テストと、Bash ベースの hook 回帰検知テストをまとめた実行ガイド。
+Run guide bundling the Python-based parser/converter regression tests and the
+Bash-based hook regression tests.
 
-## 対象
+## Coverage
 
-| 関数 | 内容 |
+| Function | Description |
 |------|------|
-| `_parse_org_state` | org-state.md のステータス・目的・作業項目を解析 |
-| `_parse_journal` | journal.jsonl のイベントログを解析 |
-| `_parse_projects` | projects.md のマークダウンテーブルを解析 |
-| `_parse_workers` | worker-*.md ファイル群を解析 |
-| `_parse_knowledge` | curated/*.md の H2 セクション数をカウント |
-| `org_state_converter.py` | org-state Markdown -> JSON 変換とダッシュボード JSON 読み込み |
-| `.hooks/*.sh` | worker boundary / claude-org structure / git push block の回帰検知 |
+| `_parse_org_state` | Parses org-state.md status, purpose, and work items |
+| `_parse_journal` | Parses the journal.jsonl event log |
+| `_parse_projects` | Parses the markdown table in projects.md |
+| `_parse_workers` | Parses the worker-*.md files |
+| `_parse_knowledge` | Counts H2 sections in curated/*.md |
+| `org_state_converter.py` | org-state Markdown → JSON conversion and dashboard JSON loading |
+| `.hooks/*.sh` | Worker boundary / claude-org structure / git push block regression detection |
 
-## 実行方法
+## How to run
 
 ```bash
-# Python テスト
-# Windows (py -3 が使えない場合は python でも可)
+# Python tests
+# Windows (use python if py -3 is unavailable)
 python -m unittest discover -s tests -v
 
 # Mac / Linux
 python3 -m unittest discover -s tests -v
 
-# Shell hook テスト
+# Shell hook tests
 bash tests/run-all.sh
 ```
 
-プロジェクトルートで実行してください。外部ライブラリは不要ですが、shell hook テストには `bash` と `jq` が必要です。
+Run from the project root. No external libraries are required, but the shell
+hook tests need `bash` and `jq`.
 
-日常運用では、Python テストだけでなく `bash tests/run-all.sh` まで含めて成功として扱ってください。
+In daily operation, treat success as "Python tests AND `bash tests/run-all.sh`
+both pass," not just the Python tests.
 
-## テスト構成
+## Test layout
 
 ```
 tests/
-  __init__.py              # パッケージ初期化（空）
-  test_parsers.py          # dashboard/server.py のパーサーテスト
+  __init__.py              # Package init (empty)
+  test_parsers.py          # Parser tests for dashboard/server.py
   test_org_state_converter.py
-  run-all.sh               # shell hook テストランナー
+  run-all.sh               # Shell hook test runner
   test-block-git-push.sh
   test-block-org-structure.sh
   test-check-worker-boundary.sh
   fixtures/
-    org-state-sample.md    # org-state パーサー用サンプル
-    journal-sample.jsonl   # journal パーサー用サンプル
-    projects-sample.md     # projects パーサー用サンプル
+    org-state-sample.md    # Sample for the org-state parser
+    journal-sample.jsonl   # Sample for the journal parser
+    projects-sample.md     # Sample for the projects parser
     workers/
-      worker-abc12345.md   # workers パーサー用サンプル
+      worker-abc12345.md   # Sample for the workers parser
     curated/
-      .gitkeep             # スキップ対象の確認用
-      sample-topic.md      # knowledge パーサー用サンプル
+      .gitkeep             # Used to verify skip behavior
+      sample-topic.md      # Sample for the knowledge parser
 ```
 
-## テスト結果の保存
+## Saving test results
 
-テスト結果を記録する場合は `docs/test-results/` に保存してください。
+When recording test results, save them under `docs/test-results/`.
 
 ## CI
 
-GitHub Actions でも同じ 2 系統のテストを実行します。ローカルで再現できない failure を減らすため、PR 前に両方を通してください。
+GitHub Actions runs the same two test suites. To reduce failures that cannot
+be reproduced locally, run both suites before opening a PR.
