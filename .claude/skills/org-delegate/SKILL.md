@@ -521,7 +521,7 @@ Add and maintain the following section in `.state/org-state.md` to track Worker-
 
 **Operational rules:**
 - Add the entry during directory preparation in Step 1.5
-- Update the status when the human approves in Step 5 (2b) (do not delete the directory)
+- In Step 5 (2b-ii), when a close condition is met (PR merged / explicit close instruction / long-idle judgment), update the status and delete the entry. Do not touch it during the 2b-i PR-creation stage.
 - The decision flow in Step 1 references this table to determine reusable directories and parallel-work conflicts
 
 5. Report dispatch completion to the Lead (`secretary`) via renga-peers:
@@ -558,17 +558,32 @@ When the Lead receives a message from a Worker via renga-peers:
    - **Do not close the pane yet**
 
 2b. On human approval ("OK", "looks good", "no problem", etc.):
+
+   2b-i. **PR-creation stage (immediate)**:
+   - The Lead does push / PR creation as needed (the Worker has no permission for these)
+   - Append events to `journal.jsonl` (push / PR open, etc.)
+   - Leave the corresponding Work Item in `org-state.md` **at REVIEW** (so that GitHub-side PR review feedback can be handled in the same pane; the COMPLETED transition happens in 2b-ii)
+   - **Do not close the pane yet**: do not send `CLOSE_PANE` immediately after PR creation. Defer worktree removal and Worker Directory Registry updates to 2b-ii
+   - When PR review feedback arrives, follow the 2c flow to `send_message` an additional instruction to the same Worker and stack fix commits in the same pane (avoid re-dispatching a new Worker — that would pay the cost of re-reading the issue / diff / rebuilding judgment boundaries)
+
+   2b-ii. **Final close stage (run when a close condition is met)**:
+
+   Close conditions (at least one must hold):
+   - The PR has been merged (verify via `gh pr view {n} --json mergedAt` etc., or the Lead receives a merge notification)
+   - The user gives an explicit instruction to close ("you can close it", "close it", "already merged", etc.)
+   - 24–48 hours of long-idle silence on review (Lead's operational judgment, ad-hoc; do not automate)
+
+   What to do:
    - Update the corresponding Work Item in `org-state.md` to **COMPLETED**
    - Make the final update to the Worker's state file
    - Append an event to `journal.jsonl`
-   - The Lead does push / PR creation as needed (the Worker has no permission for these)
    - Ask the Dispatcher to close the pane:
      `CLOSE_PANE: please close pane {pane_id}.`
-   - **Post-processing per directory pattern**:
+   - **Post-processing per directory pattern** (run at the same time):
      - Pattern A (project directory): keep the directory (reuse for the next task)
-     - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (for PR/merge use)
+     - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (do not delete it even after merge; preserved for PR history)
      - Pattern C (ephemeral): keep the directory (consider manual deletion only when capacity becomes an issue)
-   - Update the Worker Directory Registry of `.state/org-state.md`:
+   - Update the Worker Directory Registry of `.state/org-state.md` (run at the same time):
      - Pattern A: set status to `available` (reusable for the next task)
      - Pattern B: delete the entry (worktree already removed)
      - Pattern C: delete the entry

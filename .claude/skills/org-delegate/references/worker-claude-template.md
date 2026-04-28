@@ -124,7 +124,9 @@ When work is complete, **always** do the following:
    - Created files, commits, PRs, and other deliverables
    - Remaining work or caveats, if any
 
-2. **Retro record**: record any reusable lessons
+2. **Keep the pane alive after PR creation and wait for review feedback**: when the Lead reports "push / PR creation complete", do not close the pane. If GitHub-side PR review feedback arrives, stack fix commits in the same pane (re-dispatching a new Worker would cost re-reading the issue / diff and rebuilding judgment boundaries). Stay in standby until the Lead sends an explicit close instruction such as "you can close it" or "already merged".
+
+3. **Retro record**: record any reusable lessons
    - Path: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
    - topic in English kebab-case (e.g. jwt-rs256-key-rotation)
    - Format:
