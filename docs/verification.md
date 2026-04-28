@@ -591,6 +591,12 @@ If WSL does not deny, then either (a) Claude Code's version does not support
 sandbox, (b) a config-syntax interpretation difference, or (c) another symptom
 of #32226. Record the version and the status of Issue #32226.
 
+### Phase 2a portability fix ([Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83))
+
+To work around the issue where, on WSL2 without `bubblewrap`, sandbox init silently no-op falls back and disables `~/.aws/**` / `~/.ssh/**` denyRead/denyWrite, **home dotfiles (`~/.aws` / `~/.ssh`) are moved out of sandbox scope** and defended instead via `permissions.deny` `Read(~/.ssh/*)` / `Read(~/.aws/*)`. For portability, home dotfiles are out of sandbox scope. The sandbox's `denyRead` / `denyWrite` are concentrated on repo-local `.env` / credential files.
+
+The `permissions.deny` Read defense covers the Read tool path only; Bash-mediated reads and the Dispatcher (`bypassPermissions` mode) are not covered. This trade-off was discussed and accepted in Issue #83 as portability-first.
+
 ---
 
 ## 11. MCP connectivity test (environment check)

@@ -62,6 +62,8 @@ Common arguments:
 - `permission_mode`: use the value of `default_permission_mode` from registry/org-config.md (except for the Dispatcher)
 - `cwd`: relative path to each role's dedicated directory (resolved against the caller pane's cwd)
 
+> **Note**: the Secretary is started via `renga --layout ops` and runs without `--permission-mode` specified (it is the human-judgment window). See the "Per-role applicability" section in `registry/org-config.md`.
+
 ### Dispatcher
 
 - `cwd=".dispatcher"`
