@@ -10,6 +10,13 @@ default_permission_mode: auto
 - acceptEdits: ファイル編集のみ自動許可
 - dontAsk: 明示許可のみ
 
+### Per-role applicability
+
+`default_permission_mode` applies to the Curator and Workers. Other roles are handled as follows:
+
+- **Secretary**: out of scope. Keeps the Claude Code default behavior (confirmation prompts on tool execution) with no `--permission-mode` specified. The Secretary is the human-facing window, so we avoid auto-approving operations that require human judgment. See Issue #10 for details.
+- **Dispatcher**: regardless of the `default_permission_mode` value, fixed at `bypassPermissions`. For the rationale, see the "Dispatcher" section of `.claude/skills/org-start/SKILL.md`.
+
 ## Workers Directory
 workers_dir: ../workers
 
