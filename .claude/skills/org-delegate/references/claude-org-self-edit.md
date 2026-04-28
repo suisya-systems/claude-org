@@ -9,11 +9,19 @@ When dispatching a Worker that edits the claude-org repository's skills / docs /
 
 Therefore, for claude-org self-edit tasks, **the following 3 items are added to the normal procedure during Step 1.5 Worker directory preparation**.
 
-## 1. Exclude the `block-org-structure.sh` hook from the worktree's settings.local.json
+## 1. Generate settings.local.json with the `claude-org-self-edit` role
 
-When placing `.claude/settings.local.json` directly under the worktree, **exclude** the `block-org-structure.sh` entry from `hooks.PreToolUse`. You must exclude it under both the `Edit|Write` matcher and the `Bash` matcher.
+From Phase 2 (Issue #99) onward, a Worker's `.claude/settings.local.json` is generated **schema-driven** by `tools/generate_worker_settings.py` (hand-editing is forbidden by the Lead-side `permissions.deny`). For claude-org self-edit tasks, specify `--role claude-org-self-edit`:
 
-Other hooks (e.g. `block-git-push.sh`, `block-workers-delete.sh`, `check-worker-boundary.sh`, etc.) may remain as usual. The exclusion target is strictly the claude-org structure-blocking hook only.
+```bash
+python tools/generate_worker_settings.py \
+  --role claude-org-self-edit \
+  --worker-dir {worker_dir} \
+  --claude-org-path {claude_org_path} \
+  --out {worker_dir}/.claude/settings.local.json
+```
+
+The `claude-org-self-edit` role is defined in the schema with the `block-org-structure.sh` hook **already excluded** (under both the `Edit|Write` and `Bash` matchers). Other hooks such as `check-worker-boundary.sh` / `block-git-push.sh` remain as usual. Do not hand-edit the generated JSON (drift CI fails; if a new pattern is needed, open a PR to add a role to `worker_roles` in `tools/role_configs_schema.json`).
 
 ## 2. Write Worker instructions to `CLAUDE.local.md`, not `CLAUDE.md`
 
