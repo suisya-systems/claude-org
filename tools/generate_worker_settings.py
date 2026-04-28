@@ -3,7 +3,7 @@
 
 Reads ``tools/role_configs_schema.json`` -> ``worker_roles[<role>]``,
 substitutes ``{worker_dir}`` and ``{claude_org_path}`` placeholders, and
-prints the resulting JSON. Used by org-delegate Step 3 (Phase 2 migration)
+prints the resulting JSON. Used by org-delegate Step 1.5 (Phase 2 migration)
 and by the drift checker's ``--include-worker-settings`` mode to derive
 the expected template for an on-disk worker config. See Issue #99.
 """

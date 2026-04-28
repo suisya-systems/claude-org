@@ -3,12 +3,12 @@
 ## Permission Mode
 default_permission_mode: auto
 
-選択肢:
-- bypassPermissions: 全許可、確認なし（デフォルト）
-- auto: 分類器による安全チェック付き（Team/Enterprise/API プランのみ）
-- default: 都度確認
-- acceptEdits: ファイル編集のみ自動許可
-- dontAsk: 明示許可のみ
+Options:
+- bypassPermissions: allow everything, no confirmation (default)
+- auto: classifier-based safety check (Team / Enterprise / API plans only)
+- default: confirm each time
+- acceptEdits: auto-allow file edits only
+- dontAsk: explicit allow only
 
 ### Per-role applicability
 
@@ -20,5 +20,6 @@ default_permission_mode: auto
 ## Workers Directory
 workers_dir: ../workers
 
-ワーカー専用ディレクトリの配置先。claude-org リポジトリからの相対パス。
-リポジトリ外に配置することで、ワーカーの新規プロジェクト作成時に親リポジトリの git コンテキストが干渉しない。
+Where the per-Worker dedicated directories live, as a path relative to the
+claude-org repository. Placing them outside the repo prevents the parent
+repo's git context from interfering when a Worker creates a new project.
