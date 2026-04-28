@@ -127,3 +127,56 @@ If the old / new names are not yet decided at delegation time, run the Worker in
 
 - Make the task description concrete; ambiguous instructions raise the Worker's judgment cost
 - Always state constraints explicitly when there are any
+
+## Auto-expand template (helper-rendered)
+
+When a task JSON contains `instruction_vars`, `tools/dispatcher_runner.py delegate-plan` substitutes variables into the strict template below and writes it as the Worker instruction. If `instruction` is supplied directly, it wins and this template is not used (backward compat).
+
+Variable list (referenced by the helper):
+
+- `task_description` (required): goal of the task and expected deliverable
+- `dir_setup` (required): project preparation instructions. The Lead passes a string with Pattern A/B/C already resolved
+- `branch_strategy` (required): branch strategy. Required because defaulting it would silently mis-instruct worktree-deployed Workers to commit on main
+- `verification_depth` (required): `full` or `minimal`
+- `constraints` (optional): constraints. Defaults to "(none)"
+- `report_target` (optional): peer name for completion reports. Defaults to `secretary`
+- `claude_md_filename` (optional): the conduct-rules file the Worker reads. Defaults to `CLAUDE.md`. For claude-org self-edit tasks, pass `CLAUDE.local.md` (see `references/claude-org-self-edit.md`)
+
+Unknown variable keys are rejected as input_invalid. A `verification_depth` other than `full` / `minimal` is also input_invalid.
+
+<!-- AUTO-EXPAND-TEMPLATE-START -->
+```
+Please carry out the following task. The detailed code of conduct is described in {claude_md_filename}.
+
+## Task
+{task_description}
+
+## Project preparation
+Important: your working directory is the absolute path described in {claude_md_filename}.
+First run `pwd` and confirm it matches the working directory in {claude_md_filename}.
+All file creation must stay inside this directory. Moving up to `..` or recreating the claude-org structure is forbidden.
+
+{dir_setup}
+
+## Branch strategy
+{branch_strategy}
+
+## How to work
+Work directly in auto mode. Do not use Plan mode.
+
+## Constraints
+{constraints}
+
+## Verification depth: {verification_depth}
+- full: run normal verification (existing test suite / lint / type-check, etc.) to green; after commit completes, if the Codex CLI is available, run `codex exec --skip-git-repo-check` for self-review. Stack fix commits for any Blocker / Major before reporting completion. If the same finding category does not clear after 3 rounds, report completion immediately. Minor / Nit may remain (record explicitly as known limitations).
+- minimal: trivial fix only. Codex self-review and additional verification are forbidden. Send a one-line completion report (`done: <SHA> <files>`) to the Lead.
+
+## Report destination
+Send completion / progress / blocker reports via renga-peers to `to_id="{report_target}"`. The Lead handles push / PR creation.
+
+## SUSPEND handling
+If you receive a message starting with "SUSPEND:", interrupt the work and report the situation.
+```
+<!-- AUTO-EXPAND-TEMPLATE-END -->
+
+The body of this template is read by the helper, so do not change the position of the marker comments or the code fence (when changing, also update the parser in `tools/dispatcher_runner.py`).
