@@ -127,12 +127,13 @@ Pane layout follows org-delegate/references/pane-layout.md (renga edition).
    - `.dispatcher/CLAUDE.md` contains the role instructions for the Dispatcher (separate from the Lead's CLAUDE.md)
    - Return value: text of the form `"Spawned pane id=N."`. Subsequent pane operations should reference it as `name="dispatcher"`.
    - Errors are returned as text in `[<code>] <msg>` form (e.g. `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`). See `.claude/skills/org-delegate/references/renga-error-codes.md` for the code list and branches.
-2. On the first launch of Claude Code, a "Load development channel? (Y/n)" prompt appears. Approve it by sending Enter via `mcp__renga-peers__send_keys`:
+2. On the first launch of Claude Code, a "Load development channel? (Y/n)" prompt appears. Approve it via the shared helper, which polls the screen until the prompt is actually rendered before sending Enter (a blind `send_keys(enter=true)` here races zsh and silently leaves the pane hung — see suisya-systems/claude-org#23):
+
    ```
-   mcp__renga-peers__send_keys(target="dispatcher", enter=true)
+   approve_dev_channel_prompt(target="dispatcher")
    ```
-   - Enter is written to the PTY as CR (0x0D)
-   - Without this approval the `server:renga-peers` channel is not enabled, and channel push from `send_message` does not arrive. The `list_peers` wait in Step 3 will also time out.
+
+   The full procedure, marker strings, and timeout-escalation behavior live in `.claude/skills/org-delegate/references/approve-dev-channel.md` (path is from the repo root; the helper is shared across this skill and `org-delegate`). The helper is idempotent — safe to call even if the prompt has already cleared. On timeout it sends a `DEV_CHANNEL_TIMEOUT` message to `secretary` (a send-to-self when the Lead is the caller — surfaces in the Lead's own inbox), and the Lead pauses `/org-start` for human direction. Without approval the `server:renga-peers` channel is not enabled, so `send_message` push from later steps would never arrive and the `list_peers` wait in Step 3 would time out.
 3. Wait for the new peer to appear via `mcp__renga-peers__list_peers`
 4. Send the following to the Dispatcher via `mcp__renga-peers__send_message`:
    "You are the Dispatcher. Receive DELEGATE messages from the Lead and, on its behalf, launch Worker panes, send instructions, and record state. When you receive a CLOSE_PANE message, close the pane."
@@ -160,10 +161,13 @@ Pane layout follows org-delegate/references/pane-layout.md (renga edition).
    - `cwd=".curator"`: resolved to `.curator/` from the caller pane (= Lead) cwd
    - `.curator/CLAUDE.md` contains the role instructions for the Curator
    - Errors use the same `[<code>] <msg>` form as Step 2
-2. As in Step 2, approve the "Load development channel?" prompt with Enter:
+2. As in Step 2, approve the "Load development channel?" prompt via the shared helper (polls until the prompt renders, then sends Enter; idempotent and timeout-safe):
+
    ```
-   mcp__renga-peers__send_keys(target="curator", enter=true)
+   approve_dev_channel_prompt(target="curator")
    ```
+
+   See `.claude/skills/org-delegate/references/approve-dev-channel.md` for the procedure and timeout-escalation behavior.
 3. Wait for the new peer to appear via `mcp__renga-peers__list_peers`
 4. Send the following to the Curator via `mcp__renga-peers__send_message`:
    "You are the Curator. Run /loop 30m /org-curate. Knowledge curation runs every 30 minutes."

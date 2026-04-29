@@ -438,15 +438,21 @@ while now < deadline:
 - **Filter-mismatching events cause early termination of long-poll, returning `events:[]` + an advanced cursor**, so loop on with empty responses (no duplicates because cursor is preserved)
 - Break on `pane_started` with `name == "worker-{task_id}"`. If deadline exceeds without detection, re-confirm pane existence via `list_panes`
 
-### 3-3b. Approve the "Load development channel?" prompt with Enter
+### 3-3b. Approve the "Load development channel?" prompt via shared helper
 
-Because `spawn_claude_pane` internally adds `--dangerously-load-development-channels server:renga-peers`, a Y/n confirmation prompt appears on first launch. Approve with Enter:
+Because `spawn_claude_pane` internally adds `--dangerously-load-development-channels server:renga-peers`, a Y/n confirmation prompt appears on first launch. **Do not** call `send_keys(enter=true)` directly here — the prompt has not necessarily rendered by the time `pane_started` fires (zsh may still hold the PTY), so a blind Enter is silently consumed by the shell and the prompt sits forever, breaking channel push for this Worker (suisya-systems/claude-org#23).
+
+Instead, call the shared helper, which polls the screen until the prompt is actually visible before sending Enter:
 
 ```
-mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
+approve_dev_channel_prompt(target="worker-{task_id}")
 ```
 
-Without approval, the `server:renga-peers` channel is not enabled, the `list_peers` wait in 3-4 times out, and `send_message` in 3-5 does not arrive. Enter is written to the PTY as CR (0x0D) (byte-identical to renga `append_enter`).
+Full procedure, marker strings, and timeout-escalation behavior are at `.claude/skills/org-delegate/references/approve-dev-channel.md` (path is from the repo root). The helper is idempotent — calling it when the prompt has already cleared is a no-op, so it is safe under re-dispatch / resume.
+
+On `timeout` return (default 30s), follow the helper's "Dispatcher caller" branch: send a `DEV_CHANNEL_TIMEOUT: worker-{task_id} ...` message to `secretary` and skip Steps 3-4 / 3-5 for this Worker (the `list_peers` wait would just retime out for the same reason). Continue the Dispatcher main monitoring loop; do not exit.
+
+Without approval, the `server:renga-peers` channel is not enabled, the `list_peers` wait in 3-4 times out, and `send_message` in 3-5 does not arrive.
 
 ### 3-4. Wait for the new peer via `mcp__renga-peers__list_peers`
 
