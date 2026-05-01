@@ -40,7 +40,7 @@ Per plan-110 §8 Wave C Minor reflection: `docs/getting-started.md` is **ja-cano
 
 ## Cross-repo notify CI
 
-When a ja-side PR merges to `main`, the workflow `.github/workflows/notify-en-changes.yml` (ja side) fires a `repository_dispatch` event of type `ja_pr_merged` to this repo. The receiving workflow `.github/workflows/notify-ja-changes.yml` (this repo) opens a `TRANSLATION-PENDING` issue carrying the ja PR title and URL. The Lead/Curator triages: either close the issue (out of scope or canonical-en) or schedule the translation work.
+When a ja-side PR merges to `main`, the workflow `.github/workflows/notify-en-changes.yml` (ja side) fires a `repository_dispatch` event of type `ja_pr_merged` to this repo. The receiving workflow `.github/workflows/auto-mirror-runtime.yml` (this repo, Issue #189 P1) classifies the changed files and opens a single tracking issue here, attaching the `translation-pending` label whenever any translation-class file is touched. The Lead/Curator triages: either close the issue (out of scope or canonical-en) or schedule the translation / mirror work. This workflow superseded the previous `notify-ja-changes.yml`; see `docs/runbook/auto-mirror-runtime.md`.
 
 The reverse direction (en → ja) is symmetric: an en merge fires `en_pr_merged` to the ja repo and opens a translation-pending issue there.
 

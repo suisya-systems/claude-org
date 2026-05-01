@@ -15,6 +15,7 @@ Which language is the source of truth for each artifact category.
 | `.claude/skills/*/SKILL.md` | en (this repo) | Skill definitions are en-canonical for OSS. ja back-ports renames as terminology fixes. |
 | `knowledge/curated/*.md` | ja (`claude-org-ja`) | Curated learnings are written in ja first; translation is best-effort. |
 | `registry/projects.md` | ja (`claude-org-ja`) | Local-only operational state. ja-only; not translated. |
+| Runtime code: `tools/**`, `dashboard/**`, `.claude/settings.json`, `.hooks/**`, `tests/**` | ja (`claude-org-ja`), **auto-mirrored** | Behavior-bearing code. ja is SoT per Lead decision 2026-04-30 (Issue #171). en is kept in sync by the auto-mirror-runtime workflow (Issue #189). Issue #189 listed `.claude/hooks/**` but the actual hooks live at `.hooks/**` in both repos; the classifier matches reality. Per default policy, ja docstrings/comments ride along onto en unchanged in P1; revisit if Lead chooses overlay translation later. |
 
 ## Conflict resolution
 
