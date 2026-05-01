@@ -112,7 +112,9 @@ jobs:
       - name: Classify changed files
         run: |
           set -euo pipefail
-          python -m pytest tools/test_sync_classifier.py -q
+          # Sanity-check the classifier with the existing unittest suite
+          # (matches the runner used by tests.yml — no extra dependency).
+          python -m unittest discover -s tools -p test_sync_classifier.py -v
           python tools/sync_classifier.py < changed_files.txt > classification.json
           cat classification.json
           python - <<'PY' > issue_body.md
@@ -175,12 +177,28 @@ jobs:
           title="auto-mirror P1: ja#${{ steps.meta.outputs.pr_number }} ${{ steps.meta.outputs.pr_title }}"
           # Trim title to GH 256-char cap.
           title="${title:0:240}"
-          gh issue create \
-            --title "${title}" \
-            --body-file issue_body.md \
-            --label "${label_csv}" \
-            >/dev/null
-          echo "Issue opened (runtime=${runtime_count}, translation=${translation_count}, unknown=${unknown_count})."
+          # Idempotency: if a tracking issue for this ja PR already exists
+          # (rerun, duplicate dispatch, manual replay), comment on it
+          # instead of opening a duplicate.
+          marker="auto-mirror P1: ja#${{ steps.meta.outputs.pr_number }} "
+          existing="$(gh issue list \
+            --label auto-mirror-runtime \
+            --state all \
+            --search "in:title \"${marker}\"" \
+            --json number,title \
+            --jq ".[] | select(.title | startswith(\"${marker}\")) | .number" \
+            | head -n 1)"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file issue_body.md >/dev/null
+            echo "Existing issue #${existing} updated (rerun-safe)."
+          else
+            gh issue create \
+              --title "${title}" \
+              --body-file issue_body.md \
+              --label "${label_csv}" \
+              >/dev/null
+            echo "Issue opened (runtime=${runtime_count}, translation=${translation_count}, unknown=${unknown_count})."
+          fi
 
       - name: P2+ stub — would open mirror PR here
         if: ${{ env.OPEN_PR == 'true' }}

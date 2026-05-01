@@ -43,7 +43,7 @@ Bootstrap source: `suisya-systems/claude-org-ja@926df3943cb5df2d6ee419b020351178
 | `.gitattributes` | copied | `.gitattributes` @ `926df394` | `926df394` | byte-equivalent |
 | `.githooks/pre-commit` | translated | `.githooks/pre-commit` @ `926df394` | `926df394` |  |
 | `.github/workflows/install-scripts.yml` | translated | `.github/workflows/install-scripts.yml` @ `926df394` | `926df394` |  |
-| `.github/workflows/notify-ja-changes.yml` | local-only | — | — | Receives repository_dispatch from ja repo (added in this PR). |
+| `.github/workflows/auto-mirror-runtime.yml` | local-only | — | — | Receives repository_dispatch from ja repo (P1 warn-only auto-mirror, Issue #189); supersedes the prior `notify-ja-changes.yml`. |
 | `.github/workflows/tests.yml` | translated | `.github/workflows/tests.yml` @ `926df394` | `926df394` |  |
 | `.gitignore` | copied | `.gitignore` @ `926df394` | `926df394` | byte-equivalent |
 | `.hooks/block-dangerous-git.sh` | translated | `.hooks/block-dangerous-git.sh` @ `926df394` | `926df394` |  |
@@ -124,4 +124,4 @@ Total rows: 100 (every file in ja@926df394 plus every file currently tracked in 
 
 - Wave B-core filled rows for: README, CLAUDE.md, role docs, overviews, non-goals, getting-started, oss-comparison, org-state-schema.
 - Wave B-runtime filled rows for: install / dashboard / tools / all 10 skills / testing / verification / knowledge/curated.
-- Wave C closed the manifest by enumerating every remaining file and adding the en-only `docs/sync-policy.md` and `.github/workflows/notify-ja-changes.yml` entries.
+- Wave C closed the manifest by enumerating every remaining file and adding the en-only `docs/sync-policy.md` and `.github/workflows/auto-mirror-runtime.yml` entries (the latter superseded the original `notify-ja-changes.yml` row when Issue #189 P1 landed).

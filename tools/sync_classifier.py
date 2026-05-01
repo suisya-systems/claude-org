@@ -18,12 +18,16 @@ RUNTIME_GLOBS: tuple[str, ...] = (
     # (script, config, data fixture) is ja-canonical and should mirror.
     "tools/*",
     "tools/**/*",
-    "dashboard/app.js",
-    "dashboard/server.py",
-    "dashboard/index.html",
+    # dashboard/** covers the four behavior files plus org_state_converter
+    # and style.css, all of which currently exist in both repos.
+    "dashboard/*",
+    "dashboard/**/*",
     ".claude/settings.json",
-    ".claude/hooks/*",
-    ".claude/hooks/**/*",
+    # Hooks live at .hooks/** in this repo (Issue #189 listed
+    # ".claude/hooks/**" but the actual path is ".hooks/"; tracked for
+    # accuracy here so classification matches reality).
+    ".hooks/*",
+    ".hooks/**/*",
     "tests/*",
     "tests/**/*",
 )
