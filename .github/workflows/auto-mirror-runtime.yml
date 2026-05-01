@@ -1,0 +1,208 @@
+name: Auto-mirror runtime (ja -> en)
+
+# Phase P1 (warn-only). Listens to repository_dispatch ja_pr_merged from
+# suisya-systems/claude-org-ja, classifies the changed files via
+# tools/sync_classifier.py, and opens a single tracking issue **on this
+# repo** with the classification summary. Does NOT open a mirror PR yet —
+# that is gated by the OPEN_PR env var below (set to "true" to advance to P2).
+#
+# This workflow subsumes the previous notify-ja-changes.yml: when any
+# translation-class file is touched, the same TRANSLATION-PENDING issue
+# (label=`translation-pending`) is created here, so legacy consumers of
+# that label keep working.
+#
+# Cross-repo writes are deliberately avoided so that the default
+# GITHUB_TOKEN (scoped to this repo only) is sufficient — no new PAT
+# required on the en side. See Issue suisya-systems/claude-org-ja#189
+# for the design and docs/runbook/auto-mirror-runtime.md for ops.
+
+on:
+  repository_dispatch:
+    types: [ja_pr_merged]
+  workflow_dispatch:
+    inputs:
+      ja_pr_number:
+        description: ja PR number
+        required: true
+      ja_pr_title:
+        description: ja PR title (used if GH API lookup fails)
+        required: false
+        default: ''
+      ja_pr_url:
+        description: ja PR URL (used if GH API lookup fails)
+        required: false
+        default: ''
+      ja_merge_sha:
+        description: ja merge commit SHA (optional)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  # P1 = warn-only. Flip to "true" to advance to P2 (open mirror PR).
+  OPEN_PR: 'false'
+  JA_REPO: suisya-systems/claude-org-ja
+
+jobs:
+  classify-and-warn:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout en repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve ja PR metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          payload_num='${{ github.event.client_payload.ja_pr_number }}'
+          input_num='${{ github.event.inputs.ja_pr_number }}'
+          PR_NUM="${payload_num:-$input_num}"
+          if [ -z "${PR_NUM}" ]; then
+            echo "ja_pr_number missing from dispatch payload" >&2
+            exit 1
+          fi
+          # Read-only cross-repo access works with default GITHUB_TOKEN for
+          # public repos. If the GH API call fails (private fork, outage),
+          # fall back to dispatch payload / workflow_dispatch inputs.
+          payload_title='${{ github.event.client_payload.ja_pr_title }}'
+          payload_url='${{ github.event.client_payload.ja_pr_url }}'
+          payload_sha='${{ github.event.client_payload.ja_merge_sha }}'
+          input_title='${{ github.event.inputs.ja_pr_title }}'
+          input_url='${{ github.event.inputs.ja_pr_url }}'
+          input_sha='${{ github.event.inputs.ja_merge_sha }}'
+          title="${payload_title:-$input_title}"
+          url="${payload_url:-$input_url}"
+          merge_sha="${payload_sha:-$input_sha}"
+          if pr_json="$(gh api "repos/${JA_REPO}/pulls/${PR_NUM}" 2>/dev/null)"; then
+            api_title="$(printf '%s' "$pr_json" | jq -r '.title // empty')"
+            api_url="$(printf '%s' "$pr_json" | jq -r '.html_url // empty')"
+            api_sha="$(printf '%s' "$pr_json" | jq -r '.merge_commit_sha // empty')"
+            title="${api_title:-$title}"
+            url="${api_url:-$url}"
+            merge_sha="${api_sha:-$merge_sha}"
+          fi
+          : "${title:=ja PR #${PR_NUM}}"
+          : "${url:=https://github.com/${JA_REPO}/pull/${PR_NUM}}"
+          echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
+          echo "pr_title=${title}" >> "$GITHUB_OUTPUT"
+          echo "pr_url=${url}" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=${merge_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch changed files from ja PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${JA_REPO}/pulls/${{ steps.meta.outputs.pr_number }}/files" \
+            -q '.[].filename' > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+
+      - name: Classify changed files
+        run: |
+          set -euo pipefail
+          # Sanity-check the classifier with the existing unittest suite
+          # (matches the runner used by tests.yml — no extra dependency).
+          python -m unittest discover -s tools -p test_sync_classifier.py -v
+          python tools/sync_classifier.py < changed_files.txt > classification.json
+          cat classification.json
+          python - <<'PY' > issue_body.md
+          import json
+          data = json.load(open('classification.json'))
+          by_class = data['by_class']
+          pr = "${{ steps.meta.outputs.pr_number }}"
+          url = "${{ steps.meta.outputs.pr_url }}"
+          sha = "${{ steps.meta.outputs.merge_sha }}"
+          lines = [
+              "auto-mirror-runtime classification (P1 warn-only).",
+              "",
+              f"Source: ja PR [#{pr}]({url})",
+          ]
+          if sha:
+              lines.append(f"Merge SHA: `{sha}`")
+          lines += [
+              "",
+              "| class | count |",
+              "|---|---|",
+          ]
+          for k in ("runtime", "translation", "divergence-allowed", "unknown"):
+              lines.append(f"| {k} | {len(by_class.get(k, []))} |")
+          lines.append("")
+          for k in ("runtime", "translation", "divergence-allowed", "unknown"):
+              paths = by_class.get(k, [])
+              if not paths:
+                  continue
+              lines.append(f"<details><summary>{k} ({len(paths)})</summary>")
+              lines.append("")
+              for p in paths:
+                  lines.append(f"- `{p}`")
+              lines.append("")
+              lines.append("</details>")
+          lines += [
+              "",
+              "Phase: **P1 warn-only**. No mirror PR opened.",
+              "See `docs/runbook/auto-mirror-runtime.md` for the rollout plan.",
+          ]
+          print("\n".join(lines))
+          PY
+
+      - name: Open tracking issue on en repo
+        if: ${{ env.OPEN_PR == 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          translation_count="$(jq '.by_class.translation | length' classification.json)"
+          unknown_count="$(jq '.by_class.unknown | length' classification.json)"
+          runtime_count="$(jq '.by_class.runtime | length' classification.json)"
+          labels=(auto-mirror-runtime)
+          if [ "${translation_count}" -gt 0 ]; then
+            labels+=(translation-pending)
+          fi
+          if [ "${unknown_count}" -gt 0 ]; then
+            labels+=(needs-triage)
+          fi
+          label_csv="$(IFS=,; echo "${labels[*]}")"
+          title="auto-mirror P1: ja#${{ steps.meta.outputs.pr_number }} ${{ steps.meta.outputs.pr_title }}"
+          # Trim title to GH 256-char cap.
+          title="${title:0:240}"
+          # Idempotency: if a tracking issue for this ja PR already exists
+          # (rerun, duplicate dispatch, manual replay), comment on it
+          # instead of opening a duplicate.
+          marker="auto-mirror P1: ja#${{ steps.meta.outputs.pr_number }} "
+          existing="$(gh issue list \
+            --label auto-mirror-runtime \
+            --state all \
+            --search "in:title \"${marker}\"" \
+            --json number,title \
+            --jq ".[] | select(.title | startswith(\"${marker}\")) | .number" \
+            | head -n 1)"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file issue_body.md >/dev/null
+            echo "Existing issue #${existing} updated (rerun-safe)."
+          else
+            gh issue create \
+              --title "${title}" \
+              --body-file issue_body.md \
+              --label "${label_csv}" \
+              >/dev/null
+            echo "Issue opened (runtime=${runtime_count}, translation=${translation_count}, unknown=${unknown_count})."
+          fi
+
+      - name: P2+ stub — would open mirror PR here
+        if: ${{ env.OPEN_PR == 'true' }}
+        run: |
+          echo "OPEN_PR=true — P2 mirror-PR step not yet implemented." >&2
+          echo "This branch will land in a follow-up commit when P1 observation completes." >&2
+          exit 1
