@@ -22,6 +22,8 @@ from sync_classifier import (
         "tools/sub/helper.py",
         "tools/role_configs_schema.json",
         "tools/test_check_renga_compat.py",
+        "tools/migrations/2026-05-runtime.sh",
+        "tools/data/fixtures/sample.yaml",
         "dashboard/app.js",
         "dashboard/server.py",
         "dashboard/index.html",

@@ -16,10 +16,20 @@ Design source: `suisya-systems/claude-org-ja#189` (and Lead decision #171).
   - `translation`: handled by existing TRANSLATION-PENDING flow
   - `divergence-allowed`: intentionally divergent; ignored
   - `unknown`: surfaced for manual triage
-- Posts a classification summary as a **comment on the ja PR**.
-- If any `translation`-class file is touched, opens a TRANSLATION-PENDING
-  issue here (preserves the prior `notify-ja-changes.yml` behavior).
+- Opens a single tracking issue **on this repo** with the classification
+  summary, labeled `auto-mirror-runtime` (plus `translation-pending` if any
+  translation-class file was touched, and `needs-triage` if any path
+  classified as `unknown`).
 - **Does NOT open a mirror PR.** The `OPEN_PR` env var defaults to `false`.
+
+This workflow subsumes the previous `notify-ja-changes.yml`; that file has
+been removed so a single dispatch produces a single issue (no duplicates).
+The `translation-pending` label remains the contract for downstream
+translation-pipeline consumers.
+
+Cross-repo writes are deliberately avoided: posting back to the ja PR
+would require a PAT on the en side, which Lead chose not to introduce in
+P1 (Issue #189 design constraint). The signal lives here instead.
 
 ## Disable temporarily
 

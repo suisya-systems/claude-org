@@ -2,14 +2,19 @@ name: Auto-mirror runtime (ja -> en)
 
 # Phase P1 (warn-only). Listens to repository_dispatch ja_pr_merged from
 # suisya-systems/claude-org-ja, classifies the changed files via
-# tools/sync_classifier.py, and posts a comment back on the ja PR with the
-# classification summary. Does NOT open a mirror PR yet — that is gated by
-# the OPEN_PR env var below (set to "true" to advance to P2).
+# tools/sync_classifier.py, and opens a single tracking issue **on this
+# repo** with the classification summary. Does NOT open a mirror PR yet —
+# that is gated by the OPEN_PR env var below (set to "true" to advance to P2).
 #
-# See docs/runbook/auto-mirror-runtime.md for: disabling the workflow,
-# manually re-running for a missed merge, and the P1->P4 rollout plan.
-# See docs/canonical-ownership.md for the canonical-side mapping this
-# workflow enforces, and Issue suisya-systems/claude-org-ja#189 for design.
+# This workflow subsumes the previous notify-ja-changes.yml: when any
+# translation-class file is touched, the same TRANSLATION-PENDING issue
+# (label=`translation-pending`) is created here, so legacy consumers of
+# that label keep working.
+#
+# Cross-repo writes are deliberately avoided so that the default
+# GITHUB_TOKEN (scoped to this repo only) is sufficient — no new PAT
+# required on the en side. See Issue suisya-systems/claude-org-ja#189
+# for the design and docs/runbook/auto-mirror-runtime.md for ops.
 
 on:
   repository_dispatch:
@@ -20,22 +25,21 @@ on:
         description: ja PR number
         required: true
       ja_pr_title:
-        description: ja PR title
+        description: ja PR title (used if GH API lookup fails)
         required: false
         default: ''
       ja_pr_url:
-        description: ja PR URL (optional, used for comment body)
+        description: ja PR URL (used if GH API lookup fails)
         required: false
         default: ''
       ja_merge_sha:
-        description: ja merge commit SHA (optional; defaults to PR merge_commit_sha)
+        description: ja merge commit SHA (optional)
         required: false
         default: ''
 
 permissions:
   contents: read
   issues: write
-  pull-requests: write
 
 env:
   # P1 = warn-only. Flip to "true" to advance to P2 (open mirror PR).
@@ -67,19 +71,34 @@ jobs:
             echo "ja_pr_number missing from dispatch payload" >&2
             exit 1
           fi
-          # Pull canonical title / URL / merge SHA from the ja PR via GH API
-          # (payload values are kept as fallback for offline replay).
-          pr_json="$(gh api "repos/${JA_REPO}/pulls/${PR_NUM}")"
-          title="$(printf '%s' "$pr_json" | jq -r '.title')"
-          url="$(printf '%s' "$pr_json" | jq -r '.html_url')"
-          merge_sha="$(printf '%s' "$pr_json" | jq -r '.merge_commit_sha // empty')"
+          # Read-only cross-repo access works with default GITHUB_TOKEN for
+          # public repos. If the GH API call fails (private fork, outage),
+          # fall back to dispatch payload / workflow_dispatch inputs.
+          payload_title='${{ github.event.client_payload.ja_pr_title }}'
+          payload_url='${{ github.event.client_payload.ja_pr_url }}'
+          payload_sha='${{ github.event.client_payload.ja_merge_sha }}'
+          input_title='${{ github.event.inputs.ja_pr_title }}'
+          input_url='${{ github.event.inputs.ja_pr_url }}'
+          input_sha='${{ github.event.inputs.ja_merge_sha }}'
+          title="${payload_title:-$input_title}"
+          url="${payload_url:-$input_url}"
+          merge_sha="${payload_sha:-$input_sha}"
+          if pr_json="$(gh api "repos/${JA_REPO}/pulls/${PR_NUM}" 2>/dev/null)"; then
+            api_title="$(printf '%s' "$pr_json" | jq -r '.title // empty')"
+            api_url="$(printf '%s' "$pr_json" | jq -r '.html_url // empty')"
+            api_sha="$(printf '%s' "$pr_json" | jq -r '.merge_commit_sha // empty')"
+            title="${api_title:-$title}"
+            url="${api_url:-$url}"
+            merge_sha="${api_sha:-$merge_sha}"
+          fi
+          : "${title:=ja PR #${PR_NUM}}"
+          : "${url:=https://github.com/${JA_REPO}/pull/${PR_NUM}}"
           echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
           echo "pr_title=${title}" >> "$GITHUB_OUTPUT"
           echo "pr_url=${url}" >> "$GITHUB_OUTPUT"
           echo "merge_sha=${merge_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Fetch changed files from ja PR
-        id: files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -91,23 +110,26 @@ jobs:
           cat changed_files.txt
 
       - name: Classify changed files
-        id: classify
         run: |
           set -euo pipefail
           python -m pytest tools/test_sync_classifier.py -q
           python tools/sync_classifier.py < changed_files.txt > classification.json
           cat classification.json
-          # Build a markdown summary for the comment body.
-          python - <<'PY' > comment_body.md
-          import json, os
+          python - <<'PY' > issue_body.md
+          import json
           data = json.load(open('classification.json'))
           by_class = data['by_class']
           pr = "${{ steps.meta.outputs.pr_number }}"
           url = "${{ steps.meta.outputs.pr_url }}"
+          sha = "${{ steps.meta.outputs.merge_sha }}"
           lines = [
-              f"### auto-mirror-runtime classification (P1 warn-only)",
+              "auto-mirror-runtime classification (P1 warn-only).",
               "",
-              f"Triggered by ja PR [#{pr}]({url}).",
+              f"Source: ja PR [#{pr}]({url})",
+          ]
+          if sha:
+              lines.append(f"Merge SHA: `{sha}`")
+          lines += [
               "",
               "| class | count |",
               "|---|---|",
@@ -125,44 +147,40 @@ jobs:
                   lines.append(f"- `{p}`")
               lines.append("")
               lines.append("</details>")
-          lines.append("")
-          lines.append(
-              "Phase: **P1 warn-only**. No mirror PR opened. "
-              "See en `docs/runbook/auto-mirror-runtime.md` for the rollout plan."
-          )
+          lines += [
+              "",
+              "Phase: **P1 warn-only**. No mirror PR opened.",
+              "See `docs/runbook/auto-mirror-runtime.md` for the rollout plan.",
+          ]
           print("\n".join(lines))
           PY
 
-      - name: Comment classification on ja PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh api \
-            "repos/${JA_REPO}/issues/${{ steps.meta.outputs.pr_number }}/comments" \
-            -f body="$(cat comment_body.md)" \
-            >/dev/null
-          echo "Comment posted on ja PR #${{ steps.meta.outputs.pr_number }}"
-
-      - name: Open TRANSLATION-PENDING issue if translation files touched
+      - name: Open tracking issue on en repo
         if: ${{ env.OPEN_PR == 'false' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           translation_count="$(jq '.by_class.translation | length' classification.json)"
+          unknown_count="$(jq '.by_class.unknown | length' classification.json)"
+          runtime_count="$(jq '.by_class.runtime | length' classification.json)"
+          labels=(auto-mirror-runtime)
           if [ "${translation_count}" -gt 0 ]; then
-            gh issue create \
-              --title "TRANSLATION-PENDING: ${{ steps.meta.outputs.pr_title }}" \
-              --body "Triggered by ja-side merge: ${{ steps.meta.outputs.pr_url }}
-
-          Translation-class files changed (${translation_count}). See classification comment on the ja PR.
-          Review per docs/sync-policy.md and either close (divergence) or schedule translation." \
-              --label translation-pending \
-              >/dev/null
-          else
-            echo "No translation-class files changed; skipping TRANSLATION-PENDING issue."
+            labels+=(translation-pending)
           fi
+          if [ "${unknown_count}" -gt 0 ]; then
+            labels+=(needs-triage)
+          fi
+          label_csv="$(IFS=,; echo "${labels[*]}")"
+          title="auto-mirror P1: ja#${{ steps.meta.outputs.pr_number }} ${{ steps.meta.outputs.pr_title }}"
+          # Trim title to GH 256-char cap.
+          title="${title:0:240}"
+          gh issue create \
+            --title "${title}" \
+            --body-file issue_body.md \
+            --label "${label_csv}" \
+            >/dev/null
+          echo "Issue opened (runtime=${runtime_count}, translation=${translation_count}, unknown=${unknown_count})."
 
       - name: P2+ stub — would open mirror PR here
         if: ${{ env.OPEN_PR == 'true' }}

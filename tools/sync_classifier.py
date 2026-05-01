@@ -14,10 +14,10 @@ from typing import Iterable
 
 
 RUNTIME_GLOBS: tuple[str, ...] = (
-    "tools/*.py",
-    "tools/**/*.py",
-    "tools/*.json",
-    "tools/**/*.json",
+    # tools/** is broad on purpose: any behavior-bearing file under tools/
+    # (script, config, data fixture) is ja-canonical and should mirror.
+    "tools/*",
+    "tools/**/*",
     "dashboard/app.js",
     "dashboard/server.py",
     "dashboard/index.html",
