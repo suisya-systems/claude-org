@@ -127,7 +127,7 @@ After the operations below, run the converter to update the JSON:
 | Field | Type | Description |
 |---|---|---|
 | `peerId` | `string` | renga-peers pane name (`worker-{task_id}` / `dispatcher` / `curator` form). Pass to `mcp__renga-peers__send_message` as `to_id` |
-| `paneId` | `string` | renga pane name (the value passed via `--id`, e.g. `dispatcher`, `curator`). Older WezTerm builds stored a numeric pane-id; after migrating to ccmux this became a stable name. In the current spec this is often the same value as `peerId` |
+| `paneId` | `string` | renga pane name (the value passed via `--id`, e.g. `dispatcher`, `curator`). Older WezTerm builds stored a numeric pane-id; after migrating to renga this became a stable name. In the current spec this is often the same value as `peerId` |
 
 ---
 

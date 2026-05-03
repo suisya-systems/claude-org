@@ -189,7 +189,8 @@ Lead:   Understood. Resuming the storefront task.
 **Diagnosis**: first, inspect the state of that role's `settings.local.json`:
 
 ```bash
-python tools/check_role_configs.py --include-local
+# Windows: prefer `py -3`; on POSIX use `python3` (`python` is a fallback when neither launcher is available)
+py -3 tools/check_role_configs.py --include-local
 ```
 
 To inspect inside a specific role's worktree, also pass `--role <secretary|dispatcher|curator|worker>` (`secretary` is the implementation identifier for the Lead role; the CLI literal is kept as-is). The output enumerates per-role missing/unknown allow entries and missing required hooks.
@@ -201,13 +202,14 @@ To inspect inside a specific role's worktree, also pass `--role <secretary|dispa
 
 ### `tools/check_role_configs.py` reports drift between schema, permissions, and settings
 
-**Symptoms**: CI or local `python tools/check_role_configs.py --include-local` reports `unknown allow entry` / `permissions.md mismatch` / `missing required hook`.
+**Symptoms**: CI or local `py -3 tools/check_role_configs.py --include-local` (POSIX: `python3 tools/check_role_configs.py --include-local`) reports `unknown allow entry` / `permissions.md mismatch` / `missing required hook`.
 
 **Diagnosis**: identify which side the drift is on — schema, `permissions.md`, or actual `settings.local.json`.
 
 ```bash
-python tools/check_role_configs.py --include-local        # validate all roles at once
-python tools/check_role_configs.py --role <role>          # individual validation in that role's worktree
+# Windows: prefer `py -3`; on POSIX use `python3`
+py -3 tools/check_role_configs.py --include-local        # validate all roles at once
+py -3 tools/check_role_configs.py --role <role>          # individual validation in that role's worktree
 git diff tools/role_configs_schema.json                   # recent edits on the schema side
 git diff .claude/skills/org-setup/references/permissions.md
 ```
@@ -218,7 +220,7 @@ git diff .claude/skills/org-setup/references/permissions.md
 
 - **An allow entry not registered in the schema is present in `permissions.md` or actual settings**: if it's needed, add it to the schema first, then propagate to `permissions.md` and `settings.local.json`. If it isn't, delete it.
 - **The sample JSON in `permissions.md` has diverged from the schema**: treat the schema as canonical and rewrite the `permissions.md` side to match.
-- **`/org-setup` re-run does not eliminate drift in `settings.local.json`**: additive-only mode can't remove anything automatically. As a **last resort**, replace the role's `settings.local.json` wholesale with the per-role sample JSON in `.claude/skills/org-setup/references/permissions.md` to return to baseline. The `{worker_dir}` / `{claude_org_path}` placeholders in the worker sample must be hand-resolved to absolute paths in your environment. Make sure to record any local overrides before doing this.
+- **`/org-setup` re-run does not eliminate drift in `settings.local.json`**: additive-only mode can't remove anything automatically. As a **last resort**, replace the role's `settings.local.json` wholesale with the per-role sample JSON in `.claude/skills/org-setup/references/permissions.md` to return to baseline. The `{worker_dir}` / `{claude_org_path}` placeholders in the worker sample must be hand-resolved to absolute paths in your environment. Make sure to record any local overrides before doing this. After updating, re-run `py -3 tools/check_role_configs.py --include-local` (POSIX: `python3 tools/check_role_configs.py --include-local`) to confirm the drift is gone.
 
 ### Schema JSON parse error / read failure
 
@@ -229,10 +231,11 @@ git diff .claude/skills/org-setup/references/permissions.md
 ```bash
 git status tools/role_configs_schema.json
 git diff tools/role_configs_schema.json
-python -c "import json; json.load(open('tools/role_configs_schema.json'))"
+# Windows: prefer `py -3`; on POSIX use `python3`
+py -3 -c "import json; json.load(open('tools/role_configs_schema.json'))"
 ```
 
-**Fix**: if a recent edit broke the file, restore it with `git restore tools/role_configs_schema.json`, or temporarily set the change aside with `git stash push tools/role_configs_schema.json` and try again. After fixing the schema syntax, always run `python tools/check_role_configs.py --include-local` cleanly before committing.
+**Fix**: if a recent edit broke the file, restore it with `git restore tools/role_configs_schema.json`, or temporarily set the change aside with `git stash push tools/role_configs_schema.json` and try again. After fixing the schema syntax, always run `py -3 tools/check_role_configs.py --include-local` (POSIX: `python3 tools/check_role_configs.py --include-local`) cleanly before committing.
 
 ---
 

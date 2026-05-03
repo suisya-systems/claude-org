@@ -161,7 +161,7 @@ This deny is limited to gates on Claude's file-editing tools (Write/Edit). The L
 
 **What must not be written**:
 - Wide allows (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
-- Legacy `mcp__claude-peers__*` (migrated to renga-peers in 2025)
+- Legacy `mcp__claude-peers__*` (migrated to `mcp__renga-peers__*` in 2026; use the current name)
 - Legacy Bash allows for `renga list/split/send/events/close/inspect *` (replaced by MCP in renga 0.14.0+)
 - Past one-shot commands (commands containing a specific PR number / branch name / PID, like `gh pr create --repo ... --head feat/xxx ...`)
 - User-specific absolute paths (such as `Read(//c/Users/<you>/Documents/work/**)`)

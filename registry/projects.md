@@ -1,18 +1,18 @@
 # Projects Registry
 
-既知のプロジェクト一覧。窓口Claudeがユーザーの依頼からプロジェクトを特定するために使う。
-ワーカー派遣時に自動登録される。手動で追記・編集してもよい。
+A list of known projects. The Lead Claude uses it to identify which project a user request maps to.
+Entries are auto-registered when a worker is dispatched. Manual additions and edits are also fine.
 
-「パス」列はプロジェクトの clone ソースを記録する。値によってワーカー派遣時の初期化手順が分岐する:
+The "Path" column records the clone source for the project. The value drives how the worker is initialized at dispatch time:
 
-- URL（例: `https://github.com/...`）→ リモートリポジトリ。`git clone {URL} {worker_dir}` で取得
-- ローカルパス（例: `C:/Users/.../existing-repo`）→ ローカル既存プロジェクト。`git clone {ローカルパス} {worker_dir}` で取得
-- `-` → 新規プロジェクト（clone 元なし）。`git init {worker_dir}` で初期化（clone は実行しない）
+- A URL (e.g. `https://github.com/...`) → remote repository. Fetched with `git clone {URL} {worker_dir}`.
+- A local path (e.g. `C:/Users/.../existing-repo`) → existing local project. Fetched with `git clone {local_path} {worker_dir}`.
+- `-` → new project (no clone source). Initialized with `git init {worker_dir}` (no clone is performed).
 
-注意: この列はワーカーの成果物パスを示すものではない（ワーカーは `workers/{task_id}/` 内で作業する）。
-この下の Markdown 表はワーカー派遣前に `dashboard/server.py:_parse_projects` で機械パースされるため、本セクションに追加の Markdown 表（`|---|` セパレータ付き）を差し込まないこと。説明を増やす場合はプレーン箇条書きで記述する。
+Note: this column is not the worker's output path (the worker operates inside `workers/{task_id}/`).
+The Markdown table below is machine-parsed by `dashboard/server.py:_parse_projects` before the worker is dispatched, so do not insert additional Markdown tables (with `|---|` separators) in this section. If you need to add explanations, use plain bullet lists.
 
-| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |
+| Nickname | Project | Path | Description | Common tasks |
 |---|---|---|---|---|
-| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 |
-| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 |
+| Clock app | clock-app | - | A digital clock that runs in the web browser | Design changes, feature additions |
+| renga | renga | https://github.com/suisya-systems/renga | Rust-based terminal multiplexer (TUI) for Claude Code | Feature additions, bug fixes, issue triage |

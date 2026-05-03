@@ -124,7 +124,7 @@ same time.
 allows from closed-world validation (`_load_override_allow`). So personal
 allows added via override do not show up as `unknown allow entry` under CI /
 `--include-local`. However `forbidden_allow_exact` (wide allows like `Bash(git *)`)
-and `disallow_allow_regex` (e.g. legacy `mcp__claude-peers__*`) still ERROR
+and `disallow_allow_regex` (e.g. legacy `mcp__claude-peers__*`, now `renga-peers`) still ERROR
 even when they appear in override. The safety contract cannot be bypassed via override.
 
 #### Resolving `{claude_org_path}` for the dispatcher
