@@ -19,8 +19,8 @@ Bash-based hook regression tests.
 
 ```bash
 # Python tests
-# Windows (use python if py -3 is unavailable)
-python -m unittest discover -s tests -v
+# Windows (use `python` as a fallback if `py -3` is unavailable)
+py -3 -m unittest discover -s tests -v
 
 # Mac / Linux
 python3 -m unittest discover -s tests -v
