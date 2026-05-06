@@ -5,50 +5,83 @@
 covers operational tasks and the phased rollout plan.
 
 Design source: `suisya-systems/claude-org-ja#189` (and Lead decision #171).
+P2 implementation tracked under `suisya-systems/claude-org-ja#335`.
 
-## What it does today (Phase P1)
+## What it does today (Phase P2)
 
 - Triggered by `repository_dispatch` event `ja_pr_merged` from ja repo
-  (existing pipeline; no new PAT required on this side).
-- Pulls the changed-file list of the ja PR via `gh api`.
+  (existing pipeline; no new PAT strictly required, but see Auth below).
+- Pulls the changed-file list of the ja PR via `gh api`, with per-file
+  status (added / modified / removed / renamed).
 - Classifies each file using `tools/sync_classifier.py`:
-  - `runtime`: would be auto-mirrored in P2+
-  - `translation`: handled by existing TRANSLATION-PENDING flow
-  - `divergence-allowed`: intentionally divergent; ignored
-  - `unknown`: surfaced for manual triage
-- Opens a single tracking issue **on this repo** with the classification
-  summary, labeled `auto-mirror-runtime` (plus `translation-pending` if any
-  translation-class file was touched, and `needs-triage` if any path
-  classified as `unknown`).
-- **Does NOT open a mirror PR.** The `OPEN_PR` env var defaults to `false`.
+  - `runtime`: opened as a mirror PR on this repo (P2 behavior).
+  - `translation`: handled by existing TRANSLATION-PENDING flow.
+  - `divergence-allowed`: intentionally divergent; ignored.
+  - `unknown`: surfaced for manual triage on the tracking issue.
+- For runtime-class files: shallow-fetches ja at the merge SHA, copies
+  the runtime files into a branch `auto-mirror/ja-pr-<N>`, and opens (or
+  refreshes) a PR titled `auto-mirror: ja#<N> <title>` against `main`,
+  labeled `auto-mirror-runtime`. Force-push is used so reruns are
+  idempotent — the auto-mirror branch namespace is exclusively owned by
+  this workflow.
+- For translation- or unknown-class files (or when `OPEN_PR=false`): opens
+  (or comments on) a single tracking issue carrying the same
+  `auto-mirror-runtime` / `translation-pending` / `needs-triage` labels
+  as before. The `translation-pending` label remains the contract for
+  downstream translation-pipeline consumers.
+- For divergence-allowed-only batches: no PR, no issue.
 
-This workflow subsumes the previous `notify-ja-changes.yml`; that file has
-been removed so a single dispatch produces a single issue (no duplicates).
-The `translation-pending` label remains the contract for downstream
-translation-pipeline consumers.
+This workflow subsumes the previous `notify-ja-changes.yml`; that file
+was removed so a single dispatch produces at most one PR + at most one
+tracking issue (no duplicates).
 
-Cross-repo writes are deliberately avoided: posting back to the ja PR
-would require a PAT on the en side, which Lead chose not to introduce in
-P1 (Issue #189 design constraint). The signal lives here instead.
+## Auth
+
+Two secrets are consulted, in order, for any same-repo write (push +
+`gh pr create` / `gh pr edit`):
+
+1. `secrets.AUTO_MIRROR_PAT` — preferred. A classic PAT with `repo`
+   scope (or fine-grained PAT with Contents:write + Pull requests:write
+   on this repo) issued by a maintainer. Required if you want PRs opened
+   by the workflow to trigger `pull_request` workflows such as
+   `tests.yml`. GitHub deliberately blocks workflows from triggering
+   other workflows when the source PR was opened by `GITHUB_TOKEN`, so
+   without `AUTO_MIRROR_PAT` mirror PRs will land with **no CI**.
+2. `secrets.GITHUB_TOKEN` — automatic fallback. Push and PR creation
+   still succeed, but as above, downstream CI won't fire on the mirror PR.
+
+The ja side continues to use only its existing `secrets.NOTIFY_EN_PAT`,
+which never holds write scope on this repo. Issue #189 explicitly kept
+the ja side free of new secrets; the optional PAT lives on the en side.
+
+If `AUTO_MIRROR_PAT` is rotated or revoked, the workflow keeps running
+under `GITHUB_TOKEN` automatically; reviewers should treat any mirror PR
+without CI badges as warranting a manual rerun once the PAT is back.
 
 ## Disable temporarily
 
 Two equivalent options:
 
-1. Set `OPEN_PR` aside and short-circuit the workflow by editing the file
-   header:
+1. Flip the kill-switch in the workflow file:
+
+   ```yaml
+   env:
+     OPEN_PR: 'false'    # P1 warn-only — tracking issue, no mirror PR
+   ```
+
+   Commit, push, done. The tracking-issue path keeps working.
+
+2. Short-circuit the entire job:
 
    ```yaml
    jobs:
-     classify-and-warn:
-       if: false              # <-- disables the job entirely
+     classify-and-mirror:
+       if: false
        runs-on: ubuntu-latest
    ```
 
-   Commit, push, done. Re-enable by removing `if: false`.
-
-2. Delete the workflow file. Slower to restore; only do this for permanent
-   removal.
+   Use this if you also want to suppress the tracking issue (e.g.,
+   during a multi-day backfill).
 
 GitHub also lets you disable a workflow from the Actions UI
 (`Actions` → `Auto-mirror runtime (ja -> en)` → `…` → `Disable workflow`),
@@ -67,24 +100,48 @@ gh workflow run auto-mirror-runtime.yml \
   -f ja_pr_url="https://github.com/suisya-systems/claude-org-ja/pull/<NUMBER>"
 ```
 
-`ja_merge_sha` is optional; the workflow will resolve it from the PR if
-omitted. Title and URL are also optional in P1 (the workflow re-fetches
-them from the GH API), but setting them keeps the comment body legible if
-the ja PR has been since edited.
+`ja_merge_sha` is optional — the workflow resolves it from the PR via
+`gh api`. Title and URL are also optional (the workflow re-fetches them
+from the GH API), but setting them keeps the PR / issue body legible if
+the ja PR was since edited.
+
+A rerun for the same ja PR number is safe **while the matching mirror
+PR is open**: branch `auto-mirror/ja-pr-<N>` is force-updated and the
+PR body / title are rewritten in place. If the mirror PR was previously
+closed (manually rejected, or merged), a rerun will push the branch but
+**will not** reopen or replace the closed PR — the workflow only
+detects `--state open`. To re-mirror after a close, delete the branch
+first or change the ja PR number you are replaying.
+
+## Conflict handling
+
+P2 does not auto-merge. If `git push` succeeds but the resulting PR
+conflicts with `main` (e.g., because en has diverged on a runtime path),
+the reviewer has three options:
+
+1. Resolve locally and push to the same `auto-mirror/ja-pr-<N>` branch
+   (the workflow won't overwrite until the next ja PR rerun touches the
+   same number).
+2. Close the mirror PR and apply the ja change by hand. Note this in
+   the matching `auto-mirror P2: ja#<N>` tracking issue (if any) for
+   audit.
+3. Re-run the workflow (`gh workflow run …`) once en is in a state where
+   a clean apply is possible. Force-push semantics make rerun safe.
+
+The reverse drift detector (Phase P4) will eventually catch the second
+case — en runtime edits without a ja parent — but is out of scope here.
 
 ## Phased rollout
 
 | Phase | Status | Behavior | Exit criterion |
 |---|---|---|---|
-| P1 | **active** | classify + comment, no mirror PR | ≥1 week clean run, ≥5 ja merges classified correctly by spot check |
-| P2 | not yet | open mirror PR per ja merge, manual merge | ≥10 mirror PRs merged, conflict + docstring impact understood |
+| P1 | superseded | classify + tracking issue, no mirror PR | (rolled into P2) |
+| P2 | **active** | open mirror PR per ja merge, manual merge | ≥10 mirror PRs merged, conflict + docstring impact understood |
 | P3 | not yet | auto-merge runtime-only mirror PRs (gate TBD by Lead) | ≥4 weeks of P2 stability |
 | P4 | not yet | reverse-drift detector (en runtime edits without ja parent) | n/a (additive) |
 
-Switching P1 → P2 is a single-line change: `OPEN_PR: 'true'` in
-`.github/workflows/auto-mirror-runtime.yml`. The corresponding mirror-PR
-opening step is currently a stub that exits non-zero — implement it before
-flipping the toggle.
+Reverting P2 → P1 is a single-line change: `OPEN_PR: 'false'`. The
+tracking-issue path stays functional under either toggle.
 
 ## Pending Lead decisions
 
@@ -92,12 +149,12 @@ These are surfaced for visibility; defaults are applied today and can be
 flipped with doc-only edits if Lead changes course:
 
 - **Docstring overwrite policy** (Issue #189 §Open #1): default = ja
-  docstrings ride along onto en. No overlay translation in P1.
+  docstrings ride along onto en. No overlay translation in P2.
 - **ja-only doc commits** (#163, #168 reference, Issue #189 §Open #4):
   default = status quo (classified as `translation` or `divergence-allowed`,
-  not auto-mirrored). No new warn signal in P1.
-
-P3 gating decisions (#2, #3 in Issue #189) are out of scope for P1.
+  not auto-mirrored). No new warn signal in P2.
+- **P3 auto-merge gate** (Issue #189 §Open #2, #3): out of scope until
+  P2 has accumulated ≥10 merged mirror PRs of empirical data.
 
 ## Related files
 
