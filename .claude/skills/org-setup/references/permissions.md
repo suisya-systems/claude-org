@@ -1,17 +1,17 @@
-# Required settings per role
+# 各ロールの必要設定
 
-> **Source of truth**: this document is a human-facing explanation; the
-> machine-readable canonical version is
-> [`tools/role_configs_schema.json`](../../../../tools/role_configs_schema.json).
-> If the JSON blocks in this file drift from the schema, CI
-> (`tools/check_role_configs.py`) fails. When adding rules or changing
-> wording, update the schema first, then the docs.
+> **Source of truth**: このドキュメントは人間向け説明であり、機械可読な正典は
+> ja の [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json)
+> （org-extension allow / hooks）と `core_harness` の framework schema（型定義）を
+> マージしたもの。drift validator `tools/check_role_configs.py` はこの merged schema
+> に対して `settings.local.json` を検証し、乖離があれば CI が fail する。ルール追加や
+> 文面変更は schema → docs の順で反映すること。
 
-The per-role definitions of permissions allow entries and environment variables that org-setup references.
+org-setup が参照する、ロールごとの permissions allow と環境変数の定義。
 
-## User-wide (`~/.claude/settings.json`)
+## ユーザー共通 (`~/.claude/settings.json`)
 
-Settings every role needs. Putting them at the user level applies them to every subdirectory.
+全ロールが必要とする設定。ユーザーレベルに置くことで全サブディレクトリに適用される。
 
 ```json
 {
@@ -46,21 +46,21 @@ Settings every role needs. Putting them at the user level applies them to every 
 }
 ```
 
-**Bash permission policy**: the legacy `Bash(renga:*)` glob has been removed (since renga 0.14.0+ pane operations, peer messaging, event subscription, scraping, and raw key sending are all available via MCP). The remaining `Bash(renga …)` entries are **operational commands only**:
+**Bash permission 方針**: 旧 `Bash(renga:*)` glob は撤去済み（renga 0.14.0+ でペイン操作・ピア通信・event 購読・スクレイプ・raw キー送信がすべて MCP 化されたため）。残している `Bash(renga …)` は **運用コマンド限定**:
 
-- `renga --version` / `renga --help`: environment check
-- Equivalent of `renga --layout ops` (`--layout:*`): initial layout launch (see `renga-layouts/ops.toml`)
-- `renga mcp install` / `uninstall` / `status` / `--help`: MCP server registration management (bootstrap to make `mcp__renga-peers__*` usable)
+- `renga --version` / `renga --help`: 環境確認
+- `renga --layout ops` 相当 (`--layout:*`): 初回レイアウト起動（`renga-layouts/ops.toml` 参照）
+- `renga mcp install` / `uninstall` / `status` / `--help`: MCP サーバー登録管理（`mcp__renga-peers__*` を使えるようにするための bootstrap）
 
-Pane operations (`renga split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` etc.) go through MCP tools (`mcp__renga-peers__*`). Do not include the corresponding Bash permissions.
+ペイン操作（`renga split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` 等）は MCP ツール (`mcp__renga-peers__*`) 経由で実施する。該当 Bash permission は含めない。
 
-**Note**: the 14 `renga-peers` MCP tools become usable only after running `renga mcp install` once to register the MCP server at user scope. See the README "Installation" section for the registration procedure.
+**注意**: `renga-peers` MCP ツール 14 種は `renga mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
 
-## Lead (`<repo>/.claude/settings.local.json`)
+## 窓口 (`<repo>/.claude/settings.local.json`)
 
-Lead-specific settings. Common entries live at the user level, so write only what only the Lead needs here.
+窓口固有の設定。ユーザー共通分はユーザーレベルにあるため、ここには窓口だけが必要なものを書く。
 
-**Narrow policy**: avoid wide allows that grant entire feature sets like `gh:*`; instead, **narrow per subcommand** like `gh issue:*` / `gh pr:*`. For git, also narrow with the colon form `Bash(git add:*)` etc., not `Bash(git *)` (the space-form wildcard).
+**narrow 方針**: `gh:*` のような機能全体を許す wide allow は避け、`gh issue:*` `gh pr:*` のように**サブコマンドごとに narrow** にする。git も `Bash(git *)`（スペース形式 wildcard）ではなく `Bash(git add:*)` 等の `:*` コロン形式で narrow にする。
 
 ```json
 {
@@ -147,42 +147,42 @@ Lead-specific settings. Common entries live at the user level, so write only wha
 }
 ```
 
-**Duplication of mcp__renga-peers__\***: these duplicate the user-wide settings.json, but the Lead always uses the renga-peers MCP immediately on launch, so we explicitly list them at Lead scope as well to pin the source of truth (so the Lead still works even if user settings drift).
+**mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
 
-**`permissions.deny` (added in Issue #99 Phase 2)**: forbids the Lead from editing Worker settings files (`workers/<project>/.claude/settings.local.json` and the worktree path `workers/<project>/.worktrees/<task>/.claude/settings.local.json`) **directly via Claude's `Write` / `Edit` tools**. The Lead launches in normal mode (not `bypassPermissions`), so this `permissions.deny` always works via static pattern match.
+**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Write` / `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
 
-This deny is limited to gates on Claude's file-editing tools (Write/Edit). The Lead still allows `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)`, so writing `cat > settings.local.json` from Bash/PowerShell is technically still possible. The deny is meant to close off the **main mis-grant path** — the Lead opening the `Edit` tool by hand to rewrite settings — and does not fully cut off everything other than `tools/generate_worker_settings.py`. Full generator-only enforcement (including the Bash side) is Phase 3 work (alongside drift CI scope expansion and escape-hatch design).
+ただしこの deny は Claude のファイル編集ツール（Write/Edit）系のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
 
-**Duplicate renga bootstrap**: duplicates user-wide settings for the same reason — the Lead uses these immediately for initial layout launch and pane control, so we list them explicitly.
+**renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 
-**Ordering**: (1) MCP tools, (2) git, (3) gh, (4) python/dashboard, (5) renga bootstrap, (6) other (sleep / codex / curl / PowerShell). Preserve this order when adding new entries.
+**並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) renga bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
 
-**About hooks**: `block-workers-delete.sh` blocks recursive deletion of the workers directory (`rm -r` / `rm -rf` / `rm --recursive`). It allows `rm` of individual files. The `renga` command is excluded (to prevent false positives during Worker launch).
+**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。
 
-**What must not be written**:
-- Wide allows (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
-- Legacy `mcp__claude-peers__*` (migrated to `mcp__renga-peers__*` in 2026; use the current name)
-- Legacy Bash allows for `renga list/split/send/events/close/inspect *` (replaced by MCP in renga 0.14.0+)
-- Past one-shot commands (commands containing a specific PR number / branch name / PID, like `gh pr create --repo ... --head feat/xxx ...`)
-- User-specific absolute paths (such as `Read(//c/Users/<you>/Documents/work/**)`)
+**書いてはいけないもの**:
+- wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
+- 旧 `mcp__claude-peers__*`（2026 年に renga-peers へ移行済み）
+- 旧 `renga list/split/send/events/close/inspect *` の Bash allow（renga 0.14.0+ で MCP 化）
+- 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
+- user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
 
-If these accumulate, you have drift. Periodically prune by reconciling against `permissions.md`.
+これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する。
 
-**Pruning (drift resolution) is automated via the `--prune` mode**: when entries from "What must not be written" above accumulate in `settings.local.json`, you can wholesale-rewrite using the per-role samples in this document as the SOT via `tools/org_setup_prune.py`.
+**剪定（drift 解消）は `--prune` モードで自動化済み**: 上記「書いてはいけないもの」のエントリが `settings.local.json` に蓄積した場合、`tools/org_setup_prune.py` で本ドキュメントの role 別サンプルを SOT として丸ごと書き換えられる。
 
 ```bash
-python tools/org_setup_prune.py --role secretary --dry-run   # diff preview
-python tools/org_setup_prune.py --role secretary             # execute (auto-generates .bak)
-python tools/org_setup_prune.py --all                        # secretary / dispatcher / curator together
+python tools/org_setup_prune.py --role secretary --dry-run   # diff プレビュー
+python tools/org_setup_prune.py --role secretary             # 実行（.bak を自動生成）
+python tools/org_setup_prune.py --all                        # secretary / dispatcher / curator まとめて
 ```
 
-**Protecting user extensions**: to keep personally added allow / env / hook entries, place a `settings.local.override.json` in the **same directory** as each settings file. Prune deep-merges it in, and the tool never rewrites the override file. See Step 5 of `.claude/skills/org-setup/SKILL.md` for details.
+**user 拡張の保護**: 個人で追加した allow / env / hook を残すには、各 settings ファイルと**同じディレクトリ**に `settings.local.override.json` を置く。prune 時に deep-merge され、ツールはこの override ファイルを書き換えない。詳細は `.claude/skills/org-setup/SKILL.md` の Step 5 参照。
 
-## Dispatcher (`<repo>/.dispatcher/.claude/settings.local.json`)
+## ディスパッチャー (`<repo>/.dispatcher/.claude/settings.local.json`)
 
-The Dispatcher launches claude in Worker panes and inspects pane contents.
+ディスパッチャーはワーカーペインで claude を起動し、ペイン内容を取得する。
 
-**Important**: due to a Sonnet constraint, the Dispatcher launches with `permission_mode=bypassPermissions`, so **both `permissions.allow` and `permissions.deny` are bypassed** (Claude Code official behavior). The effective write boundary and git restrictions can **only be enforced by PreToolUse hooks**. The `hooks.PreToolUse` block below is the Dispatcher's only barrier; do not delete or disable it.
+**重要**: ディスパッチャーは Sonnet 制約により `permission_mode=bypassPermissions` で起動するため、`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がディスパッチャーの唯一の障壁であり、削除・無効化してはいけない。
 
 ```json
 {
@@ -232,18 +232,18 @@ The Dispatcher launches claude in Worker panes and inspects pane contents.
 }
 ```
 
-**Note**: replace `{claude_org_path}` with a resolved absolute path when generating `settings.local.json`. Paths inside hook commands are quoted to handle spaces.
+**注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
-**Hook responsibilities**:
-- `block-dispatcher-out-of-scope.sh`: limits the Dispatcher's Edit/Write target paths to `.dispatcher/`, `.state/`, and `knowledge/raw/YYYY-MM-DD-{topic}.md`. Forces delegation to a Worker for application code (`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/`, etc.)
-- `block-git-push.sh`: forbids the Dispatcher from pushing directly (push goes through the Lead)
-- `block-dangerous-git.sh`: blocks `git push --force` / `git reset --hard` / `git branch -D`
-- `block-workers-delete.sh`: blocks recursive deletion of the workers directory (protects Worker deliverables)
-- `block-no-verify.sh`: blocks `--no-verify`-style validation bypass
+**hooks の役割分担**:
+- `block-dispatcher-out-of-scope.sh`: ディスパッチャーの Edit/Write 対象パスを `.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
+- `block-git-push.sh`: ディスパッチャーからの直接 push を禁止（push は窓口経由）
+- `block-dangerous-git.sh`: `git push --force` / `git reset --hard` / `git branch -D` をブロック
+- `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）
+- `block-no-verify.sh`: `--no-verify` 系の検証バイパスをブロック
 
-## Curator (`<repo>/.curator/.claude/settings.local.json`)
+## キュレーター (`<repo>/.curator/.claude/settings.local.json`)
 
-The Curator does only knowledge curation. No additional Bash permissions are needed.
+キュレーターは知見整理のみ。追加の Bash 許可は不要。
 
 ```json
 {
@@ -253,11 +253,11 @@ The Curator does only knowledge curation. No additional Bash permissions are nee
 }
 ```
 
-## Worker (dynamically generated)
+## ワーカー（動的生成）
 
-Worker settings are created dynamically in Step 1.5 of org-delegate.
+ワーカーの設定は org-delegate の Step 1.5 で動的に作成される。
 
-> **Phase 2 onward (Issue #99)**: Worker `settings.local.json` is generated by `tools/generate_worker_settings.py` from the `worker_roles[<role>]` section of `tools/role_configs_schema.json` (3 roles: `default` / `claude-org-self-edit` / `doc-audit`). The JSON shown in this section is reference only; hand-editing is forbidden (drift CI fails). If a new permission pattern is needed, open a PR to add a role to the schema.
+> ワーカーの `settings.local.json` は `claude-org-runtime settings generate` が同パッケージにバンドルされた merged role schema の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
 
 ```json
 {
@@ -319,6 +319,6 @@ Worker settings are created dynamically in Step 1.5 of org-delegate.
 }
 ```
 
-**Note**: replace `{claude_org_path}` and `{worker_dir}` with resolved absolute paths when generating `settings.local.json`. Paths inside hook commands are quoted to handle spaces.
+**注意**: `{claude_org_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
-**Roles of `deny` and hooks**: Workers launch in normal mode (not `bypassPermissions`), so `permissions.deny` always works via static pattern match. It does not depend on external commands (jq, bash), making it highly reliable. Hooks meanwhile handle dynamic checks like Worker directory boundary checks. Combining the two yields defense in depth. Because `deny` cannot cover embedded commands like `echo foo && git push`, the `block-git-push.sh` hook is kept as a secondary defense. Note that for roles launched with `bypassPermissions` (the Dispatcher), `permissions.deny` is bypassed; only hooks act as a barrier there (see the "Important" note above).
+**deny と hooks の役割分担**: ワーカーは通常モード（`bypassPermissions` ではない）で起動するため、`permissions.deny` は静的パターンマッチで常に効く。外部コマンド（jq, bash）に依存しないので信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` hook は副次防御として維持する。なお `bypassPermissions` で起動するロール（ディスパッチャー）では `permissions.deny` は bypass されるので、そちらは hook のみが障壁になる（前述 `重要` 節参照）。

@@ -115,7 +115,7 @@ function workerCard(w) {
       <span class="worker-task-tag">${esc(w.task || "–")}</span>
       <span class="worker-pulse"></span>
     </div>
-    <div class="worker-progress">${esc(w.lastProgress || "Working...")}</div>
+    <div class="worker-progress">${esc(w.lastProgress || "作業中...")}</div>
     <div class="worker-footer">
       <span id="el-${esc(w.id)}">${elapsedStr(w.started)}</span>
       ${w.paneId ? `<span>pane ${esc(w.paneId)}</span>` : ""}
