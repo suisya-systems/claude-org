@@ -189,6 +189,15 @@ if ($SkipMcp) {
 # claude-org-runtime package. Phase 5c (Issue #130) moved the install
 # path from `requirements.txt` to `pyproject.toml`; we prefer the
 # editable install so the dep set comes from the canonical source.
+$pyprojectFile = Join-Path $Dir 'pyproject.toml'
+$reqFile = Join-Path $Dir 'requirements.txt'
+
+# Skip the whole detection block on older refs / fixtures that ship
+# neither dependency file: invoking `python --version` there would
+# pointlessly touch the Microsoft Store App Execution Alias stub on
+# stock Windows boxes, surfacing a Store dialog where the previous
+# behaviour cleanly skipped without side effects.
+#
 # On a default Windows install only `py.exe` (the launcher) ends up
 # on PATH — bare `python` / `python3` are missing — so we add a
 # `py -3` fallback after the POSIX-friendly names. `-3` pins the
@@ -204,23 +213,23 @@ if ($SkipMcp) {
 # A successful `--version` proves a working interpreter is on the
 # other end while still accepting genuine Store-installed Pythons.
 $pyCmd = $null
-$pyCandidates = @(
-    ,@('python'),
-    ,@('python3'),
-    ,@('py', '-3')
-)
-foreach ($cand in $pyCandidates) {
-    if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
-    $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
-    try {
-        & $cand[0] @($rest + @('--version')) > $null 2>&1
-        if ($LASTEXITCODE -eq 0) { $pyCmd = $cand; break }
-    } catch {
-        # candidate is on PATH but failed to launch; try the next one
+if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile)) {
+    $pyCandidates = @(
+        ,@('python'),
+        ,@('python3'),
+        ,@('py', '-3')
+    )
+    foreach ($cand in $pyCandidates) {
+        if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+        $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
+        try {
+            & $cand[0] @($rest + @('--version')) > $null 2>&1
+            if ($LASTEXITCODE -eq 0) { $pyCmd = $cand; break }
+        } catch {
+            # candidate is on PATH but failed to launch; try the next one
+        }
     }
 }
-$pyprojectFile = Join-Path $Dir 'pyproject.toml'
-$reqFile = Join-Path $Dir 'requirements.txt'
 if ((Test-Path -LiteralPath $pyprojectFile) -and $pyCmd) {
     Write-Host ''
     Write-Host 'Installing Python deps via pyproject.toml (editable) ...'
