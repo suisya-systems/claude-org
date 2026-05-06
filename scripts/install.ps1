@@ -197,12 +197,12 @@ if ($SkipMcp) {
 # boxes still carrying 2.7. Each candidate is its own token list so
 # the launcher flag rides with the executable through Invoke-Step.
 #
-# We also skip the Microsoft Store App Execution Alias stub: when
-# Windows ships `python.exe` from `...\WindowsApps\` without an
-# actual Store app installed, `Get-Command python` matches it but
-# any real invocation either fails or pops the Store. Treating it
-# as "found" would short-circuit the loop before reaching `py -3`,
-# defeating the whole point of the fallback on stock boxes.
+# Each candidate is then probed with `--version` to weed out the
+# Microsoft Store App Execution Alias stub — Windows preinstalls
+# `python.exe` under `...\WindowsApps\` even without a real Python,
+# and that stub exits non-zero (or pops the Store) on any real call.
+# A successful `--version` proves a working interpreter is on the
+# other end while still accepting genuine Store-installed Pythons.
 $pyCmd = $null
 $pyCandidates = @(
     ,@('python'),
@@ -210,11 +210,14 @@ $pyCandidates = @(
     ,@('py', '-3')
 )
 foreach ($cand in $pyCandidates) {
-    $cmdInfo = Get-Command $cand[0] -ErrorAction SilentlyContinue
-    if (-not $cmdInfo) { continue }
-    if ($cmdInfo.Source -and $cmdInfo.Source -match '[\\/]WindowsApps[\\/]') { continue }
-    $pyCmd = $cand
-    break
+    if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+    $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
+    try {
+        & $cand[0] @($rest + @('--version')) > $null 2>&1
+        if ($LASTEXITCODE -eq 0) { $pyCmd = $cand; break }
+    } catch {
+        # candidate is on PATH but failed to launch; try the next one
+    }
 }
 $pyprojectFile = Join-Path $Dir 'pyproject.toml'
 $reqFile = Join-Path $Dir 'requirements.txt'
