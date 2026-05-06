@@ -29,7 +29,7 @@ Issue #283 moved every deterministic part of dispatch payload preparation — Pa
 
 When the Dispatcher receives a `DELEGATE` message, the Lead has just run `python tools/gen_delegate_payload.py apply ...` (see [`.claude/skills/org-delegate/SKILL.md` Step 0.7 / 1 / 1.5 / 2](../.claude/skills/org-delegate/SKILL.md)). That single command has already produced:
 
-- **Brief on disk** at `<worker_dir>/CLAUDE.md` (Pattern A / B) or `<worker_dir>/CLAUDE.local.md` (Pattern C self-edit / `live_repo_worktree`).
+- **Brief on disk** at `<worker_dir>/CLAUDE.md` when the resolver decides `self_edit=false` (the standard case for Pattern A and most Pattern B), or `<worker_dir>/CLAUDE.local.md` when `self_edit=true` (forced Pattern C `gitignored_repo_root`, the `live_repo_worktree` Pattern B variant for claude-org self-edit, and any other resolver-marked self-edit). The DELEGATE body's "指示内容" line names the exact filename — trust it instead of inferring from the pattern.
 - **Per-worker settings** at `<worker_dir>/.claude/settings.local.json` (via `claude-org-runtime settings generate`; may be skipped with `--skip-settings` in test/sandbox environments).
 - **DB reservation** in `.state/state.db`: `runs.status='queued'` for this `task_id`, plus a `worker_dirs` row (Codex Design Blocker B-1; activation into Active Work Items remains the Dispatcher's T2 responsibility per [`docs/contracts/delegation-lifecycle-contract.md`](../docs/contracts/delegation-lifecycle-contract.md)).
 - **For Pattern B**, the actual `git worktree add -b <planned_branch> <worker_dir> origin/HEAD` has already run against the chosen base repo. The branch and the directory are ready to check out into.
@@ -48,7 +48,7 @@ The body produced by `gen_delegate_payload.py` (see `_format_delegate_body` in `
 - ブランチ (planned): `<planned_branch>` for Pattern A / B, or "(Pattern C: 既存 repo の現在ブランチで作業 / 新規 branch なし)"
 - Permission Mode (from `registry/org-config.md` `default_permission_mode`)
 - 検証深度 (`full` / `minimal`)
-- 指示内容: a one-line summary plus a pointer to the brief filename (`CLAUDE.md` or `CLAUDE.local.md`) inside `worker_dir`
+- 指示内容: a one-line summary plus a pointer to the brief filename inside `worker_dir`. The exact filename (`CLAUDE.md` for `self_edit=false`, `CLAUDE.local.md` for `self_edit=true`) is spelled in the line itself — paste it through to the Worker verbatim
 
 The Dispatcher's instruction `send_message` to the Worker should reference that brief file. Do not paste the full task description into the message body — the brief on disk is the source of truth.
 
@@ -56,11 +56,11 @@ The Dispatcher's instruction `send_message` to the Worker should reference that 
 
 Spawn-time MCP orchestration and state recording, all per [`.claude/skills/org-delegate/SKILL.md` Step 3 / 4](../.claude/skills/org-delegate/SKILL.md) (and the `.dispatcher/references/spawn-flow.md` companion when present):
 
-1. Snapshot `mcp__renga-peers__list_panes` and pick balanced-split target / direction. The decision logic and constants are owned by the renga / pane-layout reference, not by the deleted `dispatcher_runner.py` — see [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md).
+1. Snapshot `mcp__renga-peers__list_panes` and pick balanced-split target / direction. The decision logic and constants (target / direction selection, MIN_PANE constraints, Lead guard, role-priority, rect adjacency, `split_capacity_exceeded` detection) are documented in [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md) — read that as the algorithmic spec. Note: pane-layout.md still names `claude-org-runtime dispatcher delegate-plan` and `claude_org_runtime.dispatcher.runner.choose_split()` as the SoT, but those binaries were retired in PR #139 along with `tools/dispatcher_runner.py`. Treat the prose constants and decision steps in pane-layout.md as the operating spec until that doc is updated; do not try to invoke the missing CLI / library.
 2. `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd="{worker_dir}", permission_mode="{from DELEGATE}", model="opus")`. Workers default to Opus because the `auto` classifier is unstable on Sonnet; only override on an intentional per-task basis.
-3. `poll_events` → `send_keys(enter)` for the dev-channel approve prompt → wait for `list_peers` to show the new peer → `send_message` to the Worker with: "詳細は `<worker_dir>/{CLAUDE.md|CLAUDE.local.md}` を参照", plus the "Report to the Lead. Do not report to the Dispatcher." reinforcement.
-4. Create `.state/workers/worker-{task_id}.md` with `Status: planned`, then flip to `active` after the spawn + instruction send succeeds.
-5. Transition the run row from `runs.status='queued'` to the `dispatched` / `active` state and add the Active Work Items row in `.state/org-state.md`.
+3. `poll_events` → `send_keys(enter)` for the dev-channel approve prompt → wait for `list_peers` to show the new peer → `send_message` to the Worker pointing at the brief file named in the DELEGATE body's "指示内容" line (e.g. `<worker_dir>/CLAUDE.md` or `<worker_dir>/CLAUDE.local.md`), plus the "Report to the Lead. Do not report to the Dispatcher." reinforcement.
+4. Create `.state/workers/worker-{task_id}.md` with `Status: planned`, then flip the worker-state-file `Status` to `active` after the spawn + instruction send succeeds. (Worker-state-file vocabulary is the small set `planned` / `active` / `pane_closed` / `completed`; it is intentionally coarser than the DB row.)
+5. Transition the DB run row from `runs.status='queued'` to `runs.status='in_use'` (the schema's vocabulary — see `tools/state_db/schema.sql` `CHECK (status IN ('queued','in_use','review','completed','failed','suspended','abandoned'))` and the `_ACTIVE_RUN_STATUSES = ('queued','in_use','review')` set in `tools/resolve_worker_layout.py`). Then add the corresponding Active Work Items row in `.state/org-state.md` (the `.state/org-state.md` view uses `IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED`; see [`docs/contracts/delegation-lifecycle-contract.md`](../docs/contracts/delegation-lifecycle-contract.md) for the mapping between the three vocabularies).
 6. Append a `worker_spawned` entry to `.state/journal.jsonl` via `Bash` (`tools/journal_append.sh`). The Lead-side payload helper does **not** write the journal — the Dispatcher does.
 7. Report `DELEGATE_COMPLETE` back to the Lead via `mcp__renga-peers__send_message(to_id="secretary", ...)`.
 
@@ -74,7 +74,7 @@ Spawn-time MCP orchestration and state recording, all per [`.claude/skills/org-d
 
 - Re-running pattern / role / branch decision logic. `resolve_worker_layout.py` already produced the answer; the brief and the DB row encode it.
 - Hand-writing `CLAUDE.md` / `CLAUDE.local.md` or regenerating `.claude/settings.local.json` in the Worker dir. They are placed by the Lead.
-- Calling the deleted `tools/dispatcher_runner.py delegate-plan` or any `claude-org-runtime dispatcher delegate-plan` CLI. Both were retired in the same wave; absence of these binaries on PATH is expected.
+- Calling the deleted `tools/dispatcher_runner.py delegate-plan` or any `claude-org-runtime dispatcher delegate-plan` CLI / `claude_org_runtime.dispatcher.runner` library import. They were all retired in PR #139; absence on PATH and import errors are expected. Reading the algorithmic prose in [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md) for split decisions is fine and required, even though that doc still references the retired helper as its nominal SoT.
 - Manually crafting a `DELEGATE` message on the Lead's behalf. The Dispatcher consumes `DELEGATE`; it does not produce one.
 
 ## Where Workers report (important)
