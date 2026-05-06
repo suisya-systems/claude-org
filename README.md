@@ -6,6 +6,7 @@
 
 > **claude-org is the English-edition reference distribution.**
 > Japanese edition: [suisya-systems/claude-org-ja](https://github.com/suisya-systems/claude-org-ja) (a dual Japanese/English repository setup. See [`docs/sync-policy.md`](docs/sync-policy.md) for synchronization rules between the two repositories).
+> **ja → en sync is currently running in phase P2 (mirror PR, manual merge)**. A merge into ja `main` triggers a mirror PR titled `auto-mirror: ja#<N> ...` on this repository (details: [`docs/sync-policy.md` §Current phase: P2](docs/sync-policy.md#current-phase-p2-mirror-pr-manual-merge)).
 
 ---
 
@@ -207,7 +208,10 @@ Human <-> Lead Claude (command role)
               +-> Worker pool (implementation work, automatically disappears after completion)
 ```
 
-- **Lead**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting
+- **Lead**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting. The Lead's operational responsibilities are split into the following three skills as part of the Issue [#320](https://github.com/suisya-systems/claude-org-ja/issues/320) carve-out (the role itself is still one — this is an internal skill split):
+  - [`/org-delegate`](.claude/skills/org-delegate/SKILL.md) — Delegating work (assembling Worker instructions and dispatching them via the Dispatcher)
+  - [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) — The canonical flow for escalating Worker decision requests to a human and updating `.state/pending_decisions.json`
+  - [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md) — After explicit user approval: `git push` / PR creation / CI monitoring / review feedback loop / close-out after merge
 - **Dispatcher**: Relays pane launches and instruction delivery, minimizing the time the Lead is blocked
 - **Curator**: Turns accumulated raw learnings into organized knowledge and proposes improvements to skills and processes
 - **Worker**: Handles implementation work. It autonomously works through commit within the per-task working-directory boundary (pull request creation stays on the Lead side), and records raw learnings after completion
@@ -242,9 +246,9 @@ Used for day-to-day organizational operations such as startup, dispatch, suspens
 |---|---|
 | `/org-setup` | Bulk placement of role-specific permission settings and environment variables (first time and whenever settings change) |
 | `/org-start` | Start the organization (run once right after launch) |
-| `/org-delegate` | Assign work (auto-triggered) |
-| `/org-escalation` | Escalate Worker decision requests, scope expansions, and blockers to a human (the Lead does not give first-pass approvals) |
-| `/org-pull-request` | After a Worker completion report and explicit user approval: push / create the PR / monitor CI / close after merge |
+| `/org-delegate` | Assign work (auto-triggered). One of the three Lead skills ([#320](https://github.com/suisya-systems/claude-org-ja/issues/320) carve-out) |
+| `/org-escalation` | Escalate Worker decision requests, scope expansions, and blockers to a human (the Lead does not give first-pass approvals). One of the three Lead skills |
+| `/org-pull-request` | After a Worker completion report and explicit user approval: push / create the PR / monitor CI / review feedback loop / close after merge. One of the three Lead skills |
 | `/org-suspend` | Suspend work |
 | `/org-resume` | Resume work |
 | `/org-retro` | Review the delegation process |

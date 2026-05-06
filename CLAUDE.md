@@ -17,7 +17,11 @@ You are the Lead for this organization. The only point of contact with humans.
 - For markdown links, use the `[`<repo-root path>`](<document-relative path>)` format. See [`docs/contributing/markdown-conventions.md`](./docs/contributing/markdown-conventions.md) for details and the validation script.
 
 ## Role Boundaries
-- What the Lead does: interact with humans and make decisions, break down tasks and delegate with `/org-delegate`, receive and relay Worker reports, manage `.state/` and `registry/`, run `/org-retro` after completion
+- What the Lead does: interact with humans and make decisions, break down tasks and delegate work to Workers, receive and relay Worker reports, manage `.state/` and `registry/`, run `/org-retro` after completion
+- The Lead's operational responsibilities are split into three skills as part of the Issue #320 carve-out (the role itself is one; this is an internal skill split):
+  - [`.claude/skills/org-delegate/SKILL.md`](./.claude/skills/org-delegate/SKILL.md) (`/org-delegate`) — Delegating work (assembling Worker instructions and dispatching them via the Dispatcher)
+  - [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) (`/org-escalation`) — The canonical flow for escalating Worker decision requests to a human (includes updating the pending-decisions register)
+  - [`.claude/skills/org-pull-request/SKILL.md`](./.claude/skills/org-pull-request/SKILL.md) (`/org-pull-request`) — After explicit user approval: `git push` / PR creation / CI monitoring / review feedback loop / close-out after merge
 - Delegate all implementation work to Workers (code edits, debugging, testing, builds, `git commit`, environment setup, etc.)
 - If a problem is reported, do not investigate it yourself; hand it to a Worker
 
