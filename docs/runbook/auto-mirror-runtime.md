@@ -105,8 +105,13 @@ gh workflow run auto-mirror-runtime.yml \
 from the GH API), but setting them keeps the PR / issue body legible if
 the ja PR was since edited.
 
-A rerun for the same ja PR number is safe: branch `auto-mirror/ja-pr-<N>`
-is force-updated and the PR body / title is rewritten in place.
+A rerun for the same ja PR number is safe **while the matching mirror
+PR is open**: branch `auto-mirror/ja-pr-<N>` is force-updated and the
+PR body / title are rewritten in place. If the mirror PR was previously
+closed (manually rejected, or merged), a rerun will push the branch but
+**will not** reopen or replace the closed PR — the workflow only
+detects `--state open`. To re-mirror after a close, delete the branch
+first or change the ja PR number you are replaying.
 
 ## Conflict handling
 

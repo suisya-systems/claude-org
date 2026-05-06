@@ -73,25 +73,28 @@ jobs:
       - name: Resolve ja PR metadata
         id: meta
         env:
+          # Dispatch payload / workflow_dispatch inputs are passed via env
+          # (not inlined into the shell) so titles containing `'`, `"`, or
+          # newlines cannot break the script.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAYLOAD_NUM: ${{ github.event.client_payload.ja_pr_number }}
+          PAYLOAD_TITLE: ${{ github.event.client_payload.ja_pr_title }}
+          PAYLOAD_URL: ${{ github.event.client_payload.ja_pr_url }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.ja_merge_sha }}
+          INPUT_NUM: ${{ github.event.inputs.ja_pr_number }}
+          INPUT_TITLE: ${{ github.event.inputs.ja_pr_title }}
+          INPUT_URL: ${{ github.event.inputs.ja_pr_url }}
+          INPUT_SHA: ${{ github.event.inputs.ja_merge_sha }}
         run: |
           set -euo pipefail
-          payload_num='${{ github.event.client_payload.ja_pr_number }}'
-          input_num='${{ github.event.inputs.ja_pr_number }}'
-          PR_NUM="${payload_num:-$input_num}"
+          PR_NUM="${PAYLOAD_NUM:-$INPUT_NUM}"
           if [ -z "${PR_NUM}" ]; then
             echo "ja_pr_number missing from dispatch payload" >&2
             exit 1
           fi
-          payload_title='${{ github.event.client_payload.ja_pr_title }}'
-          payload_url='${{ github.event.client_payload.ja_pr_url }}'
-          payload_sha='${{ github.event.client_payload.ja_merge_sha }}'
-          input_title='${{ github.event.inputs.ja_pr_title }}'
-          input_url='${{ github.event.inputs.ja_pr_url }}'
-          input_sha='${{ github.event.inputs.ja_merge_sha }}'
-          title="${payload_title:-$input_title}"
-          url="${payload_url:-$input_url}"
-          merge_sha="${payload_sha:-$input_sha}"
+          title="${PAYLOAD_TITLE:-$INPUT_TITLE}"
+          url="${PAYLOAD_URL:-$INPUT_URL}"
+          merge_sha="${PAYLOAD_SHA:-$INPUT_SHA}"
           if pr_json="$(gh api "repos/${JA_REPO}/pulls/${PR_NUM}" 2>/dev/null)"; then
             api_title="$(printf '%s' "$pr_json" | jq -r '.title // empty')"
             api_url="$(printf '%s' "$pr_json" | jq -r '.html_url // empty')"
@@ -102,26 +105,27 @@ jobs:
           fi
           : "${title:=ja PR #${PR_NUM}}"
           : "${url:=https://github.com/${JA_REPO}/pull/${PR_NUM}}"
-          echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
-          echo "pr_title=${title}" >> "$GITHUB_OUTPUT"
-          echo "pr_url=${url}" >> "$GITHUB_OUTPUT"
-          echo "merge_sha=${merge_sha}" >> "$GITHUB_OUTPUT"
+          # Use the heredoc form for outputs so newlines in title cannot
+          # corrupt $GITHUB_OUTPUT framing.
+          {
+            echo "pr_number=${PR_NUM}"
+            echo "merge_sha=${merge_sha}"
+            printf 'pr_title<<__META_EOF__\n%s\n__META_EOF__\n' "${title}"
+            printf 'pr_url<<__META_EOF__\n%s\n__META_EOF__\n' "${url}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Fetch changed files from ja PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ steps.meta.outputs.pr_number }}
         run: |
           set -euo pipefail
-          # Keep both a filename-only list (for the existing classifier
-          # CLI) and a structured NDJSON file (for status-aware mirror
-          # operations: added / modified / removed / renamed).
-          gh api --paginate \
-            "repos/${JA_REPO}/pulls/${{ steps.meta.outputs.pr_number }}/files" \
-            -q '.[].filename' > changed_files.txt
-          gh api --paginate \
-            "repos/${JA_REPO}/pulls/${{ steps.meta.outputs.pr_number }}/files" \
-            -q '.[] | {filename, status, previous_filename}' \
-            > pr_files.ndjson
+          # gh api --paginate concatenates JSON-array pages into one big
+          # array, so a single jq pass projects the fields we need.
+          gh api --paginate "repos/${JA_REPO}/pulls/${PR_NUM}/files" \
+            | jq 'map({filename, status, previous_filename})' \
+            > pr_files.json
+          jq -r '.[].filename' pr_files.json > changed_files.txt
           echo "Changed files:"
           cat changed_files.txt
 
@@ -215,62 +219,91 @@ jobs:
           git -C ja-src fetch --depth=1 origin "${JA_MERGE_SHA}"
           git -C ja-src checkout --quiet --detach FETCH_HEAD
 
-          # 2. Apply runtime ops (added/modified/renamed/removed) into the
-          # en working tree. Classification is re-run inside Python so we
-          # use the same source-of-truth module as the standalone CLI.
+          # 2. Apply runtime ops (added / modified / renamed / removed)
+          # into the en working tree. Two-phase to be safe against rename
+          # chains (A->B then B->C) and swaps (A<->B): collect all paths
+          # to remove first, then collect all paths to copy, finally
+          # apply remove-then-copy. Both `filename` and `previous_filename`
+          # are classified independently so a rename across class
+          # boundaries (runtime->translation or vice versa) is handled
+          # correctly: only paths that classify as runtime are touched.
           python - <<'PY'
           import json, os, shutil, subprocess, sys
           sys.path.insert(0, '.')
           from tools.sync_classifier import classify_path, CLASS_RUNTIME
 
           ja_root = "ja-src"
-          ops = []
-          with open("pr_files.ndjson") as f:
-              for line in f:
-                  line = line.strip()
-                  if not line:
-                      continue
-                  rec = json.loads(line)
-                  if classify_path(rec["filename"]) != CLASS_RUNTIME:
-                      continue
-                  ops.append(rec)
+          with open("pr_files.json") as f:
+              entries = json.load(f)
+
+          to_remove = set()  # en paths to drop
+          to_copy = {}       # en path -> ja-src relative path
+
+          for rec in entries:
+              path = rec["filename"]
+              status = rec["status"]
+              prev = rec.get("previous_filename")
+              new_is_runtime = classify_path(path) == CLASS_RUNTIME
+              prev_is_runtime = (
+                  prev is not None and classify_path(prev) == CLASS_RUNTIME
+              )
+
+              if status == "removed":
+                  if new_is_runtime:
+                      to_remove.add(path)
+                  continue
+
+              if status == "renamed":
+                  # Drop old runtime path on en (regardless of new class)
+                  # so a runtime->non-runtime rename also leaves en clean.
+                  if prev_is_runtime:
+                      to_remove.add(prev)
+                  if new_is_runtime:
+                      to_copy[path] = path
+                  continue
+
+              # added / modified / copied / changed
+              if new_is_runtime:
+                  to_copy[path] = path
+
+          # Drop any path from `to_remove` that is also being copied — a
+          # rename A->A (status renamed but identical path, rare but
+          # possible) or A->B alongside another A->A would otherwise
+          # delete the file we just staged.
+          to_remove -= set(to_copy.keys())
 
           def git(*args):
               subprocess.check_call(["git", *args])
 
-          applied = removed = renamed = skipped_missing = 0
-          for rec in ops:
-              path = rec["filename"]
-              status = rec["status"]
-              prev = rec.get("previous_filename")
-              src = os.path.join(ja_root, path)
-              if status == "removed":
-                  if os.path.exists(path):
-                      git("rm", "-q", "--", path)
-                      removed += 1
-                  continue
-              if status == "renamed" and prev:
-                  # Drop the old en path if it lived there. classify_path on
-                  # `prev` may be non-runtime (e.g. tools/x.py renamed from
-                  # docs/x.md); only en files actually present matter.
-                  if os.path.exists(prev):
-                      git("rm", "-q", "--", prev)
-                      renamed += 1
+          removed = applied = skipped_missing = 0
+
+          # Phase 1: removes. Skip silently if the file isn't tracked on
+          # en — the rename source may have been excluded via .gitignore
+          # historically, or en may have already removed it manually.
+          for path in sorted(to_remove):
+              if os.path.exists(path):
+                  git("rm", "-q", "--", path)
+                  removed += 1
+
+          # Phase 2: copies. Source content comes from ja-src (already
+          # checked out at the merge SHA), so swaps and chains resolve
+          # to ja's final-state content automatically.
+          for dst, ja_rel in sorted(to_copy.items()):
+              src = os.path.join(ja_root, ja_rel)
               if not os.path.exists(src):
-                  # ja side reports add/modify but the file isn't in the
-                  # tree at merge SHA — should not happen for a merged PR,
-                  # but skip rather than crash if it does.
+                  # Should not happen for a merged PR, but be defensive.
                   skipped_missing += 1
                   continue
-              parent = os.path.dirname(path)
+              parent = os.path.dirname(dst)
               if parent:
                   os.makedirs(parent, exist_ok=True)
-              shutil.copy2(src, path)
-              git("add", "--", path)
+              shutil.copy2(src, dst)
+              git("add", "--", dst)
               applied += 1
 
-          print(f"runtime ops: applied={applied} removed={removed} renamed={renamed} "
-                f"skipped_missing_in_ja={skipped_missing} total_runtime_in_pr={len(ops)}")
+          print(f"runtime ops: applied={applied} removed={removed} "
+                f"skipped_missing_in_ja={skipped_missing} "
+                f"total_pr_entries={len(entries)}")
           PY
 
           # 3. Commit. If nothing actually staged (e.g. en already at the
