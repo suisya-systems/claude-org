@@ -21,54 +21,61 @@ The procedural detail lives in skills. On every `DELEGATE`, read these:
 - **Claude Code launch commands per role**: `.claude/skills/org-start/SKILL.md`, "Claude Code launch commands by role".
 - **renga-peers error codes and event types**: `.claude/skills/org-delegate/references/renga-error-codes.md` — how to handle the `[<code>] <msg>` format in MCP (`mcp__renga-peers__*`) result text and how to branch on `poll_events` types.
 
-## delegate-plan helper (deterministic ops moved to code)
+## Dispatch payload preparation (now Lead-side; the Dispatcher only spawns)
 
-As Phase 1 of Issue #60, `tools/dispatcher_runner.py delegate-plan` is in place. The deterministic parts of dispatching a Worker — choosing the balanced-split target and direction, validating the Worker pane name, generating the Worker instruction file, generating the Worker seed-state file — are pushed into Python. The Dispatcher Claude reads the resulting action-plan JSON and only makes the MCP calls.
+Issue #283 moved every deterministic part of dispatch payload preparation — Pattern decision, Worker directory layout, role / `self_edit` / `planned_branch` selection, brief rendering, `.claude/settings.local.json` generation, DB reservation — out of the Dispatcher and into a Lead-side CLI: **`tools/gen_delegate_payload.py`** (which composes `tools/gen_worker_brief.py` + `tools/resolve_worker_layout.py` internally). The legacy entrypoint `tools/dispatcher_runner.py delegate-plan` was retired and the script removed in PR #139. Do not look for it; do not reimplement what it used to do.
 
-### When to use it
+### What the Lead has already done by the time `DELEGATE` arrives
 
-Call it after a `DELEGATE` arrives, right before Step 3-1 ("pick target / direction via balanced split"):
+When the Dispatcher receives a `DELEGATE` message, the Lead has just run `python tools/gen_delegate_payload.py apply ...` (see [`.claude/skills/org-delegate/SKILL.md` Step 0.7 / 1 / 1.5 / 2](../.claude/skills/org-delegate/SKILL.md)). That single command has already produced:
 
-```bash
-py -3 tools/dispatcher_runner.py delegate-plan \
-  --task-json .state/dispatcher/inbox/{task_id}.json \
-  --panes-json {list_panes snapshot JSON}
-```
+- **Brief on disk** at `<worker_dir>/CLAUDE.md` (Pattern A / B) or `<worker_dir>/CLAUDE.local.md` (Pattern C self-edit / `live_repo_worktree`).
+- **Per-worker settings** at `<worker_dir>/.claude/settings.local.json` (via `claude-org-runtime settings generate`; may be skipped with `--skip-settings` in test/sandbox environments).
+- **DB reservation** in `.state/state.db`: `runs.status='queued'` for this `task_id`, plus a `worker_dirs` row (Codex Design Blocker B-1; activation into Active Work Items remains the Dispatcher's T2 responsibility per [`docs/contracts/delegation-lifecycle-contract.md`](../docs/contracts/delegation-lifecycle-contract.md)).
+- **For Pattern B**, the actual `git worktree add -b <planned_branch> <worker_dir> origin/HEAD` has already run against the chosen base repo. The branch and the directory are ready to check out into.
+- **`<worker_dir>/send_plan.json`** — the manifest describing the `mcp__renga-peers__send_message(to_id="dispatcher", message=…)` call the Lead then issues. The `message` body is what the Dispatcher receives in its inbox.
 
-Minimum task JSON fields:
-```json
-{
-  "task_id": "login-fix",
-  "worker_dir": "<workers_dir>/login-fix",
-  "permission_mode": "auto",
-  "task_description": "...",
-  "instruction": "..."
-}
-```
+Everything in that list has happened **before** `DELEGATE` enters the Dispatcher's channel. None of it is the Dispatcher's job to redo or verify procedurally.
 
-`model` is optional. If omitted, the helper defaults to `"opus"` on the `spawn` payload (the `auto` classifier is unstable on Sonnet, so Workers run on Opus by default). Override with `"model": "..."` only for the rare case where a different model is intentional.
+### What the `DELEGATE` body carries (read these fields, do not regenerate them)
 
-Pass `mcp__renga-peers__list_panes`'s `structuredContent.panes` straight into `--panes-json`.
+The body produced by `gen_delegate_payload.py` (see `_format_delegate_body` in `tools/gen_delegate_payload.py`) gives the Dispatcher every value it needs to spawn:
 
-### Handling the output
+- `task_id`
+- `worker_dir` (absolute path; brief and settings already placed here)
+- ディレクトリパターン: `A` / `B` / `C` (with `pattern_variant` annotation for `gitignored_repo_root` / `live_repo_worktree`)
+- プロジェクト (label only; `project.path` from `registry/projects.md`)
+- ブランチ (planned): `<planned_branch>` for Pattern A / B, or "(Pattern C: 既存 repo の現在ブランチで作業 / 新規 branch なし)"
+- Permission Mode (from `registry/org-config.md` `default_permission_mode`)
+- 検証深度 (`full` / `minimal`)
+- 指示内容: a one-line summary plus a pointer to the brief filename (`CLAUDE.md` or `CLAUDE.local.md`) inside `worker_dir`
 
-The helper returns one of three outcomes (also distinguishable by exit code):
+The Dispatcher's instruction `send_message` to the Worker should reference that brief file. Do not paste the full task description into the message body — the brief on disk is the source of truth.
 
-- **exit 0 / `status: "ready_to_spawn"`** — pass the `spawn` field directly to `mcp__renga-peers__spawn_claude_pane`. Then run `after_spawn[]` in order: `poll_events` → `send_keys(enter)` → wait on `list_peers` → `send_message`. For `send_message`, read the body from `message_file`.
-- **exit 2 / `status: "split_capacity_exceeded"`** — use the `escalate` field to send the Lead a `SPLIT_CAPACITY_EXCEEDED` message (same content as Step 3-1c). Cancel only that one Worker's dispatch; the monitoring loop continues.
-- **exit 1 / `status: "input_invalid"`** — surface `errors[]` to the Lead and ask for a human decision (CWD missing, duplicate `task_id`, pane-name collision, etc.).
+### What the Dispatcher still owns
 
-Files the helper writes (when `ready_to_spawn`):
+Spawn-time MCP orchestration and state recording, all per [`.claude/skills/org-delegate/SKILL.md` Step 3 / 4](../.claude/skills/org-delegate/SKILL.md) (and the `.dispatcher/references/spawn-flow.md` companion when present):
 
-- `.state/workers/worker-{task_id}.md` (Status: planned)
-- `.state/dispatcher/outbox/{task_id}-instruction.md` (the `send_message` body)
+1. Snapshot `mcp__renga-peers__list_panes` and pick balanced-split target / direction. The decision logic and constants are owned by the renga / pane-layout reference, not by the deleted `dispatcher_runner.py` — see [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md).
+2. `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd="{worker_dir}", permission_mode="{from DELEGATE}", model="opus")`. Workers default to Opus because the `auto` classifier is unstable on Sonnet; only override on an intentional per-task basis.
+3. `poll_events` → `send_keys(enter)` for the dev-channel approve prompt → wait for `list_peers` to show the new peer → `send_message` to the Worker with: "詳細は `<worker_dir>/{CLAUDE.md|CLAUDE.local.md}` を参照", plus the "Report to the Lead. Do not report to the Dispatcher." reinforcement.
+4. Create `.state/workers/worker-{task_id}.md` with `Status: planned`, then flip to `active` after the spawn + instruction send succeeds.
+5. Transition the run row from `runs.status='queued'` to the `dispatched` / `active` state and add the Active Work Items row in `.state/org-state.md`.
+6. Append a `worker_spawned` entry to `.state/journal.jsonl` via `Bash` (`tools/journal_append.sh`). The Lead-side payload helper does **not** write the journal — the Dispatcher does.
+7. Report `DELEGATE_COMPLETE` back to the Lead via `mcp__renga-peers__send_message(to_id="secretary", ...)`.
 
-After the MCP call, the Dispatcher transitions `.state/workers/worker-{task_id}.md` Status to `active` and appends a `worker_spawned` entry to `.state/journal.jsonl`. The journal append is **still done by the Dispatcher** via `Bash` (the helper does not write it). Existing JSON format unchanged.
+### Failure modes
 
-### When **not** to use it
+- `gen_delegate_payload.py apply` failed on the Lead side → no `DELEGATE` arrives. Nothing for the Dispatcher to do; the Lead handles the recovery (file an Issue against the resolver per `org-delegate` SKILL.md "When the standard path returns unexpected output").
+- Balanced-split filter returns zero candidates → emit `SPLIT_CAPACITY_EXCEEDED` to the Lead exactly as before (escalate via `mcp__renga-peers__send_message(to_id="secretary", ...)`). Cancel that one Worker's dispatch; the monitoring loop continues.
+- `spawn_claude_pane` / `send_message` errors are still branched on `[<code>]` — see [`.claude/skills/org-delegate/references/renga-error-codes.md`](../.claude/skills/org-delegate/references/renga-error-codes.md).
 
-- Don't reimplement `choose_split` / balanced-split. The helper has done it. Re-walking the prose Step 3-1b is duplicate work.
-- If the task JSON isn't ready (the Lead didn't send a structured `DELEGATE`), bypass the helper and fall back to the old procedure. The helper is a shortcut for the structured path, not a hard requirement.
+### What is forbidden
+
+- Re-running pattern / role / branch decision logic. `resolve_worker_layout.py` already produced the answer; the brief and the DB row encode it.
+- Hand-writing `CLAUDE.md` / `CLAUDE.local.md` or regenerating `.claude/settings.local.json` in the Worker dir. They are placed by the Lead.
+- Calling the deleted `tools/dispatcher_runner.py delegate-plan` or any `claude-org-runtime dispatcher delegate-plan` CLI. Both were retired in the same wave; absence of these binaries on PATH is expected.
+- Manually crafting a `DELEGATE` message on the Lead's behalf. The Dispatcher consumes `DELEGATE`; it does not produce one.
 
 ## Where Workers report (important)
 
