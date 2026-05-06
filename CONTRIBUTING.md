@@ -1,55 +1,55 @@
 # Contributing to claude-org
 
-claude-org は Claude Code をベースにした自己組織化マルチエージェントフレームワークです。窓口・フォアマン・キュレーター・ワーカーの 4 ロールを renga 上で連携させ、個人〜小規模チームでの運用テンプレートを提供することを主旨としています。
+claude-org is a self-organizing multi-agent framework built on top of Claude Code. It coordinates four roles — Lead, Dispatcher, Curator, and Worker — across panes in renga, and provides an operating template for individual operators and small teams.
 
-このリポジトリは **個人運用のテンプレート** という性格が強いため、機能追加よりも以下の貢献を歓迎します:
+Because this repository is primarily a **template for personal operation**, we welcome the following contributions over net-new features:
 
-- バグ報告・再現手順
-- ドキュメント改善（特に他環境での導入ハマりどころ）
-- ロール設定・hook・スキルの汎用化（個人化された運用パターンの抽象化）
-- 安全性に関する指摘（permission / hook の抜け、sandbox 回避経路など）
+- Bug reports with reproduction steps
+- Documentation improvements (especially on onboarding pain points in other environments)
+- Generalization of role configs, hooks, and skills (abstracting personalized operating patterns)
+- Safety findings (permission / hook gaps, sandbox-bypass paths, etc.)
 
-## セットアップ前提
+## Setup prerequisites
 
-開発に着手する前に [README.md](README.md) の「前提条件」と「インストール」セクションを満たしてください。最低限必要なのは:
+Before starting development, satisfy the "Prerequisites" and "Installation" sections of [README.md](README.md). At minimum you need:
 
 - Claude Code
-- renga 0.18.0 以上
+- renga 0.18.0 or later
 - Python 3.8+
 - Git / GitHub CLI
 
-初回 clone 後は `renga --layout ops` で窓口ペインを起動した上で、Claude Code 上で **`/org-setup` を一度実行** してロール別 `settings.local.json` を生成してください（未実行だと開発中に許可プロンプトが多発します）。詳細は [docs/getting-started.md](docs/getting-started.md#インストール) を参照。
+After the initial clone, start the Lead pane with `renga --layout ops`, then **run `/org-setup` once inside Claude Code** to generate per-role `settings.local.json` files (without it you will hit a flood of permission prompts during development). See [docs/getting-started.md](docs/getting-started.md#installation) for details.
 
-## バグ報告
+## Bug reports
 
-GitHub Issues に投げてください。可能なら以下を含めてください:
+File a GitHub Issue. Include the following when possible:
 
-- 再現手順（最小ケース）
-- 期待した挙動 / 実際の挙動
-- OS / Claude Code バージョン / renga バージョン
-- 関連する hook やロール設定の差分
+- Reproduction steps (minimal case)
+- Expected vs. observed behavior
+- OS / Claude Code version / renga version
+- Diff of any relevant hook or role config changes
 
-## Pull Request の出し方
+## How to submit a Pull Request
 
-1. このリポジトリを fork
-2. `main` から作業ブランチを切る（例: `feat/xxx`, `fix/yyy`, `docs/zzz`）
-3. 適切な粒度で commit を分ける（1 commit 1 テーマ）
-4. PR を作成。CI が green であることを確認
-5. レビュー指摘に対応
+1. Fork this repository.
+2. Branch from `main` (e.g., `feat/xxx`, `fix/yyy`, `docs/zzz`).
+3. Split commits at sensible boundaries (one theme per commit).
+4. Open the PR and confirm CI is green.
+5. Address review feedback.
 
-### コミットメッセージ規約
+### Commit message convention
 
-プレフィックスを付ける Conventional Commits 風の形式を採用しています。直近の `git log --oneline -20` を参考にスタイルを揃えてください。
+We use a Conventional Commits–style format with a prefix. Match the style of recent `git log --oneline -20` entries.
 
-- `feat:` 新機能
-- `fix:` バグ修正
-- `docs:` ドキュメントのみの変更
-- `refactor:` 機能を変えないリファクタ
-- `chore:` ビルド・依存・雑務
-- `test:` テスト追加・修正
-- `ci:` CI 設定の変更
+- `feat:` new feature
+- `fix:` bug fix
+- `docs:` documentation-only change
+- `refactor:` refactor without behavior change
+- `chore:` build / deps / housekeeping
+- `test:` test addition or fix
+- `ci:` CI config change
 
-例:
+Examples:
 
 ```
 feat(hooks): add PreToolUse guardrails for verify-bypass flags
@@ -57,26 +57,26 @@ fix(org-state): handle missing workers/ directory gracefully
 docs(readme): correct renga baseline version
 ```
 
-## 検証要件
+## Verification requirements
 
-PR を出す前に以下が green であることを確認してください:
+Before submitting a PR, confirm the following are green:
 
 ```bash
-# ロール設定（settings.json / permissions / hooks）の整合性チェック
+# Role-config integrity check (settings.json / permissions / hooks)
 python tools/check_role_configs.py --include-local
 
-# Python テスト
+# Python tests
 python -m pytest tests/
 ```
 
-新規 hook を追加する場合は対応するテストも追加してください。
+When adding a new hook, add the corresponding test as well.
 
-## スコープ外
+## Out of scope
 
-以下は PR では扱いません。Issue で議論してください:
+The following are not handled via PR; please open an Issue first:
 
-- 個人化された運用パターン（特定ユースケース向けスキルの追加など）
-- 特定環境への最適化（パスや shell 前提を強く仮定する変更）
-- 既存ロール構造を破壊する大規模リアーキ
+- Personalized operating patterns (e.g., skills targeting a specific use case)
+- Optimizations for a particular environment (changes that strongly assume a path or shell)
+- Large re-architectures that break the existing role structure
 
-不明点があれば Issue で相談してから PR 化することを推奨します。
+When in doubt, please discuss in an Issue before opening a PR.
