@@ -1,73 +1,73 @@
 ---
 name: "{skill-name}"
 description: >
-  {One-line description. What this skill does, and on what kind of tasks it can be used.
-  org-delegate references this description when matching a task.}
+  {One-line summary. What does this skill do, what tasks can it be used for?
+  org-delegate references this description when matching the skill against task content.}
 type: "{implementation | testing | debugging | analysis | infrastructure}"
 triggers:
-  - "{Situation 1 where this skill applies (e.g. analyze Excel-format survey data)}"
-  - "{Situation 2 where this skill applies}"
+  - "{Situation 1 in which this skill applies (e.g., analyze Excel-format survey data)}"
+  - "{Situation 2 in which this skill applies}"
 origin:
-  task_id: "{Task ID where this pattern was first used (e.g. data-analysis)}"
+  task_id: "{The task ID where this pattern was first used (e.g., data-analysis)}"
   date: "{YYYY-MM-DD}"
 ---
 
 # {skill-name}: {Skill title}
 
-{1-2 sentences describing what this skill achieves.}
+{Summary of what this skill achieves, in 1–2 sentences.}
 
 ## Background
 
-{The context in which this pattern emerged. What kind of task it was first used on.
-Why this approach was effective.}
+{The story of how this pattern emerged. What task was it first used for?
+Why was this approach effective?}
 
 ## Prerequisites
 
 {List the conditions required to apply this skill.}
 
-- {Prerequisite 1 (e.g. Python 3.8+ is installed)}
-- {Prerequisite 2 (e.g. the input data is in a specific format)}
+- {Prerequisite 1 (e.g., Python 3.8+ installed)}
+- {Prerequisite 2 (e.g., input data is in a specific format)}
 
 ## Procedure
 
 ### Step 1: {First step name}
 
-{Concrete procedure. Include command examples or code snippets if relevant.}
+{Describe the concrete steps. Include command examples or code snippets where helpful.}
 
 ```{language}
-{code example}
+{Code example}
 ```
 
 ### Step 2: {Next step name}
 
-{Procedure description. Make decision criteria explicit if any.}
+{Describe the steps. If there are decision criteria, make them explicit.}
 
 ### Step 3: {Next step name}
 
-{Procedure description.}
+{Describe the steps.}
 
-## Deliverables
+## Artifacts
 
-{What is produced as a result of running this skill.}
+{What does running this skill produce?}
 
-- {Deliverable 1 (e.g. `report.md` — analysis report)}
-- {Deliverable 2 (e.g. `analyze.py` — analysis script)}
+- {Artifact 1 (e.g., `report.md` — analysis report)}
+- {Artifact 2 (e.g., `analyze.py` — analysis script)}
 
 ## Decision criteria / thresholds
 
-{Document any decision criteria or thresholds used inside the skill.
-For quantitative criteria, include concrete numbers.}
+{If there are decision criteria or thresholds used inside the skill, document them.
+Include concrete numbers for quantitative criteria.}
 
 | Criterion | Value | Rationale |
 |---|---|---|
-| {criterion name} | {value} | {why this value} |
+| {Criterion name} | {Value} | {Why this value} |
 
-## Variations / applications
+## Variations
 
-{Guidance for applying this skill in a different context.}
+{Guidance for adapting this skill to a different context.}
 
-- **{Variation 1}**: {how to change}
-- **{Variation 2}**: {how to change}
+- **{Variation 1}**: {how to adapt}
+- **{Variation 2}**: {how to adapt}
 
 ## Caveats
 

@@ -1,125 +1,128 @@
 ---
 name: org-retro
 description: >
-  Retrospective on the delegation process. After a delegation of work to a Worker is complete,
-  reflect on how the delegation itself went, and record process-improvement knowledge.
-  In addition, judge whether the work pattern of the completed task should be accumulated as a work-skill.
-  Technical retrospectives on the actual work are done by the Worker automatically and are not handled here.
+  Retrospective on the delegation process. When a worker delegation
+  finishes, look back at how the delegation itself went and record
+  process-improvement learnings. Also decide whether the completed
+  task's pattern should be promoted to a work-skill.
+  Technical retrospectives on the actual work are done by the worker
+  automatically and are not handled here.
 ---
 
-# org-retro: Delegation-process retrospective
+# org-retro: delegation-process retrospective
 
-After a delegation to a Worker is complete, reflect on and improve the delegation process itself.
-In addition, judge whether the completed task's work pattern is reusable as a work-skill.
+After a delegation to a worker finishes, look back at the delegation process itself and improve it.
+Also decide whether the completed task's working pattern is reusable as a work-skill.
 
-**Note**: Technical knowledge from the actual work (gotchas, API quirks, etc.) is recorded automatically
-to `knowledge/raw/` by the Worker per the instructions in CLAUDE.md. It is not handled here.
+**Note**: technical learnings about the actual work (gotchas, API quirks, etc.) are recorded automatically by the worker into `knowledge/raw/` per CLAUDE.md instructions. They are not handled here.
 
-## Step 1: Retrospective on the delegation process
+## Step 1: retrospective on the delegation process
 
-Sort through:
-- **Was the task breakdown appropriate?**: Was the granularity too large or too small?
-- **Were the instructions clear?**: Could the Worker work without confusion? Did they ask many questions?
-- **Was the project selection correct?**: Could they work in the correct directory?
-- **Was the parallelism appropriate?**: Were there too many or too few Workers?
-- **Was the completion report sufficient?**: Was the Worker's report enough to explain to the human?
+Sort out the following:
+- **Was the task split right?** Was the granularity too coarse / too fine?
+- **Were the instructions clear?** Did the worker proceed without confusion? Were there many questions?
+- **Was the project chosen correctly?** Did the worker work in the right directory?
+- **Was the parallelism right?** Were there too many / too few workers?
+- **Was the completion report sufficient?** Did it give enough material to brief the human?
 
-## Step 2: Decide which knowledge to improve
+## Step 2: decide what learnings to keep
 
-Use the following criteria to decide "should this be recorded":
+Use these criteria to decide whether to record:
 
-**Record**:
-- A pattern likely to be encountered again in the same kind of delegation
-- An insight that leads to improving the instruction template
-- A project-specific constraint that will affect us next time
-- Improvement points where the Worker's retrospective record was insufficient/excessive
+**Record if**:
+- A pattern likely to recur in delegations of the same kind.
+- An insight that improves the instruction template.
+- A project-specific constraint that will likely affect the next delegation.
+- A point where the worker's retrospective recording was insufficient or excessive — an improvement angle.
 
-**Do not record**:
-- Task-specific one-off problems
-- Things the Worker has already recorded as technical knowledge
+**Do not record if**:
+- A one-off problem specific to this task.
+- Already recorded by the worker as a technical learning.
 
-## Step 3: Record
+## Step 3: record
 
-If you have knowledge worth recording, create a file at the following path:
+If there is a learning, create a file at:
 
 - Path: `knowledge/raw/{YYYY-MM-DD}-delegation-{topic}.md`
-- `{topic}` is English kebab-case (e.g. `delegation-task-granularity`, `delegation-frontend-instructions`)
-- Prefix with `delegation-` to distinguish from the Worker's technical knowledge
+- `{topic}` is English kebab-case (e.g., `delegation-task-granularity`, `delegation-frontend-instructions`).
+- Prefix with `delegation-` to distinguish from the worker's technical learnings.
 
 ### File format
 
 See "Recording format" in `.claude/skills/org-curate/references/knowledge-standards.md`.
 
-## Step 4: Judging work-skill creation
+## Step 4: work-skill promotion judgment
 
-Call `skill-eligibility-check` for the work pattern of the completed task and judge
-whether it should be accumulated as a work-skill.
+Call `skill-eligibility-check` against the completed task's working pattern to decide whether to promote it to a work-skill.
 
-The substance of the criteria is centralized in `.claude/skills/skill-eligibility-check/references/signals.md`,
-and both org-retro and org-curate reference the same criteria (to prevent divergence in judgment).
+The decision criteria themselves live in `.claude/skills/skill-eligibility-check/references/signals.md` and are referenced by both org-retro and org-curate (so the criteria do not drift).
 
-### Step 4.1: Call skill-eligibility-check
+### Step 4.1: call skill-eligibility-check
 
-Build the following input and call:
+Construct and pass the following input:
 
 ```yaml
 context: post_retro
 pattern_name: <inferred skill name, kebab-case>
-summary: <1-2 sentences on what is reusable>
+summary: <1–2 sentences on what is reusable>
 task_ids: [<this task_id>]
-raw_files: <array of knowledge/raw/ paths recorded by the Worker>
+raw_files: <array of paths under knowledge/raw/ that the worker recorded>
 steps_outline:
   - <main step 1>
   - <main step 2>
   - ...
-trigger_description: <situations where this pattern applies>
+trigger_description: <situation in which this pattern applies>
 decision_criteria: <decision criteria or thresholds>
-output_format: <structure of the deliverables>
+output_format: <artifact structure>
 ```
 
-The skill scores against 5 signals and returns a `decision`:
-- `skill_recommend` (3 points or more)
+The skill scores 5 signals and returns `decision`:
+- `skill_recommend` (≥ 3 points)
 - `candidate_queue` (2 points)
-- `curated_only` (1 point or fewer)
+- `curated_only` (≤ 1 point)
 
-For `skill_recommend`, appending to `knowledge/skill-candidates.md` is also handled by the skill.
+For `skill_recommend`, the skill itself appends to `knowledge/skill-candidates.md`.
 
-### Step 4.2: Branch by decision
+### Step 4.2: branch on decision
 
 #### decision == skill_recommend
 
 1. Propose to the human:
    ```
-   [work-skill proposal] The work pattern of this task looks reusable as a work-skill.
+   [work-skill proposal] This task's working pattern looks reusable as a work-skill.
    - Proposed skill name: {proposed_skill_name}
    - Reason: {matched_signals} (total {score}/5)
    - Summary: {what is reusable}
 
-   Shall I record it?
+   Record it?
    ```
 2. If the human approves:
-   - Create `.claude/skills/{skill-name}/SKILL.md`
-   - Template: follow the format of `.claude/skills/org-retro/references/work-skill-template.md`
-   - Extract and generalize the procedure from the Worker's deliverables (code, reports, configs, etc.)
-   - Replace task-specific values (brand names, file paths, etc.) with placeholders
-   - Update the corresponding entry in `knowledge/skill-candidates.md`: status to `approved` and fill in the decision date
+   - **The Lead does NOT directly create / edit the skill file.** Per the ratification of Set E §2.4 (Q7), skill-promotion goes through `org-delegate` as a delegated task to a worker.
+   - The Lead launches `org-delegate` and produces a worker task with role `claude-org-self-edit`. The instructions must include:
+     - The target skill name `{skill-name}` and write target `.claude/skills/{skill-name}/SKILL.md`.
+     - Template reference: `.claude/skills/org-retro/references/work-skill-template.md`.
+     - The source (worker artifacts / raw learning files) and the policy of substituting task-specific values for placeholders.
+     - That this is a skill-promotion delegation (one of the carve-outs of the Set A worker write-surface).
+   - The Dispatcher / Lead does **not** write directly to `.claude/skills/{skill-name}/` or `knowledge/skill-candidates.md`. Per Set E §1.4 / §2.4, the status transition in `skill-candidates.md` (move to `approved`, fill `decision date`) is also the same delegated worker's responsibility; include it in the instructions.
 3. If the human rejects:
-   - Record the reason in `knowledge/raw/` to inform future judgments
-   - Update the corresponding entry in `knowledge/skill-candidates.md`: status to `rejected` and append the rejection reason
+   - Record the reason in `knowledge/raw/` for future use in similar judgments.
+   - Updating the `knowledge/skill-candidates.md` entry (status → `rejected`, append the rejection reason) also goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
+4. If the human picks "merge into an existing skill" (terminal status `merged-into-{existing-skill}`):
+   - Identify the merge target and delegate to a skill-promotion worker via `org-delegate`: edit `.claude/skills/{existing-skill}/SKILL.md` to incorporate, and update the `knowledge/skill-candidates.md` entry's status to `merged-into-{existing-skill}` (fill the `merge target` field with the existing skill name).
+   - Do not create a new skill file. The Lead / Dispatcher does not edit directly.
 
 #### decision == candidate_queue
 
-Stop at candidate. If the same pattern reappears in raw next time, the raw_reappearance signal will fire,
-so do not create a skill at this stage. Recording technical knowledge to `knowledge/raw/` proceeds as usual (skip if the Worker has already recorded it).
+Stays a candidate. The next time the same pattern reappears in raw, the raw_reappearance signal will fire, so do not promote yet. Recording the technical learning in `knowledge/raw/` proceeds normally (skip if the worker already recorded it).
 
 #### decision == curated_only
 
-Recording technical knowledge to `knowledge/raw/` is sufficient (skip if the Worker has already recorded it).
-No report needed.
+Recording the technical learning in `knowledge/raw/` is enough (skip if the worker already recorded it).
+No report required.
 
-## Step 5: Report
+## Step 5: report
 
 Briefly report to the human:
-- If you recorded knowledge: "I recorded a learning about {topic} for the delegation process."
-- If proposing a work-skill: propose using the `skill_recommend` format from Step 4.2
-- For `candidate_queue` / `curated_only`: no report needed (silently move on)
+- If a learning was recorded: "Recorded a learning about the delegation process — {topic}".
+- If proposing a work-skill: present the `skill_recommend` format from Step 4.2.
+- For `candidate_queue` / `curated_only`: no report (move on silently).
