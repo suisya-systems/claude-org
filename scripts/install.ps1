@@ -196,6 +196,13 @@ if ($SkipMcp) {
 # most recent installed version, which could surprise on dual-install
 # boxes still carrying 2.7. Each candidate is its own token list so
 # the launcher flag rides with the executable through Invoke-Step.
+#
+# We also skip the Microsoft Store App Execution Alias stub: when
+# Windows ships `python.exe` from `...\WindowsApps\` without an
+# actual Store app installed, `Get-Command python` matches it but
+# any real invocation either fails or pops the Store. Treating it
+# as "found" would short-circuit the loop before reaching `py -3`,
+# defeating the whole point of the fallback on stock boxes.
 $pyCmd = $null
 $pyCandidates = @(
     ,@('python'),
@@ -203,7 +210,11 @@ $pyCandidates = @(
     ,@('py', '-3')
 )
 foreach ($cand in $pyCandidates) {
-    if (Get-Command $cand[0] -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
+    $cmdInfo = Get-Command $cand[0] -ErrorAction SilentlyContinue
+    if (-not $cmdInfo) { continue }
+    if ($cmdInfo.Source -and $cmdInfo.Source -match '[\\/]WindowsApps[\\/]') { continue }
+    $pyCmd = $cand
+    break
 }
 $pyprojectFile = Join-Path $Dir 'pyproject.toml'
 $reqFile = Join-Path $Dir 'requirements.txt'
