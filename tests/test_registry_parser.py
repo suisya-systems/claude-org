@@ -33,12 +33,14 @@ class TestParseProjects(unittest.TestCase):
     def test_real_registry_fixture(self):
         path = PROJECT_ROOT / "registry" / "projects.md"
         projects = parse_projects(path)
-        # The actual checked-in registry has at least the 3 well-known
-        # projects (clock-app, renga, claude-org-ja).
         names = [p.name for p in projects]
-        self.assertIn("clock-app", names)
-        self.assertIn("renga", names)
-        self.assertIn("claude-org-ja", names)
+        # registry/projects.md is divergence-allowed per docs/sync-policy.md;
+        # both ja (claude-org-ja registry) and en (claude-org registry)
+        # checkouts should produce a non-empty, well-formed parse. The
+        # specific project name set is repo-local. A follow-up issue will
+        # convert this assertion to a fixture-based test that does not
+        # depend on the live registry contents.
+        self.assertGreater(len(projects), 0)
         # All rows are fully populated Project instances.
         for p in projects:
             self.assertIsInstance(p, Project)

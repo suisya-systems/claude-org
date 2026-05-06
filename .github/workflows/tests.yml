@@ -22,14 +22,38 @@ jobs:
       - name: Install shell test dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      - name: Install Python dependencies (pyproject.toml editable)
+        # Phase 5c (Issue #130): canonical install is now `pip install -e .`
+        # backed by pyproject.toml. requirements.txt is kept as a thin
+        # pointer for tooling that still references it.
+        run: pip install -e .
+
       - name: Run Python tests
         run: python -m unittest discover -s tests -v
 
       - name: Run tools/ Python tests
         run: python -m unittest discover -s tools -p 'test_*.py' -v
 
+      - name: Check runtime schema drift (Issue #130 Phase 5c)
+        # Compares this repo's tools/org_extension_schema.json against
+        # the schema bundled inside the pinned claude-org-runtime. Skips
+        # with a warning when the installed runtime is outside the pin
+        # window, so a runtime preview release does not block PRs
+        # unrelated to the schema.
+        run: python tools/check_runtime_schema_drift.py
+
       - name: Check role configs integrity (Issue #85)
-        run: python tools/check_role_configs.py
+        # --include-worker-settings . enumerates `<repo>/*/.claude/settings.local.json`
+        # and (since core-harness 0.3.1, default include_worktrees=True) also
+        # descends one level into `.worktrees/<branch>/`. Refs cross-review M4.
+        run: python tools/check_role_configs.py --include-worker-settings .
 
       - name: Run shell hook tests
         run: bash tests/run-all.sh
+
+      - name: state-db drift_check fixture round-trip (Issue #272 / M2.1)
+        # M2.1 cutover gate (see tools/state_db/test_drift_fixture.py).
+        # Round-trips the hand-curated fixture under
+        # tests/fixtures/m2_1_drift_sample/ through importer →
+        # snapshotter → drift_check, asserting zero structural drift.
+        run: python -m unittest tools.state_db.test_drift_fixture -v
