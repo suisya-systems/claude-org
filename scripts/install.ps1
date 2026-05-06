@@ -189,22 +189,34 @@ if ($SkipMcp) {
 # claude-org-runtime package. Phase 5c (Issue #130) moved the install
 # path from `requirements.txt` to `pyproject.toml`; we prefer the
 # editable install so the dep set comes from the canonical source.
+# On a default Windows install only `py.exe` (the launcher) ends up
+# on PATH — bare `python` / `python3` are missing — so we add a
+# `py -3` fallback after the POSIX-friendly names. `-3` pins the
+# launcher to a Python 3 interpreter rather than letting it pick the
+# most recent installed version, which could surprise on dual-install
+# boxes still carrying 2.7. Each candidate is its own token list so
+# the launcher flag rides with the executable through Invoke-Step.
 $pyCmd = $null
-foreach ($cand in @('python', 'python3', 'py')) {
-    if (Get-Command $cand -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
+$pyCandidates = @(
+    ,@('python'),
+    ,@('python3'),
+    ,@('py', '-3')
+)
+foreach ($cand in $pyCandidates) {
+    if (Get-Command $cand[0] -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
 }
 $pyprojectFile = Join-Path $Dir 'pyproject.toml'
 $reqFile = Join-Path $Dir 'requirements.txt'
 if ((Test-Path -LiteralPath $pyprojectFile) -and $pyCmd) {
     Write-Host ''
     Write-Host 'Installing Python deps via pyproject.toml (editable) ...'
-    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-e', $Dir)
+    Invoke-Step ($pyCmd + @('-m', 'pip', 'install', '--user', '-e', $Dir))
 } elseif ((Test-Path -LiteralPath $reqFile) -and $pyCmd) {
     # Backward-compat path for refs that predate Phase 5c (no
     # pyproject.toml) but post-date Step B (have requirements.txt).
     Write-Host ''
     Write-Host 'Installing Python deps (core-harness pin, requirements.txt) ...'
-    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', $reqFile)
+    Invoke-Step ($pyCmd + @('-m', 'pip', 'install', '--user', '-r', $reqFile))
 } elseif (-not ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile))) {
     # Older refs / fixtures predate Step B and ship neither file.
     # The shim CLIs only exist on Step-B-or-later commits, so skipping
