@@ -1,103 +1,97 @@
 ---
 name: org-setup
 description: |
-  Skill that installs / updates the Claude Code permission settings and
-  environment variables required by every role in the organization
-  (Lead / Dispatcher / Curator / Worker) in one shot.
-  Triggered by phrases like "configure", "update permissions", "set up",
-  "permissions config", "org-setup".
+  Place and update the Claude Code permission settings and environment
+  variables required by every role in the org (Lead / Dispatcher /
+  Curator / Worker), in one go.
+  Triggers: "set up", "update permissions", "do the setup",
+  "permissions config", "org-setup", etc.
 ---
 
-# org-setup: install organization permissions in one shot
+# org-setup: place all the org's permission settings
 
-Place the permissions allow entries and environment variables required by each
-role in the organization into the settings files at the correct scope.
+Place the per-role `permissions.allow` entries and environment variables that each role of the org needs into the right settings file at the right scope.
 
-## Where settings live and at what scope
+## Settings files and their scopes
 
-Claude Code reads settings from **`.claude/` under the launch directory**.
-When launched from a subdirectory, settings in the parent directory are **not** loaded.
-For that reason each role needs its own independent settings file.
+Claude Code reads settings from `**.claude/`** under the directory it was started in.
+If started in a subdirectory, the parent's settings are **not** loaded.
+Each role therefore needs its own settings file.
 
-| Scope | File path | Target |
+| Scope | File path | Applies to |
 |---|---|---|
-| User-wide | `~/.claude/settings.json` | All projects, all roles |
-| Lead | `<repo>/.claude/settings.local.json` | Lead launched at the repository root |
-| Dispatcher | `<repo>/.dispatcher/.claude/settings.local.json` | Dispatcher launched in `.dispatcher/` |
-| Curator | `<repo>/.curator/.claude/settings.local.json` | Curator launched in `.curator/` |
-| Worker | Worker directory's `.claude/settings.local.json` | Created dynamically by org-delegate |
+| User-wide | `~/.claude/settings.json` | Every project, every role |
+| Lead | `<repo>/.claude/settings.local.json` | Lead pane started at the repo root |
+| Dispatcher | `<repo>/.dispatcher/.claude/settings.local.json` | Dispatcher pane started in `.dispatcher/` |
+| Curator | `<repo>/.curator/.claude/settings.local.json` | Curator pane started in `.curator/` |
+| Worker | `<worker_dir>/.claude/settings.local.json` | Created dynamically by org-delegate |
 
-## Required settings per role
+## Per-role required settings
 
-The JSON definitions for every role live in **references/permissions.md**. The procedure below references it.
+The full JSON definitions for every role live in **references/permissions.md**. The procedure below references that file.
 
 ## Procedure
 
-### Step 1: Read the current settings
+### Step 1: read current settings
 
-Read the following 4 files (treat as empty object if absent):
+Read these 4 files (treat as `{}` if absent):
 
 1. `~/.claude/settings.json`
 2. `<repo>/.claude/settings.local.json`
 3. `<repo>/.dispatcher/.claude/settings.local.json`
 4. `<repo>/.curator/.claude/settings.local.json`
 
-### Step 2: Identify the diff
+### Step 2: identify diffs
 
-For each file, compare against "Required settings per role" above and identify the missing entries.
+For each file, compare against the "Per-role required settings" above and identify the missing entries.
 
-### Step 3: Merge and write
+### Step 3: merge and write
 
 Add the missing entries. **Never delete** existing settings.
-`permissions.allow` is an array, so preserve existing entries while appending new ones.
-`env` is an object, so preserve existing keys while adding new ones.
+`permissions.allow` is an array — append new entries while preserving existing ones.
+`env` is an object — add new keys while preserving existing ones.
 
-### Step 4: Report the result
+### Step 4: report results
 
 When changes were made:
 ```
 Settings updated:
 - ~/.claude/settings.json: added renga, renga-peers permissions
-- .dispatcher/.claude/settings.local.json: added permission for the claude launch command
+- .dispatcher/.claude/settings.local.json: added claude launch-command permission
 - (no change: .curator/.claude/settings.local.json)
 ```
 
-When nothing changed:
+When no changes were needed:
 ```
 All settings are up to date. No changes.
 ```
 
-### Step 5: Resolve drift (`--prune` mode)
+### Step 5: drift sweep (`--prune` mode)
 
-The normal Steps 1–3 are **additive-only** (only add what is missing; never delete what exists).
-Overly broad allows or stale entries that have accumulated in the past therefore stick around forever, so a prune mode is provided that **completely rewrites** `settings.local.json` using `permissions.md` as the source of truth.
+The regular Step 1–3 path is **additive-only** (only adds missing entries; never removes existing ones).
+Old, over-broad allow entries accumulated in the past stick around forever, so a prune mode is provided that **fully rewrites** `settings.local.json` from `permissions.md` as the SoT.
 
-Run it via `tools/org_setup_prune.py`:
+Run it with `tools/org_setup_prune.py`:
 
 ```bash
-# Diff preview (no writes)
+# Diff preview (no rewrite)
 python tools/org_setup_prune.py --role secretary --dry-run
 python tools/org_setup_prune.py --all --dry-run
 
-# Execute (auto-generates a timestamped .bak, then rewrites)
+# Run (auto-creates a timestamped .bak, then rewrites)
 python tools/org_setup_prune.py --role secretary
 python tools/org_setup_prune.py --all
 ```
 
-Target roles: `secretary` / `dispatcher` / `curator`.
-(`user_common` is excluded because `~/.claude/settings.json` coexists with other plugins.
-Workers are excluded because org-delegate generates them dynamically.)
+Targets: `secretary` / `dispatcher` / `curator`.
+(`user_common` lives in `~/.claude/settings.json` alongside other plugins, so it is excluded.
+Workers are created dynamically by org-delegate, so they are excluded.)
 
-#### Protecting user extensions: `settings.local.override.json`
+#### User-extension protection: `settings.local.override.json`
 
-Because prune wholesale-rewrites using the role template in `permissions.md`,
-any allow / env / hook you added personally would be wiped out.
-To avoid that, place a `settings.local.override.json` in the **same directory**
-as each settings file; prune deep-merges it in.
+Because prune fully rewrites from the role template in `permissions.md`, any allow / env / hook the user added personally would be wiped. To prevent this, place a file named `settings.local.override.json` in the **same directory** as the corresponding settings file; the prune tool deep-merges it during rewrite.
 
-Example: to permanently allow `Bash(my-private-tool:*)` for the Lead, write the
-following to `.claude/settings.local.override.json` (the prune tool only reads
-this file; it never rewrites it):
+Example: to permanently allow `Bash(my-private-tool:*)` for the Lead, write the following in `.claude/settings.local.override.json` (the prune tool only reads this file; it never rewrites it):
 
 ```json
 {
@@ -108,35 +102,25 @@ this file; it never rewrites it):
 ```
 
 Merge rules:
-- `permissions.allow` / `permissions.deny`: union, preserving base order
-- `env`: per-key merge (override wins)
-- `hooks.PreToolUse[]` etc.: dedupe by equality, then append
-- Other scalars: override wins
+- `permissions.allow` / `permissions.deny`: union, preserving the base order.
+- `env`: per-key merge (override wins).
+- `hooks.PreToolUse[]` and similar: append after equality-based dedup.
+- Other scalars: override wins.
 
-It is `.gitignore`d (because it is personal). `.gitignore:23-25` already ignores
-`.claude/settings.local.override.json` and `.claude/settings.local.json.bak.*`.
-`.curator/.claude/` and `.dispatcher/.claude/` are entirely ignored, so they are
-covered automatically. For settings to share with the team, add them to
-`permissions.md` and update the schema (`tools/role_configs_schema.json`) at the
-same time.
+The override file is `.gitignore`d (since it is personal). `.gitignore:23-25` already ignores `.claude/settings.local.override.json` and `.claude/settings.local.json.bak.*`. `.curator/.claude/` and `.dispatcher/.claude/` are ignored as a whole, so anything underneath them is automatically covered. Settings you want to share with the team should be added to `permissions.md` (and to `tools/org_extension_schema.json` at the same time).
 
-`tools/check_role_configs.py` reads the same override file and excludes its
-allows from closed-world validation (`_load_override_allow`). So personal
-allows added via override do not show up as `unknown allow entry` under CI /
-`--include-local`. However `forbidden_allow_exact` (wide allows like `Bash(git *)`)
-and `disallow_allow_regex` (e.g. legacy `mcp__claude-peers__*`, now `renga-peers`) still ERROR
-even when they appear in override. The safety contract cannot be bypassed via override.
+`tools/check_role_configs.py` reads the same override file and excludes its allow entries from closed-world validation (`_load_override_allow`). So entries you add via override do not appear as `unknown allow entry` in CI / `--include-local`.
+However, `forbidden_allow_exact` (wide-allow such as `Bash(git *)`) and `disallow_allow_regex` (the legacy `mcp__claude-peers__*`, current `renga-peers`, etc.) are still ERROR even when present in override — safety contracts cannot be bypassed via override.
 
-#### Resolving `{claude_org_path}` for the dispatcher
+#### Resolving `{claude_org_path}` for the Dispatcher
 
-The dispatcher template contains a `{claude_org_path}` placeholder.
-The prune tool resolves it in the following order of precedence:
+The Dispatcher template contains a `{claude_org_path}` placeholder. The prune tool resolves it in this priority order:
 
-1. The `--claude-org-path <abs>` argument
-2. `env.CLAUDE_ORG_PATH` in the existing `settings.local.json`
-3. `<abs>` from `bash "<abs>/.hooks/..."` inside an existing hook command
+1. The `--claude-org-path <abs>` argument.
+2. `env.CLAUDE_ORG_PATH` in the existing `settings.local.json`.
+3. The `<abs>` extracted from `bash "<abs>/.hooks/..."` in an existing hook command.
 
-If none can be obtained (fresh install, etc.), pass `--claude-org-path` explicitly:
+If none of these are available (e.g., a fresh install), pass `--claude-org-path` explicitly:
 
 ```bash
 python tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me/work/claude-org"
@@ -144,13 +128,11 @@ python tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me
 
 #### Backups
 
-Before rewriting, a `settings.local.json.bak.YYYYMMDD-HHMMSS` is created in the same directory.
-On failure, `mv` this `.bak` back to restore the previous state.
-Suppress with `--no-backup` if not needed.
+Before rewriting, the tool creates `settings.local.json.bak.YYYYMMDD-HHMMSS` in the same directory. On failure you can `mv` the `.bak` back to recover. Suppress backup with `--no-backup` if not needed.
 
-## Notes
+## Caveats
 
-- `settings.local.json` is assumed to be in `.gitignore` (because it is personal config)
-- Take care not to clobber existing settings (plugins etc.) in user-level `~/.claude/settings.json`
-- Worker settings are not placed by this skill (org-delegate handles them)
-- The canonical reference for prune behavior is the docstring in `tools/org_setup_prune.py` and the tests in `tools/test_org_setup_prune.py`
+- `settings.local.json` is assumed to be `.gitignore`d (it is personal).
+- Be careful editing the user-level `~/.claude/settings.json` so that you do not break existing settings (plugins, etc.).
+- This skill does not place worker settings (org-delegate handles those).
+- The canonical reference for the prune behavior is the docstring of `tools/org_setup_prune.py` and the tests in `tools/test_org_setup_prune.py`.

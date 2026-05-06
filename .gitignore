@@ -35,6 +35,9 @@ docs/github-issues/
 # Python build artifacts
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
 
 # OS metadata
 .DS_Store
@@ -43,3 +46,8 @@ Thumbs.db
 # Environment variables
 .env
 .env.*
+.claude/scheduled_tasks.lock
+
+# M4 (Issue #267): journal.jsonl decommissioned — events table is the SoT.
+# Local files lingering from pre-M4 runs are no longer authoritative.
+.state/journal.jsonl

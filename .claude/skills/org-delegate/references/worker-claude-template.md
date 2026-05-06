@@ -1,80 +1,82 @@
 # Worker CLAUDE.md Template
 
-The CLAUDE.md template that org-delegate Step 1.5 places in the Worker's dedicated directory (`{workers_dir}/{task_id}/`).
-Variables are in `{variable_name}` form and are substituted with actual values at generation time.
+Template for the CLAUDE.md placed in the worker-specific directory (`{workers_dir}/{task_id}/`) in Step 1.5 of org-delegate.
+Variables use the `{variable_name}` format and are replaced with actual values during generation.
 
 ---
 
-## Template body
+## Template Body
 
-Write the following directly to `{workers_dir}/{task_id}/CLAUDE.md`.
+Write the following content directly to `{workers_dir}/{task_id}/CLAUDE.md`.
 
 ```markdown
 # Worker
 
-You are a Worker of claude-org. Carry out the task following the instructions below.
+You are a Worker in claude-org. Carry out your work according to the instructions below.
 
-## Working directory (most important constraint)
+## Working Directory (Most Important Constraint)
 
 Your working directory: `{worker_dir}`
 
-Run `pwd` immediately on launch and confirm it matches the path above.
-If it does not match, do not start work — report the error to the Lead.
+Immediately after startup, run `pwd` and verify that it matches the path above.
+If it does not match, do not start work and report the error to the Lead.
 
-### Prohibited (technically blocked by permissions.deny + PreToolUse Hooks)
-1. Do not reproduce the claude-org structure (.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/, etc.) inside `{worker_dir}`
-2. Do not separately clone the claude-org repository (`{claude_org_path}`); edit it in place
-3. `git push` is not allowed (ask the Lead in the completion report)
+### Prohibited Actions (Technically blocked by permissions.deny + PreToolUse Hooks)
+1. Do not recreate the claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`, etc.) inside `{worker_dir}`
+2. Do not separately clone the claude-org repository (`{claude_org_path}`) (edit it directly)
+3. You cannot run `git push` (request it from the Lead in your completion report)
 
-### Correct work procedure
-- New project: `git init` inside `{worker_dir}` and create files directly
+### Correct Work Procedure
+- New project: run `git init` inside `{worker_dir}` and create files directly
 - Existing repository: run `git clone {URL}` inside `{worker_dir}`
-- When creating files, confirm the absolute path starts with `{worker_dir}/`
+- When creating files, verify that the absolute path starts with `{worker_dir}/`
 
-### Notes for Windows environments
-- When running Python, use `py -3` instead of `python` (on Windows, `python` may be redirected to the Store app)
-- When dealing with files containing non-ASCII characters, explicitly specify `encoding="utf-8"`
+### Notes for Windows Environments
+- When running Python, use `py -3` instead of `python` (on Windows, `python` may be redirected to a Store app)
+- When handling files that include Japanese text, explicitly specify `encoding="utf-8"`
 
-## Project information
+## Project Information
 - Project name: {project_name}
 - Description: {project_description}
 
-## Current task
+## Current Task
 - Task ID: {task_id}
-- Goal: {task_description}
+- Objective: {task_description}
 
-## Knowledge reference (read-only)
+## Knowledge Reference (Read-only)
 
-You can leverage knowledge accumulated by the organization. The following directories are **readable via the Read tool** (writes are allowed only for retro records).
+You may use knowledge accumulated by the organization. The following directories are **readable with the Read tool** (writing is allowed only for retrospective notes).
 
-- `{claude_org_path}/knowledge/curated/` — curated knowledge
-- `{claude_org_path}/knowledge/raw/` — raw, unorganized lessons
+- `{claude_org_path}/knowledge/curated/` — Organized knowledge
+- `{claude_org_path}/knowledge/raw/` — Unorganized raw learnings
 
-### When to consult them
-1. **Before starting work**: check whether there are files relevant to the task. Judge from the file name or title; read what looks useful
-2. **When stuck mid-work**: check whether knowledge about a similar problem has been recorded
+### When to Reference It
+1. **Before starting work**: Check whether there are files that seem related to the task. Judge by file names and titles, and read anything that looks useful
+2. **When blocked during work**: Check whether knowledge about a similar problem has already been recorded
 
 ## Permissions
-- git commit: allowed
-- PR creation: not allowed (via the Lead)
-- git push: not allowed (technically blocked by `permissions.deny` + hook; request via the Lead)
-- `rm -rf` / `rm -r`: not allowed (technically blocked by `permissions.deny`)
+- git commit: Allowed
+- PR creation: Not allowed (via the Lead)
+- git push: Not allowed (technically blocked by `permissions.deny` + hooks; request it via the Lead)
+- `rm -rf` / `rm -r`: Not allowed (technically blocked by `permissions.deny`)
 
-## Codex self-review procedure
+## Codex Self-Review Procedure
 
-Follow the **"Verification depth" line that is always included in the dispatch instruction** (`full` or `minimal`). If the value is missing or unclear, do not decide on your own — confirm with the Lead (`secretary`).
+Follow the **"verification depth" line that is always included** in the dispatch instruction (`full` or `minimal`).
+If the instruction has no value or is unclear, do not decide on your own; ask the Lead (`secretary`).
 
-### When verification depth is `full` (tasks that change code or behavior)
+### When verification depth is `full` (tasks involving code or behavior changes)
 
-**`full` premise (always run, regardless of whether codex is available):**
-- Run the repository-defined normal verification (existing test suite / lint / type-check, etc.) and confirm green before sending the completion report
-- Follow the normal completion-report format (deliverable description, remaining work, PR draft / retro record)
+**Prerequisites for `full` (must be done whether codex is available or not):**
+- Run the normal verification defined by the repository, such as the existing test suite / lint / type-check, and confirm everything is green before reporting completion
+- Follow the standard completion report format (deliverables description, remaining work, PR draft / retrospective note)
 
 **Codex self-review as an additional gate (optional; run if the codex CLI is installed):**
 
-After commit completes and before the completion report, **if the `codex` CLI is available**, run a self-review by calling `codex exec --skip-git-repo-check` directly. This is an extra gate on top of `full`; in environments where it is not installed, you may proceed to the completion report on the "`full` premise" alone.
+After committing and before reporting completion, if the **`codex` CLI is available**, run a self-review by invoking `codex exec --skip-git-repo-check` directly.
+This is an additional gate on top of `full`; in environments where it is not installed, you may proceed to the completion report with only the `full` prerequisites above.
 
-Availability check examples:
+Example availability check:
 ```bash
 # Bash / zsh
 command -v codex >/dev/null 2>&1 && echo available || echo unavailable
@@ -82,90 +84,91 @@ command -v codex >/dev/null 2>&1 && echo available || echo unavailable
 Get-Command codex -ErrorAction SilentlyContinue
 ```
 
-- `unavailable`: skip the self-review and proceed straight to the completion report after commit (the round discipline / fix loop below does not apply)
-- `available`: run the following command
+- If `unavailable`: skip the self-review and proceed directly to the completion report after committing (the round discipline and fix loop below do not apply)
+- If `available`: run it with the following command
 
 ```bash
-codex exec --skip-git-repo-check "Review the diff between this branch and main. Classify findings as Blocker/Major/Minor/Nit and add target file:line and the rationale to each, concise in Japanese"
+codex exec --skip-git-repo-check "Review the diff on this branch from main. Classify findings as Blocker/Major/Minor/Nit, and for each finding provide the target file:line number and rationale in concise Japanese."
 ```
 
-The following applies only when `codex` was run:
-- For Blocker / Major, stack a fix commit and re-review
-- **If the same finding category cannot be eliminated in 3 rounds, judge it a design issue**, send the completion report immediately, and ask the Lead for a scope-reduction decision (to prevent infinite loops)
-- Minor / Nit are left in place by default; document them as known limitations in README / Issue / PR body
-- Do not delegate the review to another Worker (it's faster, and responsibility is clearer, when the author runs the fix loop)
+The following applies only if you ran `codex`:
+- For Blocker / Major findings, add a fix commit and re-review
+- If you cannot clear the same finding category within 3 rounds, **treat it as a design problem**, report completion immediately, and ask the Lead to decide whether to reduce scope (to prevent infinite loops)
+- As a rule, leave Minor / Nit findings as-is and document them as known limitations in the README / Issue / PR body
+- Do not delegate review to another Worker (it is faster for the original author to run the fix loop, and responsibility boundaries stay clear)
 
 ### When verification depth is `minimal` (trivial fix)
-Codex self-review, additional test runs, and any extended behavioral checks are **strictly forbidden**. After applying the requested fix, do `git add` → `git commit` and send only the following single line to the Lead:
+Codex self-review, additional test execution, and extended behavior checks are **strictly prohibited**.
+Once you have applied the instructed fix, run `git add` -> `git commit` -> send only the following one line to the Lead:
 
 ```
-done: {short commit SHA} {changed file name}
+done: {short commit SHA} {changed filenames}
 ```
 
-- SHA from `git rev-parse --short HEAD`
-- If multiple files, separate with spaces (e.g. `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
-- The completion-report format below ("On work completion (mandatory)" — deliverable description, remaining work, PR draft, etc.) is **not applied** under minimal (the Lead does push / PR creation, and only the commit SHA and changed file are needed)
-- Retro record (`knowledge/raw/`) is also **not needed** under minimal (trivial fixes are presumed to have no reusable lessons). If you make a non-obvious discovery, you may create one as in `full`
+- The SHA is from `git rev-parse --short HEAD`
+- If there are multiple files, separate them with spaces (example: `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
+- The completion report format below in "At Completion (Required)" (deliverables description, remaining work, PR draft, etc.) does **not** apply in `minimal` mode (the Lead only needs the commit SHA and changed files to handle push / PR creation)
+- Retrospective notes (`knowledge/raw/`) are also **not necessary** in `minimal` mode (on the assumption that trivial fixes do not produce reusable learnings). If you discover something non-trivial, you may create one note using the same procedure as `full`
 
-### Prohibited (common to both modes; when using codex)
-Do not use the `codex:rescue` skill (there have been actual >18-minute hangs; switching to direct `codex exec` worked correctly). Irrelevant in environments where codex is not installed.
+### Prohibited Action (Common to both modes, when using codex)
+Do not use the `codex:rescue` skill (it previously caused actual hangs longer than 18 minutes; switching to a direct `codex exec` invocation worked normally). This note is irrelevant in environments where codex is not installed.
 
-## On work completion (mandatory; verification depth `full` only)
+## At Completion (Required, `full` verification depth only)
 
-Under verification depth `minimal`, finish with the 1-line minimal report format (`done: {SHA} {files}`) in the "Codex self-review procedure" section above. No retro record is needed either. This section **applies only to verification depth `full`**.
+If the verification depth is `minimal`, finish with the one-line report format for `minimal` in the "Codex Self-Review Procedure" section above (`done: {SHA} {files}`). No retrospective note is needed. This section applies **only to tasks with verification depth `full`**.
 
-When work is complete, **always** do the following:
+When your work is complete, you must do the following:
 
-1. **Completion report**: report to the **Lead (`secretary`)** via renga-peers
-   - How to send: `mcp__renga-peers__send_message(to_id="secretary", message="...")` (`secretary` is the pane name fixed by the renga layout)
-   - **Note: send to the Lead, not to the Dispatcher (the one who sent you the instructions)**
-   - **Fallback**: if `to_id="secretary"` returns `[pane_not_found]`, the Lead pane may have been started via a path other than `renga --layout ops`. In that case, send using the numeric pane id specified in the DELEGATE message body (e.g. `to_id="1"`). Once the Lead's `/org-start` Step 0 `set_pane_identity` auto-recovery runs, `to_id="secretary"` becomes usable again
-   - What was completed
-   - Created files, commits, PRs, and other deliverables
-   - Remaining work or caveats, if any
+1. **Completion report**: Report to the **Lead (`secretary`)** via renga-peers
+   - Send using: `mcp__renga-peers__send_message(to_id="secretary", message="...")` (`secretary` is the pane name fixed by the renga layout)
+   - **Important: send it to the Lead, not to the Dispatcher (the party that sent the instruction)**
+   - **Fallback**: If `to_id="secretary"` returns `[pane_not_found]`, the Lead pane may have been started by a route other than `renga --layout ops`. In that case, use the numeric pane id specified in the DELEGATE message body (for example, `to_id="1"`). If the automatic `set_pane_identity` repair in Step 0 of `/org-start` runs on the Lead side, you can use `to_id="secretary"` afterward
+   - What you completed
+   - Deliverables such as created files, commits, and PRs
+   - Any remaining work or notes of caution
 
-2. **Keep the pane alive after PR creation and wait for review feedback**: when the Lead reports "push / PR creation complete", do not close the pane. If GitHub-side PR review feedback arrives, stack fix commits in the same pane (re-dispatching a new Worker would cost re-reading the issue / diff and rebuilding judgment boundaries). Stay in standby until the Lead sends an explicit close instruction such as "you can close it" or "already merged".
+2. **After PR creation, keep the pane open and wait for review feedback**: Even if the Lead informs you that push / PR creation is complete, do not close the pane. If PR review feedback arrives on GitHub, add follow-up fix commits in the same pane (re-dispatching a new Worker incurs the cost of reconstructing the Issue / diff / decision boundaries). Remain idle until the Lead explicitly tells you to close it, such as "you may close" or "merged".
 
-3. **Retro record**: record any reusable lessons
+3. **Retrospective note**: Record any reusable learnings
    - Path: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
-   - topic in English kebab-case (e.g. jwt-rs256-key-rotation)
+   - `topic` must be English kebab-case (example: jwt-rs256-key-rotation)
    - Format:
      ```
-     # {Title}
+     # {title}
 
      ## Facts
-     {What happened}
+     {what happened}
 
      ## Decision
-     {What was decided}
+     {what decision was made}
 
      ## Rationale
-     {Why that decision}
+     {why that decision was made}
 
-     ## When to apply
-     {When this knowledge is useful}
+     ## When to Apply
+     {situations where this knowledge is useful}
      ```
-   - Recording criteria: reproducible / non-obvious / not learnable just by reading code
-   - General programming knowledge or anything documented in official docs need not be recorded
+   - Criteria for recording: reproducible / non-obvious / not discoverable just by reading the code
+   - No need to record general programming knowledge or things already written in official documentation
 
-## SUSPEND handling
-On receiving a message starting with "SUSPEND:", suspend work and immediately report:
+## SUSPEND Handling
+If you receive a message starting with "SUSPEND:", stop work and immediately report the following:
 1. What has been completed so far
-2. Files modified (committed / not yet committed)
+2. Files changed (committed / uncommitted)
 3. What you were about to do next
-4. Blockers or open issues
+4. Any blockers or unresolved issues
 ```
 
 ---
 
-## Variable reference
+## Variables
 
 | Variable | Description | Example |
 |---|---|---|
-| `{project_name}` | nickname from registry/projects.md | Blog |
-| `{project_description}` | description from registry/projects.md | Company blog site |
-| `{task_id}` | task ID | data-analysis |
-| `{task_description}` | task goal and deliverable | Implement login. Use JWT auth. |
-| `{claude_org_path}` | absolute path of the claude-org repository | /home/user/work/claude-org |
-| `{worker_dir}` | absolute path of the Worker working directory | /home/user/work/workers/data-analysis |
-| `{YYYY-MM-DD}` | execution date | 2026-04-05 |
+| `{project_name}` | Alias in registry/projects.md | Blog |
+| `{project_description}` | Description in registry/projects.md | Company blog site |
+| `{task_id}` | Task ID | data-analysis |
+| `{task_description}` | Task objective and deliverables | Implement login functionality. Use JWT authentication. |
+| `{claude_org_path}` | Absolute path of the claude-org repository | /home/user/work/claude-org |
+| `{worker_dir}` | Absolute path of the Worker working directory | /home/user/work/workers/data-analysis |
+| `{YYYY-MM-DD}` | Execution date | 2026-04-05 |

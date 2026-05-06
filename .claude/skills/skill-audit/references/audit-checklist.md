@@ -1,117 +1,101 @@
 # skill-audit checklist
 
-The concrete judgment procedures used by `skill-audit` for the three angles.
+Concrete decision procedure that `skill-audit` runs across the 3 audit dimensions.
 
-## 1. Deprecation candidate check
+## 1. Deprecation-candidate check
 
-For each skill, check the following in order.
+For each skill, walk through the following in order.
 
-### 1.1 Mention search (observable)
-- Grep `knowledge/raw/` and `knowledge/curated/` for `{skill-name}`
-- Grep task logs under `.state/workers/` for `{skill-name}`
-- **If there is not a single mention within the last 90 days**, set the "no mention" flag
+### 1.1 Reference search (observable)
+- grep `knowledge/raw/` and `knowledge/curated/` for `{skill-name}`.
+- grep task logs under `.state/workers/` for `{skill-name}`.
+- **If there is not a single mention within the last 90 days**, raise the "no references" flag.
 
-Note: `org-delegate` embeds work-skills into instructions on a search match,
-but does not persist whether "the worker actually adopted / fully used it."
-Therefore what is detectable here is only "skills that did not even surface
-as search candidates recently"; skills that "surfaced but went unused" are
-not observable. This weakness is accepted (until observation logging is added).
+Note: `org-delegate` embeds a matched work-skill into its instructions, but it does not persist "did the worker actually adopt it / use it through". So all that this check can detect is "skills that have not even appeared as a search candidate recently"; "skills that appeared but went unused" remain unobservable. We accept this gap (until observation logs are added).
 
-### 1.2 origin.task_id reuse status (origin-tagged skills only)
-- Check whether SKILL.md frontmatter has `origin.task_id`
-- **If absent, skip this item** (applies to many existing skills)
-- If present: check whether any similar task after `origin.task_id` exists in
-  `knowledge/raw/` or `.state/workers/`
-- **If there is not a single match**, set the "not reused" flag
+### 1.2 origin.task_id reuse (origin-tagged skills only)
+- Confirm whether the SKILL.md frontmatter has `origin.task_id`.
+- **If absent, skip this item** (which applies to many existing skills).
+- If present: are there similar tasks under `knowledge/raw/` or `.state/workers/` after `origin.task_id`?
+- **If none**, raise the "not reused" flag.
 
-### 1.3 Divergence between description and implementation (observable)
-- Check whether the function summarized in the frontmatter `description` matches
-  the contents of the Step group in the body of `SKILL.md`
-- Set the "divergence" flag if any of the following holds:
-  - The description references a procedure that does not appear in the body
-  - The Step group in the body adds a separate function that the description
-    does not mention
-  - Concrete examples / tools / libraries contradict between description and body
+### 1.3 description-vs-implementation drift (observable)
+- Does the frontmatter `description` summarize features that match the body's Step sections?
+- Raise the "drift detected" flag if any of the following holds:
+  - The description mentions procedures that are not in the body.
+  - The body's Steps add separate features that the description does not mention.
+  - Concrete examples / tools / libraries contradict between description and body.
 
-### Deprecation candidate judgment
-List as a "deprecation candidate" if **one or more** of 1.1 / 1.2 / 1.3 applies.
-However **no decision is made**. Report each candidate with its flag rationale
-on the assumption that a human makes the final call.
-For skills where 1.2 is skipped, list candidacy based only on the 1.1 / 1.3 results.
+### Deprecation-candidate decision
+A skill is listed as a "deprecation candidate" if **at least one** of 1.1 / 1.2 / 1.3 fires.
+**Do not decide here.** The human makes the final call; report each flag with its supporting evidence.
+For skills where 1.2 was skipped, candidate status is determined by 1.1 / 1.3 alone.
 
-## 2. Merge candidate check
+## 2. Duplication / consolidation check
 
-### 2.1 Description similarity
+### 2.1 description similarity
 Compare two skill descriptions pairwise:
 
-- Verbs match (e.g. "judge" vs "judge", "analyze" vs "analyze")
-- Objects overlap (the targets / outputs handled are similar)
-- Only the modifiers differ ("of X" / "of Y" with the same main function)
+- Verbs match ("decide" vs "decide", "analyze" vs "analyse", etc.).
+- Objects overlap (similar subjects / outputs).
+- Only modifiers differ ("X's" vs "Y's" wrapping the same core function).
 
-If applicable, set the "description overlap" flag.
+If yes, raise the "description duplicate" flag.
 
-### 2.2 Triggers overlap
-Among skills that have `triggers:` in frontmatter:
+### 2.2 triggers overlap
+For skills that have `triggers:` in their frontmatter:
 
-- Trigger-condition vocabulary overlaps by 50% or more
-- Targets the same input format (Excel, PDF, CSV, etc.)
-- Fires in the same situation (task completion, error occurrence, scheduled run, etc.)
+- Trigger-condition vocabulary overlaps by 50% or more.
+- Targets the same input format (Excel, PDF, CSV, etc.).
+- Fires in the same situation (task completion, error, periodic run, etc.).
 
-If applicable, set the "triggers overlap" flag.
+If yes, raise the "triggers overlap" flag.
 
-### 2.3 Specialization / generalization relationship
-- One skill could run with **parameters** added on top of the other
-- One is just the application of the other to a **specific brand or specific
-  data set**
+### 2.3 specialization / generalization relationship
+- One skill could run the other if a **parameter** were added.
+- One is just a **brand-specific or data-specific** application of the other.
 
-If applicable, set the "merge feasibility" flag.
+If yes, raise the "consolidation possible" flag.
 
-### Merge candidate judgment
-Only list pairs where **two or more** of the three items above apply as merge
-candidates. A single hit is "they look similar" and is too weak to support a
-merge decision.
+### Consolidation-candidate decision
+Only pairs that fire **2 or more** of the above are listed as consolidation candidates.
+A single flag is "looks similar" — too weak for a consolidation decision.
 
-## 3. Owner-missing check
+## 3. owner-missing check
 
-### 3.1 Read frontmatter
+### 3.1 frontmatter read
 Read the leading YAML frontmatter of each skill's `SKILL.md`.
 
-### 3.2 Field check
-Either of the following fields must be present with a non-empty value:
+### 3.2 field check
+Confirm one of the following is present and non-empty:
 
 - `owner:`
 - `maintainer:`
 
-### 3.3 Listing
-If neither is present / the value is empty / the value is a placeholder such
-as `TBD`, mark as "owner missing."
+### 3.3 listing
+If neither field exists, the value is empty, or the value is a placeholder like `TBD`, list the skill under "owner missing".
 
 ## Report format
 
-Follow the message template from `SKILL.md` Step 5, but append the rationale
-after each candidate:
+Follow the message template in `SKILL.md` Step 5, but append the supporting evidence after each candidate:
 
 ```
 ## Deprecation candidates
-- `example-skill`: no call history (0 in 90 days), no origin reuse
+- `example-skill`: no call history (0 mentions in 90 days), no origin reuse
 - ...
 
-## Merge candidates
-- `skill-a` × `skill-b`: description overlap + specialization relationship
+## Consolidation candidates
+- `skill-a` × `skill-b`: description duplicate + specialization relationship
 - ...
 
-## Owner missing
+## owner missing
 - `skill-c`, `skill-d`, ...
 ```
 
-## Notes on judgment thresholds
+## Notes on thresholds
 
-- **90 days**: observation window for call history. Tunable for this project's
-  activity rate.
-- **50%**: triggers vocabulary overlap. Too strict gives false negatives, too
-  lax gives false positives.
-- **2 of 3**: merge judgment threshold. A single hit produces too many false
-  detections.
+- **90 days**: observation window for call history. Tune for this project's activity rate.
+- **50%**: triggers vocabulary overlap. Too strict → false negatives; too loose → false positives.
+- **2-of-3**: consolidation threshold. Listing as a candidate on a single match raises the false-positive rate.
 
-If divergences appear in operation, adjust the numbers above and record the
-adjustment in `knowledge/raw/` as "audit operation lessons."
+If operations show drift from these numbers, adjust them and record the lesson in `knowledge/raw/` as "audit-operations learning".

@@ -17,8 +17,8 @@ Current Objective: M4 freeze fixture
 
 | Task ID | Pattern | Directory | Project | Status |
 |---|---|---|---|---|
-| issue-267-m4-markdown-freeze | B | /tmp/wd/issue-267-m4 | claude-org-ja | in_use |
-| prior-task | B | /tmp/wd/prior | claude-org-ja | available |
+| issue-267-m4-markdown-freeze | B | /tmp/wd/issue-267-m4 | claude-org | in_use |
+| prior-task | B | /tmp/wd/prior | claude-org | available |
 
 ## Active Work Items
 

@@ -1,159 +1,160 @@
-# Non-goals (Things this project deliberately doesn't do)
+# Intentionally Omitted Features (Non-goals)
 
-claude-org is an **operational-discipline framework** scoped to running an organization on top of Claude Code. The list below makes explicit which capabilities we have decided not to build, even though they may sound convenient. Stating absences actively is the device we use to communicate the boundary — and the value — of this framework.
+claude-org is an **operations-discipline framework** focused specifically on running an organization on Claude Code. This document explicitly lists features that "might look convenient, but are intentionally excluded by design philosophy." Proactively stating what is absent is how the framework communicates its boundaries and value clearly.
 
-> The README summarizes only the five strongest items. This document is the long form and covers all twelve.
+> The README summarizes only the five strongest points. This document is the detailed version and covers all 12 items.
 
 ---
 
-## 1. We don't hand `--dangerously-skip-permissions` to Workers by default
+## 1. Do not default Workers to `--dangerously-skip-permissions`
 
-**What we don't do**: ship `--dangerously-skip-permissions` (= `permission_mode="bypassPermissions"`), which broadly suppresses Claude Code's permission prompts, as a default for the Workers that do real work (and for the Lead that instructs them). We do not adopt the "every role uniformly bypasses" stance.
+**What we do not do**: Distribute Claude Code's fully prompt-bypassing `--dangerously-skip-permissions` (`permission_mode="bypassPermissions"`) as the default for Workers that perform real work, or for the Leads that instruct them. We do not adopt an operating model that enables bypass uniformly across all roles.
 
-**Why**: claude-org's core value is **narrow allow-listing plus defense in depth**. Handing a blanket bypass to the role that actually does work eliminates our ability to pre-empt the most catastrophic accident classes — `git push --force`, reads of `.env`, and so on. This is the opposite direction from farm-style "everything fully automatic" tools; we don't accept "dangerous operations quietly running where no one is watching."
+**Why**: claude-org centers on **narrow permission entries + defense in depth**. If roles that do real work get full permission-boundary bypass, the system can no longer stop the highest-severity organizational failures in advance, such as `git push --force` or reading `.env`. This is the opposite direction from fully automated farm-style systems. We do not allow dangerous operations to run invisibly outside human awareness.
 
-That said, claude-org is **deliberately heterogeneous in `permission_mode` across roles**. Pretending "every role runs in `auto`" would diverge from reality, so we lay it out honestly:
+That said, claude-org is designed to **use different permission modes intentionally by role**. Claiming "all roles run in `auto` mode" would be inaccurate, so the actual model is stated here directly:
 
 | Role | `permission_mode` | Model | Notes |
 |---|---|---|---|
-| Lead | `auto` | Opus | Narrow allow-list in `settings.local.json` plus PreToolUse hooks |
-| Dispatcher | `bypassPermissions` | Sonnet | **Exception.** See below |
-| Curator | `auto` | Opus | Minimal allow-list (read-mostly plus the writes needed for curation) |
-| Worker | `auto` | Opus | Narrow allow-list + role-specific hooks + per-task working-directory boundary |
+| Lead | `auto` | Opus | Protected by narrowed permission entries in `settings.local.json` plus PreToolUse hooks |
+| Dispatcher | `bypassPermissions` | Sonnet | **Exception**. Reason below |
+| Curator | `auto` | Opus | Minimal permissions (mostly read, plus only writes needed for knowledge organization) |
+| Worker | `auto` | Opus | Narrowed permission entries + role-specific hooks + per-task working-directory boundaries |
 
-The reason only the Dispatcher is pinned to `bypassPermissions` is **a forced consequence of cost optimization**. In Claude Code (TUI), `auto` mode is only available on Opus-class models — Sonnet cannot run `auto` at all. Since we run the Dispatcher on Sonnet, the only realistic value of `permission_mode` is `bypassPermissions`. This isn't classifier evasion; it's the only choice the environment offers.
+The reason only the Dispatcher is fixed to `bypassPermissions` is a **direct consequence of cost optimization**. In Claude Code (TUI), `auto` mode only starts on Opus-family models, and Sonnet cannot use `auto` mode at all. If the Dispatcher runs on Sonnet, the practical `permission_mode` choice is only `bypassPermissions`. This is not bypassing classifier behavior; it is the only available mode in an environment where `auto` cannot be selected in the first place.
 
-### What `bypassPermissions` actually does (no fudging)
+### Actual behavior of `bypassPermissions` (no euphemisms)
 
-True to its name, `bypassPermissions` mode bypasses **both** `permissions.allow` and `permissions.deny`. That is, "the deny rules in `permissions.deny` such as `git push --force` are not enforced on the Dispatcher." What Claude Code itself still preserves under bypass is only the write-confirmation prompt for protected directories such as `.git/`, `.claude/`, `.vscode/`, `.idea/`, and `.husky/`.
+As the name implies, `bypassPermissions` bypasses **both** `permissions.allow` and `permissions.deny`. In other words, deny rules such as `git push --force` listed in `permissions.deny` **do not apply on the Dispatcher side**. The only prompts Claude Code still keeps in bypass mode are write-confirmation prompts for protected directories such as `.git/`, `.claude/`, `.vscode/`, `.idea/`, and `.husky/`.
 
-So the Dispatcher's effective defense layers come out as:
+So the Dispatcher's effective defense layers are:
 
-1. **Auto-confirmation prompts for protected directories** (the residual range Claude Code keeps even under `bypassPermissions`)
-2. **PreToolUse hooks** (run even under `bypassPermissions`, can block a tool call by exiting with code 2; take precedence over allow rules). The following hooks are deployed for the Dispatcher:
-   - `block-dispatcher-out-of-scope.sh` — restricts Edit/Write targets to `.dispatcher/`, `.state/`, and `knowledge/raw/YYYY-MM-DD-{topic}.md`. Direct edits to application code (`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/`, etc.) are blocked with exit 2
-   - `block-git-push.sh` — forbids direct push from the Dispatcher (push goes through the Lead)
-   - `block-dangerous-git.sh` — blocks `git push --force` / `git reset --hard` / `git branch -D`
-   - `block-workers-delete.sh` — blocks recursive deletion of the workers directory
-   - `block-no-verify.sh` — blocks `--no-verify`-style verification bypasses
-3. **Self-discipline through the role contract** (the business-scope declarations in the Dispatcher's `CLAUDE.md`, plus lifecycle oversight by the Lead)
+1. **Automatic confirmation prompts for protected directories** (only the scope Claude Code itself preserves even under `bypassPermissions`)
+2. **PreToolUse hooks** (these still run under `bypassPermissions`, and can block tool calls with exit code 2; they take precedence over allow rules). The following hooks are already deployed for the Dispatcher:
+   - `block-dispatcher-out-of-scope.sh` — Restricts Edit/Write targets to `.dispatcher/`, `.state/`, and `knowledge/raw/YYYY-MM-DD-{topic}.md`. Direct edits to application code (`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/`, etc.) are blocked with exit 2
+   - `block-git-push.sh` — Prohibits direct push from the Dispatcher (push goes through the Lead)
+   - `block-dangerous-git.sh` — Blocks `git push --force`, `git reset --hard`, and `git branch -D`
+   - `block-workers-delete.sh` — Blocks recursive deletion of the workers directory
+   - `block-no-verify.sh` — Blocks verification bypass via `--no-verify`-style flags
+3. **Self-discipline through the role contract** (the declared scope of work in the Dispatcher's `CLAUDE.md`, plus lifecycle monitoring by the Lead)
 
-Layer (2) — PreToolUse hooks — does run under bypass, so history-rewriting commands like `git push --force` and unintended writes into application code are technically blocked. That said, hooks loose-match against Bash command strings, so they don't catch every extreme workaround such as function definitions or routing through shell variables — which is why "self-discipline through the role contract" remains a complementary necessity. Honest framing: "multiple layers of net are stacked, but each layer has wide gaps."
+Because PreToolUse hooks in (2) remain active even in bypass mode, history-rewriting commands such as `git push --force` and accidental writes to application code are still technically blocked. However, hooks are only loose matches against Bash command strings and do not catch extreme evasions through function definitions or shell variables. In that sense, "self-discipline based on the role contract" is still a necessary complement. Put plainly: there are multiple overlapping nets, but each net has coarse holes.
 
-**Alternative**: each role gets a `settings.local.json` distributed via `/org-setup`, with `tools/role_configs_schema.json` as the canonical source. Allow entries and required hooks are registered in the schema, and CI (`tools/check_role_configs.py`) detects drift. The Dispatcher's `bypassPermissions` exception will be re-evaluated as soon as `auto` mode becomes available on Sonnet.
-
----
-
-## 2. We don't ship a fixed pool of pre-defined roles (front-end / back-end / QA agents, etc.)
-
-**What we don't do**: provide a pre-defined pool of "front-end agent", "back-end agent", and similar role archetypes.
-
-**Why**: claude-org generates **per-task** working directories and `CLAUDE.md` files freshly each time. A pre-baked role pool assumes "the role is decided before the task arrives", which conflicts with our discipline of remaking the environment per task. Even within "front-end work", the required permissions and context vary by repository, branch, and verification depth; reusing a stock role tends to produce contextual drift.
-
-**Alternative**: `/org-delegate` derives a Worker per task and writes a task-specific `CLAUDE.local.md` into its working directory. If you want to repeat **routine tasks**, factor them out as **work skills** rather than as roles (`/org-retro` → skill candidate queue → `skill-creator`).
+**Alternative**: For each role, use the merged schema from the `claude-org-runtime` framework schema and the ja-side `tools/org_extension_schema.json` as the canonical source, and distribute `settings.local.json` through `/org-setup`. Permission entries and hooks are registered in the schema, and CI (`tools/check_role_configs.py`) detects configuration drift. The Dispatcher `bypassPermissions` exception itself will be re-evaluated once Sonnet supports `auto` mode.
 
 ---
 
-## 3. We don't run massive parallelism (20+ agents)
+## 2. Do not provide a fixed role pool (frontend / backend / QA agents, etc.)
 
-**What we don't do**: farm-style operation in which 20–100 agents run in parallel and each tries the same task.
+**What we do not do**: Provide a pre-defined role pool such as "frontend agent" or "backend agent."
 
-**Why**: claude-org sits in the **3–5 Workers / quality-first** position. Massive parallelism is a "swing for hits at scale" approach that produces more pull requests and commits than human reviewers can keep up with. From the operational-discipline viewpoint — rollback, reproducibility, knowledge accumulation — keeping the Worker count small and reviewing via `/org-retro` is what makes the self-improvement loop spin.
+**Why**: claude-org is designed to generate a working directory and `CLAUDE.md` **per task**. A pre-defined role pool assumes the role is decided before the task arrives, which conflicts with per-task discipline, where the environment is rebuilt for each task. Even for the same "frontend work," the required permissions and context differ by repository, branch, and validation depth. Reusing standardized roles makes context drift more likely.
 
-**Alternative**: the Dispatcher today can spawn multiple Workers concurrently, but treat 3–5 as the peak guideline. If you want to handle a large batch of similar tasks, don't multiplex Workers — bundle the tasks into a single Worker and follow progress through the journal.
-
----
-
-## 4. We don't generate project scaffolds from natural language (auto-create app)
-
-**What we don't do**: features that accept "build me a Twitter clone" and generate a project scaffold from natural language.
-
-**Why**: claude-org is an operational-discipline framework, not a scaffold generator. Scaffold generators shorten "the first five minutes"; claude-org's main field — "maintaining discipline over the long run of operation" — is a different concern. Mixing the two into a single tool blurs both responsibilities.
-
-**Alternative**: if you need a scaffold, use the dedicated tool (`create-react-app`, `cargo new`, `npm init`, etc.), then start operating it with claude-org afterwards.
+**Alternative**: `/org-delegate` derives a Worker per task and generates `CLAUDE.local.md` (a task-specific instruction file) inside that working directory each time. If you want to handle "standardized tasks," extract them as **work skills**, not roles (`/org-retro` → skill candidate queue → `skill-creator`).
 
 ---
 
-## 5. We don't switch between providers (Aider / Codex / Gemini, etc.)
+## 3. Do not run large-scale parallelism (20+ agents)
 
-**What we don't do**: make non-Claude language models (OpenAI / Gemini / DeepSeek, etc.) interchangeable as the primary Worker.
+**What we do not do**: Adopt a farm-style model that runs 20 to 100 agents in parallel, each exploring the same task by trial and error.
 
-**Why**: claude-org takes a **Claude-only** stance. Multi-provider support is appealing on paper, but each provider has a different permission model, hook mechanism, MCP-server compatibility, context-window shape, and tool-call spec — and "the framework enforces discipline" thins out by exactly the number of providers you support. Going all-in on Claude Code is what lets us fully exploit Claude-Code-native discipline: the `renga-peers` MCP server, hooks, configuration schemas, sandboxing, and so on.
+**Why**: claude-org targets **3 to 5 Workers with a quality-first bias**. Large-scale parallelism is an approach of brute-forcing with volume and winning if even one path hits. It produces more pull requests and commits than a human reviewer can realistically track. From the perspective of operational discipline, rollback, reproducibility, and knowledge accumulation, limiting the number of Workers and reflecting through `/org-retro` creates a sustainable self-improvement loop.
 
-**Alternative**: bringing in another provider as an **optional review hook** — for example via `codex:rescue` or a `codex` self-review gate — for review or second-opinion purposes is in scope (a complement, not a star). If you want to swap providers in the primary role, a provider-agnostic agent framework (Aider / LangGraph / CrewAI, etc.) is the better fit.
-
----
-
-## 6. We don't host a PTY or terminal-multiplexer layer
-
-**What we don't do**: keep low-level implementations such as pseudo-terminal (PTY) control, pane splitting, or keystroke injection inside this repository.
-
-**Why**: PTY and terminal-multiplexing concerns are separated into **Layer 3 = `renga`** (`suisya-systems/renga`). claude-org is Layer 4, "the operational layer that drives Claude Code as-is", and defers low-level terminal control to the dependency. Hosting both in one repository would cause the operational-discipline track and the PTY-fix track to interfere, slowing release cadence.
-
-**Alternative**: pane operations, structured pane spawning, and peer communication go through the `renga-peers` MCP server (provided by Layer 3, 14 tools).
+**Alternative**: The current Dispatcher can spawn multiple Workers concurrently, but even at peak, use 3 to 5 as the practical upper bound. If you want to process many similar tasks in bulk, it is better to give the batch to one Worker and track progress through the journal than to multiply Workers.
 
 ---
 
-## 7. We don't ship a benchmark suite (SWE-Bench scores, etc.)
+## 4. Do not generate project scaffolds from natural language (Auto-create app)
 
-**What we don't do**: features that run agent-benchmark suites and publish scores.
+**What we do not do**: Provide a feature that generates a project scaffold from natural language, such as "build a Twitter clone."
 
-**Why**: claude-org is not an agent-performance benchmarking framework. We do care about **whether the operational logic is correct** — "did the Lead's instruction get carried out by the Worker the way it should have?", "did raw notes graduate to curated knowledge correctly?" — but "what score Claude Code gets on a benchmark" is an evaluation of Claude Code itself, outside claude-org's scope.
+**Why**: claude-org is an operations-discipline framework, not a scaffold generator. Scaffold generation is a tool for shortening the first five minutes. claude-org's primary field is maintaining discipline in long-term operation, which is a different concern. Mixing both into one tool blurs the responsibility of each.
 
-**Alternative**: use Anthropic's published numbers or dedicated OSS (`swe-bench`, etc.) for SWE-Bench, HumanEval, and the like.
-
----
-
-## 8. We don't ship a stack-by-stack prompt template library
-
-**What we don't do**: bundle stack-specific prompt template libraries ("Next.js prompts", "Rails prompts", "Django prompts", etc.) with this framework.
-
-**Why**: claude-org's design centers on **building project-specific context**. The repository-level `CLAUDE.md` and the per-task `CLAUDE.local.md` are the canonical context; stack-by-stack prompts tend toward "lowest-common-denominator generic text" and dilute project-specific context.
-
-**Alternative**: if you want a stack-specific prompt, write it into the project's own `CLAUDE.md`, or reference an external prompt library (Awesome-Prompts-style) separately.
+**Alternative**: If you need scaffolding, use dedicated tools such as `create-react-app`, `cargo new`, or `npm init`, then start organizational operation with claude-org afterward.
 
 ---
 
-## 9. We don't adopt the `tools` front-matter form for permission declarations
+## 5. Do not support multi-provider switching (Aider / Codex / Gemini, etc.)
 
-**What we don't do**: an official form in which a skill or agent definition file declares tool permissions per-file via front matter such as `tools: [Read, Edit, Bash]`.
+**What we do not do**: Allow non-Claude Code language models (OpenAI / Gemini / DeepSeek, etc.) to be swapped in as primary Workers.
 
-**Why**: claude-org controls permissions per task via **`settings.local.json` plus deny hooks**. A front-matter declaration is static and can't express the dynamic boundary of "which Worker, when, in which working directory". The same skill needs different permissions in different tasks, so we make the decision dynamic on the role × task axes.
+**Why**: claude-org is positioned as **Claude-only**. Multi-provider support looks attractive, but permission models, hook mechanisms, MCP server compatibility, context-window shape, and tool-calling specifications all differ by provider. The more providers you support, the weaker the framework's core property of enforcing discipline becomes. By integrating deeply with Claude Code, claude-org can fully use Claude Code-native discipline mechanisms such as the `renga-peers` MCP server, hooks, configuration schemas, and sandboxing.
 
-**Alternative**: when you need to extend tool permissions, update `tools/role_configs_schema.json` (the propagation order is schema → `permissions.md` → actual `settings.local.json`). For drift handling see the `tools/check_role_configs.py` section in [docs/getting-started.md](getting-started.md).
-
----
-
-## 10. We don't allow cross-cutting access via `--add-dir` by default
-
-**What we don't do**: let a Worker freely access locations outside its own working directory (other Workers' working trees, the home directory outside the repo, etc.).
-
-**Why**: claude-org treats **the working-directory boundary as a hard boundary**. Sharing trees or state across Workers introduces concurrent-work conflicts and accidents like overwriting another Worker's commits. Every relaxation of the boundary increases the cost of tracking "who saw what".
-
-**Alternative**: anything that genuinely needs to be shared belongs in Lead-managed areas such as `knowledge/curated/` or `registry/`, and is rewritten only via the Dispatcher or the Lead.
+**Alternative**: Calling other providers as **optional review hooks** is in scope only for review or second-opinion use cases, such as `codex:rescue` or a `codex` self-review gate. They are assistants, not the primary system. If you want to use multiple providers as first-class workers, a general-purpose agent framework such as Aider, LangGraph, or CrewAI is a better fit.
 
 ---
 
-## 11. We don't reimplement the bundled official skills (`/simplify`, etc.)
+## 6. Do not include a PTY or terminal-multiplexer layer
 
-**What we don't do**: rebuild the functionality of skills bundled with Claude Code (`simplify` / `init` / `review` / `security-review`, etc.) inside claude-org.
+**What we do not do**: Carry low-level implementations such as pseudo-terminal (PTY) control, pane splitting, or keystroke injection in this repository.
 
-**Why**: we lean on the official skills. Reimplementing them costs follow-up effort each time the official versions update, and from a user's standpoint it becomes hard to tell "what's different from official". claude-org's scope is limited to the operational-discipline layer that the official skills don't cover.
+**Why**: The PTY and terminal-multiplexing layer is separated into **Layer 3 = `renga`** (`suisya-systems/renga`). claude-org is Layer 4, the operational layer that drives Claude Code directly, and delegates low-level terminal control to its dependency. If both layers live in the same repository, operational-discipline changes and PTY-layer bug fixes interfere with each other and slow release velocity.
 
-**Alternative**: use the official skills directly. Only when an organization-context wrapper around an official skill is needed do we wrap it thinly under the `/org-*` family (e.g. `/org-retro` is a retrospective wrapper organized for the org).
+**Alternative**: Use the `renga-peers` MCP server (provided by Layer 3, 14 tools) for pane operations, structured pane creation, and peer communication.
 
 ---
 
-## 12. We don't expose MCP over HTTP for external integrations
+## 7. Do not include a benchmark suite (SWE-Bench scores, etc.)
 
-**What we don't do**: expose an MCP server over HTTP so it can be reached from a browser extension or an IDE on a different machine.
+**What we do not do**: Provide benchmark execution or score publishing for agent-performance comparison.
 
-**Why**: claude-org's MCP server is consolidated into `renga-peers` (over local stdio), and the canonical communication model is **same-tab P2P**. An HTTP exposure brings in a separate layer of concerns — auth, rate limiting, TLS, network boundary — and breaks the simple guarantee of "operational discipline that completes locally".
+**Why**: claude-org is not an agent-performance comparison framework. It does care about the **correctness of operational logic**, such as whether Lead instructions were executed correctly by Workers, or whether raw knowledge was promoted properly into curated knowledge. But "what score Claude Code gets on a benchmark" is an evaluation of Claude Code itself, outside claude-org's scope.
 
-**Alternative**: monitor from another machine or another tab via the state files (`.state/`) and the dashboard (`/org-dashboard`). If real-time external integration is needed, you can stand up an additional HTTP MCP server alongside, but that responsibility lies outside claude-org proper.
+**Alternative**: For standard benchmarks such as SWE-Bench or HumanEval, use Anthropic-side evaluation or dedicated OSS such as `swe-bench`.
+
+---
+
+## 8. Do not bundle stack-specific prompt templates
+
+**What we do not do**: Ship framework-specific prompt template collections with the framework, such as templates for Next.js, Rails, or Django.
+
+**Why**: claude-org is designed around **project-specific context construction**. `CLAUDE.md` and the working directory's `CLAUDE.local.md` are the project-specific canonical sources. Stack-specific prompts tend to collapse into generic common-denominator text and dilute project-specific context.
+
+**Alternative**: If you need stack-specific prompts, write them in the project's `CLAUDE.md` or refer separately to external prompt collections.
+
+---
+
+## 9. Do not use a `tools` frontmatter permission-declaration format
+
+**What we do not do**: Provide an official format where tool permissions are declared per file in frontmatter, such as `tools: [Read, Edit, Bash]` in skill or agent definition files.
+
+**Why**: claude-org controls permissions **per task through `settings.local.json` + deny hooks**. Frontmatter-style permission declarations are static and cannot express dynamic boundaries like which Worker is acting, when, and in which working directory. Even with the same skill, permission boundaries change by task, so the design decides them dynamically across two axes: role and task.
+
+**Alternative**: If you need to add tool permissions, update `tools/org_extension_schema.json` for ja-specific entries. The framework schema itself is the SoT in the `claude-org-runtime` package, and the rule-addition flow is schema → documentation → actual `settings.local.json`. For drift-remediation procedure, see the `tools/check_role_configs.py` section in [docs/getting-started.md](getting-started.md).
+
+---
+
+## 10. Do not allow cross-boundary access via `--add-dir` by default
+
+**What we do not do**: Allow Workers to freely access locations outside their own working directory, such as another Worker's work area or a home directory outside the repository.
+
+**Why**: claude-org treats the **working-directory boundary as an enforced boundary**. If Workers share working trees or state, concurrent work creates conflicts and risks accidentally overwriting another Worker's commit. Every time the boundary is loosened, the cost of tracking who saw what increases.
+
+**Alternative**: Put shared information in Lead-managed areas such as `knowledge/curated/` or `registry/`, and update it only through the Dispatcher or Lead.
+
+---
+
+## 11. Do not reimplement officially bundled skills (such as `/simplify`)
+
+**What we do not do**: Reimplement features from Claude Code's officially bundled skills (`simplify`, `init`, `review`, `security-review`, etc.) on the claude-org side.
+
+**Why**: The policy is to build on top of official skills. Reimplementation adds follow-up cost every time the official version changes, and from the user's perspective it becomes unclear what differs from the official version. claude-org keeps its scope limited to the operations-discipline layer that the official system does not provide.
+
+**Alternative**: Use official skills as they are. Only when you need a wrapper that invokes an official skill in an organizational-operations context should it be wrapped lightly as an `/org-*` command (for example, `/org-retro` is an organizational wrapper for retrospectives).
+
+---
+
+## 12. Do not provide external integration through MCP-over-HTTP
+
+**What we do not do**: Expose the MCP server externally over HTTP so that browser extensions or IDEs on other machines can connect.
+
+**Why**: claude-org's MCP server is consolidated into `renga-peers` (over local stdio), and **same-tab P2P** is the canonical communication model. Exposing it over HTTP introduces a different layer of concerns such as authentication, traffic control, TLS, and network boundaries, breaking the simple guarantee of local-only operational discipline.
+
+**Alternative**: For monitoring from another machine or another tab, use state files (`.state/`) and the dashboard (`/org-dashboard`). If real-time external integration is required, you can design a separate MCP HTTP server alongside it, but that is outside the responsibility of claude-org itself.
 
 ---
 
 ## Revision history
 
-- 2026-04-27: Initial version (split out alongside the README rewrite in Issue #107)
+- 2026-04-27: Initial version (split out alongside the full README rewrite in Issue #107)
+---

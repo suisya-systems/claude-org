@@ -1,132 +1,110 @@
 ---
 name: skill-audit
 description: >
-  Skill inventory audit (deprecation candidates / merge candidates / owner-missing check).
-  Fires on a state-based trigger: only runs when the candidate queue
-  knowledge/skill-candidates.md has 5 or more pending entries, or when the
-  number of work-skills under .claude/skills/ (excluding org-*) reaches 20 or more.
-  Does not fire on time-based /loop (avoids polluting raw logs on days with no change).
+  Skill inventory pass (deprecation / consolidation / owner-missing
+  checks). Fires on a state-based trigger only: when the candidate
+  queue knowledge/skill-candidates.md has 5 or more pending entries,
+  OR when the work-skill count under .claude/skills/ (excluding org-*)
+  reaches 20 or more. Not started by a time-based /loop (avoids
+  polluting raw logs on quiet days).
 ---
 
-# skill-audit: skill inventory audit
+# skill-audit: skill inventory pass
 
-To prevent noise in `org-delegate`'s work-skill search as the skill count grows,
-the inventory is audited on a **state-based** trigger rather than periodically.
+To prevent the work-skill search inside `org-delegate` from getting noisy as the skill count grows, do an inventory pass on a **state-based** trigger rather than periodically.
 
-The real concern is not the skill count itself, but "noise on the search surface."
-This skill mechanically checks three angles (deprecation / merge / owner-missing)
-and sends consolidated change proposals to the Lead's Claude.
-It never deletes or modifies skills automatically.
+The real concern is "search-surface noise", not the raw skill count.
+This skill mechanically checks 3 dimensions (deprecation / consolidation / owner-missing) and sends a consolidated change proposal to the Lead Claude. It never deletes or modifies a skill on its own.
 
-## Step 1: Trigger condition check (state-based)
+## Step 1: trigger condition (state-based)
 
-Exit immediately (without leaving a log) unless one of the following holds.
+If neither condition below is met, **exit immediately** (no log, no report).
 
 ```bash
-# Number of pending entries in the candidate queue
+# pending entries in the candidate queue
 cand_count=$(grep -c '^- \*\*status\*\*: pending' knowledge/skill-candidates.md 2>/dev/null || echo 0)
 
-# Number of work-skills (excludes org-*; aligns with the work-skill search target that produces noise)
+# work-skill count (excluding org-*; aligns with the work-skill search surface that is the noise source)
 work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
   | grep -v '/org-' | wc -l)
 ```
 
-- Continue if `cand_count >= 5` **or** `work_skill_count >= 20`
-- Exit otherwise (no report needed in this case)
+- Continue if `cand_count >= 5` **or** `work_skill_count >= 20`.
+- Otherwise exit (no report needed).
 
-Rationale for the numbers: defaults are N=5 / M=20. Adjust via PR if they
-become heavy in actual operation.
-Rationale for excluding `org-*`: the noise source is `org-delegate`'s work-skill
-search, and the size of `org-*` does not directly affect that search noise.
+Rationale for the numbers: N=5 / M=20 are the defaults. Adjust via PR if operations show drift.
+Why exclude `org-*`: the noise source is `org-delegate`'s work-skill search; the count of `org-*` skills does not directly affect search noise.
 
-## Step 2: Identify deprecation candidates
+## Step 2: enumerate deprecation candidates
 
-For each skill, evaluate the following. **Use only currently observable items**
-for mechanical judgment; treat unobservable items as "needs review" and leave
-them to human judgment. See `references/audit-checklist.md` for details.
+For each skill, evaluate the items below. Use **only what is observable today** for the mechanical check; defer everything else as "needs review" for human judgment. See `references/audit-checklist.md` for details.
 
-Observable (usable for mechanical judgment):
-- A clear divergence between the description and the Step contents in `SKILL.md`
-  body (assessable from inside the file).
-- Grep `knowledge/curated/` / `knowledge/raw/` / `.state/workers/` for `{skill-name}`
-  and find zero mentions in the last 90 days (within this project's observation
-  scope only).
+Observable (mechanical):
+- An obvious mismatch between the description and the body's Step sections (self-contained inside the skill).
+- grep `knowledge/curated/` / `knowledge/raw/` / `.state/workers/` for `{skill-name}` and find 0 mentions in the last 90 days (within this project's observable surface).
 
-Unobservable (treated as "needs review"; cannot be used for deprecation):
-- `org-delegate` only embeds work-skills into instructions and does not persist
-  whether they were "actually adopted." Mention searches therefore yield only
-  "matched in search" information.
-- Many existing skills lack `origin.task_id`, so reuse-judgment has no anchor.
-  Use only origin-tagged skills for the "no reuse" judgment; skip origin-less ones.
+Not observable ("needs review"; not usable for deprecation alone):
+- `org-delegate` only embeds a matched work-skill in instructions; "did the worker actually adopt it" is not persisted.
+  → reference search is only "showed up in search" granularity.
+- Many existing skills do not have `origin.task_id`, so there is no reuse-detection anchor.
+  → the "not reused" verdict applies only to origin-tagged skills; skip otherwise.
 
-**No deprecation decision is made. Items only get added to the proposal list**;
-final judgment is left to a human. Sections 1.1 / 1.2 / 1.3 of audit-checklist.md
-follow the same policy in detail.
+**Do not decide deprecation. Just put it on the proposal list** for the human to make the final call.
+audit-checklist.md sections 1.1 / 1.2 / 1.3 follow the same policy.
 
-## Step 3: Identify merge candidates
+## Step 3: enumerate consolidation candidates
 
-Pair-wise across skills, check for the following:
+For each pair of skills, check:
 
-- Subject words (verb / object) overlap in the descriptions
-- Triggers (or fire conditions inside descriptions) overlap
-- One is a specialization of the other and could be subsumed by parameter
-  substitution
+- The principal terms (verb / object) of the description overlap.
+- triggers (or trigger conditions in the description) overlap.
+- One is a specialization of the other and could be replaced via a parameter.
 
-Pairs with merge suspicion are listed as "merge candidates."
-The actual merge decision is made by a human, so this step only proposes.
+Pairs that look like duplicates are listed as "consolidation candidates". The actual consolidation decision is made by the human; this step lists candidates only.
 
-## Step 4: Identify owner-missing skills
+## Step 4: enumerate owner-missing skills
 
 Read every skill's SKILL.md frontmatter and check:
 
-- Skills with no `owner:` or `maintainer:` field
-- Or where the field is an empty string
+- Skills missing both `owner:` and `maintainer:` fields.
+- Or those that have one of them but with an empty value.
 
-These are listed as "owner missing."
-It is expected that all existing skills in this project currently lack an owner;
-the first audit run will likely produce a bulk proposal.
+These are listed as "owner missing".
+All existing skills in this project are currently without an owner; the first audit run is expected to produce a single batch proposal for them.
 
-## Step 5: Report
+## Step 5: report
 
-Send to the Lead's Claude via `renga-peers` `send_message(to_id="secretary", ...)`.
+Send to the Lead Claude via `renga-peers` `send_message(to_id="secretary", ...)`.
 
 ```
-[skill-audit] Inventory result
+[skill-audit] inventory result
 - Deprecation candidates: {n} ({skill-name} list)
-- Merge candidates: {m} pairs ({skill-a} × {skill-b} list)
+- Consolidation candidates: {m} pair(s) ({skill-a} × {skill-b} list)
 - Owner missing: {k} ({skill-name} list)
 
-Trigger condition: cand_count={cand_count} / skill_count={skill_count}
-Details: see the appended list at the end of this message for the rationale.
+Trigger: cand_count={cand_count} / skill_count={skill_count}
+Detail: see the list at the end of this message for evidence.
 
-After human approval, please carry out the deletion / merge / owner addition.
+After human approval, perform deletion / consolidation / owner annotation.
 No automatic changes have been made.
 ```
 
-Even when there are zero candidates (a clean state), still report:
-"audit ran, no change proposals." Since the next run will not happen until the
-threshold is exceeded again, recording the fact that the audit ran has value
-even at zero.
+Even if the candidates are empty (clean state), still report: "ran inventory, no proposals". Since the next run only occurs when the threshold trips, recording "we ran" is still useful.
 
 ## Trigger paths
 
-This skill never runs autonomously. It is invoked via one of the following:
+This skill does not fire autonomously. It runs from one of:
 
-1. `org-curate` Step 6 (skill-audit firing check) calls it when thresholds are
-   met (recommended path)
-2. The Lead manually invokes it after looking at `skill-candidates.md`
-3. A human asks "do an inventory audit"
+1. `org-curate` Step 6 (skill-inventory trigger check) — invokes when the threshold is met (recommended path).
+2. The Lead manually invokes it after looking at `skill-candidates.md`.
+3. The human asks "do an inventory".
 
-Time-based starts such as `/loop` are not used.
+Never fired from a time-based trigger like `/loop`.
 
-## Why automatic changes are avoided
+## Why no automatic changes
 
-- A wrong deprecation produces a "no usable skill" state on the `org-delegate`
-  side (degrading dispatch precision).
-- A merge requires reconciling description / triggers / steps and cannot be
-  done mechanically.
-- For owner addition, manual confirmation is the lightest workflow (automating
-  it brings little benefit).
+- A wrong deprecation creates "no skill is available" on the `org-delegate` side (worse delegation precision).
+- Consolidation requires aligning descriptions / triggers / procedures; cannot be done mechanically.
+- Owner annotation is the lightest human-confirmation operation (automating only this part has a small payoff).
 
-For these reasons, this skill **stops at proposal**, and changes are made
-manually by the Lead after human approval.
+So this skill **stops at the proposal**; changes happen via human approval and the Lead's manual edits.

@@ -72,7 +72,7 @@ After the MCP call, the Dispatcher transitions `.state/workers/worker-{task_id}.
 
 ## Where Workers report (important)
 
-- A Worker reports **to the Lead** (the Secretary pane). Workers discover the Lead automatically via `mcp__renga-peers__list_peers`.
+- A Worker reports **to the Lead** (the Lead pane). Workers discover the Lead automatically via `mcp__renga-peers__list_peers`.
 - Do not tell a Worker to report back to the Dispatcher.
 - When sending instructions, reinforce: "Report to the Lead. Do not report to the Dispatcher."
 

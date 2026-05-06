@@ -2,7 +2,7 @@
 
 State of every artifact that participates in the en ↔ ja translation pipeline.
 
-Bootstrap source: `suisya-systems/claude-org-ja@926df3943cb5df2d6ee419b020351178a96a88d1`. The en repo was transplanted from this ja commit; rows below cover every file at that snapshot plus every file currently tracked in en.
+Bootstrap source: `suisya-systems/claude-org@926df3943cb5df2d6ee419b020351178a96a88d1`. The en repo was transplanted from this ja commit; rows below cover every file at that snapshot plus every file currently tracked in en.
 
 ## Legend
 
