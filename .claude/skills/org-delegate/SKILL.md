@@ -96,7 +96,7 @@ python tools/gen_delegate_payload.py apply \
 #    → mcp__renga-peers__send_message(to_id="dispatcher", message=<message>)
 ```
 
-`apply` performs **T1 reservation only** (`runs.status='queued'`). Activation into Active Work Items is Dispatcher T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)), so this skill does not touch it. On failure, leave the queued entry in place and ask the Secretary for judgment.
+`apply` performs **T1 reservation only** (`runs.status='queued'`). Activation into Active Work Items is Dispatcher T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)), so this skill does not touch it. On failure, leave the queued entry in place and ask the Lead for judgment.
 
 ### Common flags
 
@@ -118,7 +118,7 @@ The Lead extracts "target files" from the task description: paths explicitly nam
 
 ### When the standard path returns unexpected output
 
-If the standard path (`gen_delegate_payload.py apply`) returns unexpected output such as a wrong Pattern decision, resolver error, or brief inconsistency, the Secretary must **not manually reproduce the same work**. File an Issue for the resolver bug and pause delegation for that task until the resolver is fixed. Manual fallback is out of scope for this skill. In environments without the CLI, only the `--skip-settings` flag is allowed. A museum copy of the historical handwritten path exists at `docs/legacy/hand-typed-delegate-path.md`, but it must not be referenced in standard operations.
+If the standard path (`gen_delegate_payload.py apply`) returns unexpected output such as a wrong Pattern decision, resolver error, or brief inconsistency, the Lead must **not manually reproduce the same work**. File an Issue for the resolver bug and pause delegation for that task until the resolver is fixed. Manual fallback is out of scope for this skill. In environments without the CLI, only the `--skip-settings` flag is allowed. A museum copy of the historical handwritten path exists at `docs/legacy/hand-typed-delegate-path.md`, but it must not be referenced in standard operations.
 
 ## Step 3 / 4: Worker Launch, Instruction Delivery, State Recording (run by the Dispatcher)
 
@@ -156,7 +156,7 @@ worker → Secretary peer message
 
 #### 0. Requests for judgment, scope expansion, blockers (identify first, highest priority)
 
-→ Trigger [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md). The Secretary does not give first-line approval.
+→ Trigger [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md). The Lead does not give first-line approval.
 
 #### 1. Progress reports
 

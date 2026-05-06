@@ -12,8 +12,8 @@ claude-org has the following characteristics:
 | Characteristic | Description |
 |---|---|
 | **Multi-instance coordination** | Four types of Claude Code instances coordinate: Lead, Dispatcher, Curator, and Worker |
-| **Role separation** | Clear division of labor across Secretary (interaction), Dispatcher (pane management), Curator (knowledge organization), and Worker (execution) |
-| **Resident roles** | Secretary/Dispatcher/Curator stay resident; Workers launch on demand |
+| **Role separation** | Clear division of labor across Lead (interaction), Dispatcher (pane management), Curator (knowledge organization), and Worker (execution) |
+| **Resident roles** | Lead/Dispatcher/Curator stay resident; Workers launch on demand |
 | **State management** | Three-layer structure: journal (JSONL) + snapshot (Markdown) + suspend |
 | **Self-improvement loop** | Worker → raw findings → Curator organization → improvement proposal → user approval → skill/`CLAUDE.md` update |
 | **Communication model** | `renga-peers` MCP (same-tab P2P push) + `CLAUDE.md` (persistent baseline) |
@@ -60,7 +60,7 @@ claude-org has the following characteristics:
 
 | Project | Coordination model | Details |
 |---|---|---|
-| **claude-org** | **Hierarchical + P2P** | Hierarchical delegation from Secretary → Dispatcher → Worker, plus P2P communication over `renga-peers` MCP (same-tab scope) |
+| **claude-org** | **Hierarchical + P2P** | Hierarchical delegation from Lead → Dispatcher → Worker, plus P2P communication over `renga-peers` MCP (same-tab scope) |
 | CrewAI | Role-based coordination | Define role/backstory/goal on each agent and coordinate them as a crew. Sequential / Hierarchical processes |
 | LangGraph | Graph-based | Define workflows as nodes (agents) and edges (transitions). Supports branching and loops |
 | AutoGen | Conversation-based | Coordination through message passing between agents. Multi-agent conversation via GroupChat |
@@ -79,7 +79,7 @@ claude-org has the following characteristics:
 
 | Project | Role model | Resident roles | Dynamic roles |
 |---|---|---|---|
-| **claude-org** | **Secretary / Dispatcher / Curator / Worker** | **3 (Sec/Fore/Cur)** | **Worker (on demand)** |
+| **claude-org** | **Lead / Dispatcher / Curator / Worker** | **3 (Sec/Fore/Cur)** | **Worker (on demand)** |
 | CrewAI | User-defined roles (Manager / Researcher, etc.) | None (run-time only) | All agents |
 | LangGraph | Defined as nodes (no fixed names) | None | All nodes |
 | AutoGen | UserProxy / Assistant / GroupChatManager, etc. | None | All agents |
@@ -92,7 +92,7 @@ claude-org has the following characteristics:
 | Agent Zero | Parent agent + child agents | Parent (1) | Child agents |
 | OpenSpace | Single agent (no role separation) | — | — |
 
-**claude-org differentiation**: The combination of **multiple resident roles** (3 types) and a **clear organizational structure** (Secretary-Dispatcher-Curator-Worker) is unique. In particular, Curator as a resident process dedicated to knowledge organization is specific to claude-org.
+**claude-org differentiation**: The combination of **multiple resident roles** (3 types) and a **clear organizational structure** (Lead-Dispatcher-Curator-Worker) is unique. In particular, Curator as a resident process dedicated to knowledge organization is specific to claude-org.
 
 ### 3.3 State Management
 
@@ -197,7 +197,7 @@ The survey confirms the following differentiators in claude-org:
 
 ### 6.1 Characteristics Not Found in Existing OSS
 
-1. **Resident multi-role organization**: No other example uses an organizational structure with three resident roles: Secretary, Dispatcher, and Curator
+1. **Resident multi-role organization**: No other example uses an organizational structure with three resident roles: Lead, Dispatcher, and Curator
 2. **Self-improvement loop with human approval**: Multiple frameworks support self-improvement, but only claude-org builds in human approval as a safety valve
 3. **Instruction duplication**: The combination of `CLAUDE.md` (persistent baseline) and `renga-peers` messages (real-time supplement) is distinctive
 4. **Progressive disclosure**: A strategy to minimize context consumption through the skill system

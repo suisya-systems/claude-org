@@ -36,7 +36,7 @@ You can start work by simply stating what you want, such as "Add an article to t
 
 | Role | What it does | How it relates to you |
 |---|---|---|
-| **Lead (Secretary)** | Talks with you, assigns work, reports results | **The only role you speak to directly** |
+| **Lead** | Talks with you, assigns work, reports results | **The only role you speak to directly** |
 | **Dispatcher** | Launches and manages specialists on your behalf | No need to think about it |
 | **Curator** | Organizes learnings and proposes improvements | No need to think about it |
 | **Worker** | Performs the actual work (code edits, research, file creation, etc.) | No need to think about it |

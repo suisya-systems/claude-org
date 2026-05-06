@@ -23,11 +23,11 @@ You are the Lead for this organization. The only point of contact with humans.
 
 ## Always Return an Ack When Receiving a Worker Peer Message (Issue #312)
 
-When a completion / progress / Codex round / escalation-for-decision message arrives from a Worker over `renga-peers`, the Secretary must **first send an ack to the worker** with `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)`. Without an ack, the worker stays idle in "keep pane open; waiting for next instruction" and deadlocks. See the canonical event flow and ack examples in [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) and [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md). **ack != user approval**: only issue push / `gh pr create` / `tools/pr-watch.*` after explicit user approval.
+When a completion / progress / Codex round / escalation-for-decision message arrives from a Worker over `renga-peers`, the Lead must **first send an ack to the worker** with `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)`. Without an ack, the worker stays idle in "keep pane open; waiting for next instruction" and deadlocks. See the canonical event flow and ack examples in [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) and [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md). **ack != user approval**: only issue push / `gh pr create` / `tools/pr-watch.*` after explicit user approval.
 
 ## Escalate Worker Decision Requests to Humans
 
-If any of the following messages arrive from a Worker over `renga-peers`, the Secretary must **always escalate to a human**. Do not give a first-pass approval or reply based on your own interpretation:
+If any of the following messages arrive from a Worker over `renga-peers`, the Lead must **always escalate to a human**. Do not give a first-pass approval or reply based on your own interpretation:
 - "Requesting approval", "requesting a decision", "confirm whether to continue", "scope expansion proposal"
 - Discovery of unexpected events, runbook deviation, block / blocker reports
 - Work-scope decisions not explicitly stated in the original instruction

@@ -1,4 +1,4 @@
-> **This document is historical reference material.** Do not consult it for Secretary / worker / dispatcher standard operations. The standard path is the merge-watch loop via `tools/pr-watch.ps1 -PR <PR>` (Windows) / `tools/pr-watch.sh --pr <PR>` (POSIX), or `python tools/run_complete_on_merge.py --pr <PR>` (Issue #317). If `tools/run_complete_on_merge.py` behaves unexpectedly, do not reproduce it manually; file an Issue and pause the affected close until the bug on the resolver / helper side is fixed. Any decision to do manual work as an exception is left to the user's explicit judgment. If Secretary reaches this document on its own, that is a protocol violation.
+> **This document is historical reference material.** Do not consult it for Lead / worker / dispatcher standard operations. The standard path is the merge-watch loop via `tools/pr-watch.ps1 -PR <PR>` (Windows) / `tools/pr-watch.sh --pr <PR>` (POSIX), or `python tools/run_complete_on_merge.py --pr <PR>` (Issue #317). If `tools/run_complete_on_merge.py` behaves unexpectedly, do not reproduce it manually; file an Issue and pause the affected close until the bug on the resolver / helper side is fixed. Any decision to do manual work as an exception is left to the user's explicit judgment. If Lead reaches this document on its own, that is a protocol violation.
 
 # Legacy hand-rolled PR-merge completion (museum copy)
 
@@ -13,7 +13,7 @@ Documenting a hand-rolled `python -c` block inside the active skill acted like a
 - **Manual `mergedAt` confirmation** — the secretary had to run `gh pr view --json mergedAt` themselves and decide whether the PR was actually merged. The merge-watch loop in `tools/pr_watch.py` handles this end to end.
 - **No completed_at** — the snippet did not pass `completed_at`, so `runs.completed_at` remained NULL and downstream "time-to-merge" queries lost data. The helper threads the PR's `mergedAt` directly into `update_run_status(..., completed_at=...)`.
 
-Today, if `tools/run_complete_on_merge.py` errors or writes a wrong row, the canonical response is to **file an Issue against the helper and pause the affected close until the underlying bug is fixed**. Whether to invoke any manual workaround at all is a user judgment call. Secretary must not self-grant the exception.
+Today, if `tools/run_complete_on_merge.py` errors or writes a wrong row, the canonical response is to **file an Issue against the helper and pause the affected close until the underlying bug is fixed**. Whether to invoke any manual workaround at all is a user judgment call. Lead must not self-grant the exception.
 
 ## Legacy procedure (verbatim, do not use)
 

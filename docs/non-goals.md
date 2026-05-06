@@ -16,7 +16,7 @@ That said, claude-org is designed to **use different permission modes intentiona
 
 | Role | `permission_mode` | Model | Notes |
 |---|---|---|---|
-| Lead (Secretary) | `auto` | Opus | Protected by narrowed permission entries in `settings.local.json` plus PreToolUse hooks |
+| Lead | `auto` | Opus | Protected by narrowed permission entries in `settings.local.json` plus PreToolUse hooks |
 | Dispatcher | `bypassPermissions` | Sonnet | **Exception**. Reason below |
 | Curator | `auto` | Opus | Minimal permissions (mostly read, plus only writes needed for knowledge organization) |
 | Worker | `auto` | Opus | Narrowed permission entries + role-specific hooks + per-task working-directory boundaries |

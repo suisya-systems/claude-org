@@ -25,7 +25,7 @@ Every line carries the two reserved keys defined by Layer 1:
 | Writer                     | Mechanism                                                             |
 |----------------------------|-----------------------------------------------------------------------|
 | Dispatcher (cwd=.dispatcher/) | `bash ../tools/journal_append.sh <event> ...` (Step D shim)        |
-| Secretary skills (cwd=repo root) | `bash tools/journal_append.sh <event> ...` or `py -3 tools/journal_append.py` for typed payload |
+| Lead skills (cwd=repo root) | `bash tools/journal_append.sh <event> ...` or `py -3 tools/journal_append.py` for typed payload |
 | `org-start` identity recovery | `bash tools/journal_append.sh secretary_identity_restored ...`     |
 
 The wrappers resolve their location via `${BASH_SOURCE[0]}` /

@@ -3,7 +3,7 @@
 > Related issue: [#99](https://github.com/suisya-systems/claude-org/issues/99)
 > Status: Phase 1 complete (PR #169), Phase 2 complete (PR for this document)
 
-This document summarizes the rationale and operating notes for replacing worker Claude `.claude/settings.local.json` permission management in claude-org from hand-written JSON by the Lead (Secretary) to a **schema-driven generator + static deny + drift CI** model.
+This document summarizes the rationale and operating notes for replacing worker Claude `.claude/settings.local.json` permission management in claude-org from hand-written JSON by the Lead to a **schema-driven generator + static deny + drift CI** model.
 
 ## Background / Motivation
 
@@ -55,7 +55,7 @@ python tools/generate_worker_settings.py \
 
 Input is only the role name plus path variables. Output is generated deterministically from the schema.
 
-### 3. Secretary PreToolUse hook (and static deny)
+### 3. Lead PreToolUse hook (and static deny)
 
 **Deny** direct edits via Claude `Write` / `Edit` tools to `workers/*/.claude/settings.local.json` (and the same under worktrees):
 

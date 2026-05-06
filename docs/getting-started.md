@@ -8,7 +8,7 @@ A guide to using claude-org.
 
 ### Prerequisites
 
-Make sure all of the following are already installed and configured. See [README.md](../README.md#クイックスタート) for details.
+Make sure all of the following are already installed and configured. See [README.md](../README.md#quick-start) for details.
 
 - **Claude Code** — the main AI agent
 - **renga** — terminal multiplexer (used for organization pane management)

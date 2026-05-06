@@ -1,4 +1,4 @@
-> **This document is historical reference material.** Do not consult it for standard Secretary / Worker / Dispatcher operations. Because this procedure itself depends on the runtime CLI, including `claude-org-runtime settings generate`, it also does not function as a fallback when the runtime CLI is down. If the standard path (`tools/gen_delegate_payload.py apply`) returns unexpected output, do not reproduce it manually; file an Issue and pause the affected delegation until the bug on the resolver / runtime side is fixed. Whether to do any manual work exceptionally is left to the user's explicit judgment; if Secretary reaches this document on its own, that is a protocol violation.
+> **This document is historical reference material.** Do not consult it for standard Lead / Worker / Dispatcher operations. Because this procedure itself depends on the runtime CLI, including `claude-org-runtime settings generate`, it also does not function as a fallback when the runtime CLI is down. If the standard path (`tools/gen_delegate_payload.py apply`) returns unexpected output, do not reproduce it manually; file an Issue and pause the affected delegation until the bug on the resolver / runtime side is fixed. Whether to do any manual work exceptionally is left to the user's explicit judgment; if Lead reaches this document on its own, that is a protocol violation.
 
 # Legacy hand-typed delegation path (museum copy)
 
@@ -6,14 +6,14 @@ This file preserves the pre-Issue-283 manual delegation procedure for archaeolog
 
 ## Why this is no longer in the active skill
 
-Documenting a hand-typed fallback inside the active skill behaved like an "easy button": when `gen_delegate_payload.py apply` produced an unexpected layout, Secretary defaulted to switching paths instead of treating the resolver output as a regression. Concrete failures historically caused by reaching for the legacy path include:
+Documenting a hand-typed fallback inside the active skill behaved like an "easy button": when `gen_delegate_payload.py apply` produced an unexpected layout, Lead defaulted to switching paths instead of treating the resolver output as a regression. Concrete failures historically caused by reaching for the legacy path include:
 
 - **Settings env mismatch** — copying `.claude/settings.local.json` from a sibling worktree without updating `WORKER_DIR`, blocking the new worker on its first Edit/Write via the boundary hook (session #13).
 - **drift_check breakage** — manually editing `.state/org-state.md` sections that are DB-owned (`Worker Directory Registry` / `Active Work Items`), causing the next snapshotter run to overwrite the changes and triggering drift_check failures.
 - **T1 reservation skipped** — manual `DELEGATE` skips `runs.status='queued'`, so the Dispatcher watch loop loses queue visibility and two delegations on the same project both choose Pattern A and collide on the base clone.
 - **Pattern misclassification carry-over** — when the resolver itself was wrong (for example, a Pattern A misjudgment for a self-edit task because the Worker Directory Registry was stale), reaching for the manual path masked the underlying resolver bug instead of filing it.
 
-Today, if `gen_delegate_payload.py apply` errors or produces a wrong layout, the canonical response is to **file an Issue against `gen_delegate_payload.py` (or its resolver) and pause the affected delegation until the underlying bug is fixed**. Whether to invoke any manual workaround at all is a user judgment call; Secretary must not self-grant the exception. Note that the procedure below also depends on `claude-org-runtime` and is therefore not a general fallback when the runtime CLI itself is unavailable; in that case, restoring the runtime CLI is the prerequisite.
+Today, if `gen_delegate_payload.py apply` errors or produces a wrong layout, the canonical response is to **file an Issue against `gen_delegate_payload.py` (or its resolver) and pause the affected delegation until the underlying bug is fixed**. Whether to invoke any manual workaround at all is a user judgment call; Lead must not self-grant the exception. Note that the procedure below also depends on `claude-org-runtime` and is therefore not a general fallback when the runtime CLI itself is unavailable; in that case, restoring the runtime CLI is the prerequisite.
 
 ## Legacy procedure (verbatim, do not use)
 

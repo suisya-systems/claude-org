@@ -68,7 +68,7 @@ The harness's persistent state surface consists of the files below. Each entry s
 
 - **Path**: `.state/workers/worker-{task_id}.md`
 - **Format**: Markdown with structured fields. Per `delegate-plan` helper output: header fields including `Status:`, `Pane Name:`, `Directory:`, `Validation:`, plus `## Progress Log` (chronological bulleted entries) and (during/after suspend) `## Current State at Suspend`.
-- **Schema**: `Status` ∈ `{planned, active, pane_closed, completed}` per Set B §1 and `docs/internal/phase4-inventory-2026-05-02.md` §2.7. Pane Name follows `worker-{task_id}` with `task_id` in kebab-case English; Directory is an absolute path; Validation ∈ `{full, minimal}`.
+- **Schema**: `Status` ∈ `{planned, active, pane_closed, completed}` per Set B §1 and `docs/internal/` (ja-only) §2.7. Pane Name follows `worker-{task_id}` with `task_id` in kebab-case English; Directory is an absolute path; Validation ∈ `{full, minimal}`.
 - **Owner**: dispatcher (creation at T2, `Status` transitions, final update on T7 / `CLOSE_PANE`) and secretary (Progress Log appends on each report — per Set B T3, T4).
 - **Readers**: secretary (resume / progress review), dispatcher (close-pane retro), `/org-resume` and `/org-suspend` (state collection).
 - **Update cadence**: on each delegation transition (Set B T2, T3, T4, T5, T7) and each progress / suspend / resume message.

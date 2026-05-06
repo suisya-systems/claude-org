@@ -2,7 +2,7 @@
 
 `gen_delegate_payload.py` (Issue #283) automates Steps 0.7 / 1 / 1.5 / 2 of the
 `org-delegate` skill. The compressed steps in `SKILL.md` cover the day-to-day
-path; this document is the long-form explanation the Secretary consults when
+path; this document is the long-form explanation the Lead consults when
 the automation hits an edge case or when reviewing why the resolver chose a
 particular Pattern / Role.
 
@@ -27,7 +27,7 @@ submode** (`pattern_variant='gitignored_repo_root'`):
 - The brief is written as `CLAUDE.local.md` (never `CLAUDE.md`) so the host
   repo's own `CLAUDE.md` is preserved.
 - `planned_branch` is `null` — the worker operates on the existing branch.
-- The Secretary must serialize: do not run two gitignored-submode workers
+- The Lead must serialize: do not run two gitignored-submode workers
   concurrently against the same repo (file name collisions on
   `CLAUDE.local.md` / `.claude/settings.local.json`).
 
@@ -56,7 +56,7 @@ mode is `edit`), the resolver automatically substitutes the worktree base with
 `{claude_org_root}/.worktrees/{task_id}/` and sets
 `pattern_variant='live_repo_worktree'`. This codifies the de facto convention
 used by all claude-org self-edit workers since session #11 (single `.git/`
-shared between Secretary and worker — no two-clone sync). See
+shared between Lead and worker — no two-clone sync). See
 `references/claude-org-self-edit.md` §3 for the rationale and TOML override
 shape.
 
@@ -107,7 +107,7 @@ exactly. The required rows, in order, are:
 5. `- プロジェクト:` row (clone source / reuse / worktree base).
 6. `- ブランチ (planned):` row (`null` for Pattern C).
 7. `- Permission Mode:` row (read from `registry/org-config.md`).
-8. `- 検証深度:` row (`full` or `minimal`, matching the value the Secretary
+8. `- 検証深度:` row (`full` or `minimal`, matching the value the Lead
    passed to `--verification-depth`).
 9. `- 指示内容:` row pointing the dispatcher at `CLAUDE.md` /
    `CLAUDE.local.md` plus a one-line summary.
@@ -123,11 +123,11 @@ The rows are not optional. The script's snapshot tests
 
 If `gen_delegate_payload.py apply` errors or produces the wrong layout
 (Pattern misclassification / resolver error / brief inconsistency / etc.),
-the Secretary **must not** reproduce the work by hand. The canonical response
+the Lead **must not** reproduce the work by hand. The canonical response
 is to file an Issue against `gen_delegate_payload.py` (or its resolver)
 and pause the affected delegation **until the underlying bug is fixed**.
 Whether to invoke any manual workaround is a user judgment call;
-the Secretary must not self-grant the exception. The standard path's own
+the Lead must not self-grant the exception. The standard path's own
 degraded mode (`--skip-settings` for runtime-CLI-less environments) is
 the supported way to keep going without leaving the skill.
 

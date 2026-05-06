@@ -13,7 +13,7 @@
 > - `.dispatcher/CLAUDE.md` (anomaly forwarding, watch loop, completion-report retro gate, `CLOSE_PANE` flow)
 > - `docs/journal-events.md` (event vocabulary, writer-attribution table)
 > - `docs/org-state-schema.md` (Active Work Item terminal-status vocabulary, Worker Directory Registry shape)
-> - `docs/internal/phase4-inventory-2026-05-02.md` §2.7 (worker-status state-machine inventory)
+> - `docs/internal/` (ja-only) §2.7 (worker-status state-machine inventory)
 > - `tools/journal_append.sh` / `tools/journal_append.py` (accepted event-write schema)
 > - `docs/contracts/role-contract.md` — Set A (per-role lifecycle / boundary sections, for cross-reference)
 >
@@ -23,7 +23,7 @@
 
 ## 1. Lifecycle States
 
-A single delegation moves through the following finite set of contract-level states. The state labels are this contract's vocabulary; they do not all map 1:1 to a literal `Status:` string in the implementation today. The implementation's worker-state-file vocabulary is the smaller set `planned` / `active` / `pane_closed` / `completed` (per `docs/internal/phase4-inventory-2026-05-02.md` §2.7), and `.state/org-state.md` Active Work Items uses `IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED`. Some contract states (`pending`, `aborted`) have no dedicated worker-state-file `Status` today — see the per-row notes.
+A single delegation moves through the following finite set of contract-level states. The state labels are this contract's vocabulary; they do not all map 1:1 to a literal `Status:` string in the implementation today. The implementation's worker-state-file vocabulary is the smaller set `planned` / `active` / `pane_closed` / `completed` (per `docs/internal/` (ja-only) §2.7), and `.state/org-state.md` Active Work Items uses `IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED`. Some contract states (`pending`, `aborted`) have no dedicated worker-state-file `Status` today — see the per-row notes.
 
 | # | State | Owner of transition in | Persisted at | Visible journal events |
 |---|---|---|---|---|
@@ -57,7 +57,7 @@ Delegations that do not produce a PR (for example, investigation-only Pattern C 
 Each transition below names: **(a)** the event that triggers it, **(b)** which actor executes the transition, **(c)** the state-file write the actor must perform, and **(d)** the journal event the helper must record.
 
 ### T1 — `(none) → pending`
-- **Trigger**: Secretary completes `org-delegate` Steps 0–1.5 for a task and is about to send the `DELEGATE` message to the dispatcher.
+- **Trigger**: Lead completes `org-delegate` Steps 0–1.5 for a task and is about to send the `DELEGATE` message to the dispatcher.
 - **Actor**: secretary.
 - **State write**: `.state/dispatcher/inbox/{task_id}.json` is written with the task spec consumed by `claude-org-runtime dispatcher delegate-plan`. `CLAUDE.md` / `settings.local.json` are placed in the worker dir (Step 1.5). Worker Directory Registry row added with Status `in_use`.
 - **Journal**: `delegate_sent` (`task`, `worker`, `dir`).
@@ -98,7 +98,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 ### T7 — `* → aborted` (worker pane exits without completion)
 - **Trigger**: Dispatcher's `poll_events` sees `pane_exited` for `name == "worker-{task_id}"`, OR `list_panes` reconciliation finds the pane gone. The dispatcher does NOT itself decide whether the delegation was completed — it reports the lifecycle fact only (per `.dispatcher/references/worker-monitoring.md` § (1) and § `list_panes` reconciliation).
 - **Actor**: dispatcher writes the pane-closed fact and notifies; secretary then determines completion vs. unexpected exit by inspecting the `renga-peers` message history (is the last `COMPLETED` report present? if not, treat it as a worker accident).
-- **State write**: dispatcher writes `.state/workers/worker-{task_id}.md` `Status: pane_closed`. Secretary, after judging the task to be abandoned (no completion report and the user does not re-delegate), sets the Active Work Item terminal status to `ABANDONED` (per `docs/org-state-schema.md` §50 vocabulary).
+- **State write**: dispatcher writes `.state/workers/worker-{task_id}.md` `Status: pane_closed`. Lead, after judging the task to be abandoned (no completion report and the user does not re-delegate), sets the Active Work Item terminal status to `ABANDONED` (per `docs/org-state-schema.md` §50 vocabulary).
 - **Journal**: `worker_closed` (with reason hint); separately, `WORKER_PANE_EXITED` is peer-message channel only (not journaled today).
 - **Re-delegation**: Automatic re-delegation is not contracted. After an unexpected pane exit, the secretary decides per task whether to abandon, ask the user, or re-delegate; the decision is not bounded by an automatic retry counter.
 
@@ -118,7 +118,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 ### E1 — Worker pane exits unexpectedly
 - **Detection**: dispatcher's `poll_events` (`pane_exited` for `role=="worker"`); fallback via `list_panes` reconciliation each watch-loop cycle. The dispatcher does NOT consult journal `worker_completed` (which is a secretary-written event per `docs/journal-events.md`); it forwards the raw lifecycle fact and lets the secretary classify expected-vs-unexpected exit.
 - **Notification path**: dispatcher → secretary via `mcp__renga-peers__send_message(to_id="secretary")` with body `WORKER_PANE_EXITED: {name} (id={id}) pane closed. Reconcile required.`
-- **Retry**: Not automatic. Secretary asks the user whether to re-delegate or abandon.
+- **Retry**: Not automatic. Lead asks the user whether to re-delegate or abandon.
 - **Abort condition**: User explicitly declines re-delegation, OR the secretary determines the task is no longer relevant. (Per §2 T7, no automatic retry counter is contracted.)
 
 ### E2 — `APPROVAL_BLOCKED` / `ERROR_DETECTED` from dispatcher inspect
@@ -134,7 +134,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Halting**: A self-report `ERROR` / `APPROVAL_BLOCKED` (`source=self_report`, `confidence=n/a`) without inspect corroboration produces a notification only. Halting the worker (for example, via `Esc` send) is a human decision; the secretary may issue it, but it is not automated by the harness.
 
 ### E4 — CI fails on PR
-- **Detection**: `tools/pr-watch.{ps1,sh}` writes a `ci_completed` event to `.state/journal.jsonl` on completion (per Secretary `CLAUDE.md` § CI monitoring after PR). Failure is signaled within the event payload.
+- **Detection**: `tools/pr-watch.{ps1,sh}` writes a `ci_completed` event to `.state/journal.jsonl` on completion (per Lead `CLAUDE.md` § CI monitoring after PR). Failure is signaled within the event payload.
 - **Notification path**: secretary inspects the journal entry (or is notified out-of-band by `gh pr checks --watch` exit) and decides whether to send fix instructions back to the same worker pane (T6 review-feedback path).
 - **Retry**: Same-pane fix is the default (per `worker-claude-template.md` § 2 "keep the pane open and wait for review feedback"). Re-spawn of a fresh worker is forbidden.
 - **Abort condition**: User declines further work, OR the worker fix loop exceeds the intervention triggers in `.claude/skills/org-delegate/SKILL.md` worker monitoring and intervention criteria (30 min same-phase / 1 h silent / Codex round-4).

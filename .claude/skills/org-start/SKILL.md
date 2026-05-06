@@ -64,7 +64,7 @@ The read path is **DB only** (Issue #267 / M4).
        print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))"
      ```
      Use `active_runs` / `recent_events` / `run_status_counts` / `session.status` / `session.objective` to understand the previous state
-   - If it does not exist, treat this as the first startup. Prompt the Secretary to run the importer:
+   - If it does not exist, treat this as the first startup. Prompt the Lead to run the importer:
      `python -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
 2. Check `session.status`:
    - If `SUSPENDED`, run Phases 1-3 of /org-resume (briefing, reconciliation, resume plan).
@@ -80,7 +80,7 @@ Common arguments:
 - `permission_mode`: write the literal `auto` directly (except for the Dispatcher). `CLAUDE.md` has no variable expansion mechanism, so values from `registry/org-config.md` cannot be substituted at runtime. If you need to change it, see the sync note section at the top of `registry/org-config.md`
 - `cwd`: relative path to the directory dedicated to that role (resolved relative to the caller pane's cwd)
 
-> **Note**: The Secretary is started by `renga --layout ops` and runs without `--permission-mode` set (because it is the human-judgment desk). See the `Role-specific scope` section in `registry/org-config.md`.
+> **Note**: The Lead is started by `renga --layout ops` and runs without `--permission-mode` set (because it is the human-judgment desk). See the `Role-specific scope` section in `registry/org-config.md`.
 
 ### Dispatcher
 
@@ -142,7 +142,7 @@ Follow the pane layout in `org-delegate/references/pane-layout.md` (renga versio
    - `name="dispatcher"`: stable name used by later calls such as `mcp__renga-peers__send_message(to_id="dispatcher", ...)` and `close_pane(target="dispatcher")`. **renga-peers interprets all-digit names as ids, so always use a name that contains letters**
    - `cwd=".dispatcher"`: resolved to `.dispatcher/` relative to the caller pane (= Lead). The old pattern of embedding `cd X && claude ...` in `command` is forbidden because auto-upgrade does not fire and channel push is lost
    - `permission_mode="bypassPermissions"` / `model="sonnet"`: renga synthesizes and runs `claude --permission-mode bypassPermissions --model sonnet --dangerously-load-development-channels server:renga-peers`
-   - `.dispatcher/CLAUDE.md` contains Dispatcher role instructions (separate from the Secretary's `CLAUDE.md`)
+   - `.dispatcher/CLAUDE.md` contains Dispatcher role instructions (separate from the Lead's `CLAUDE.md`)
    - Return value: text like `"Spawned pane id=N."`. For later pane operations, refer to it as `name="dispatcher"`
    - Errors are returned as text in `[<code>] <msg>` format (for example `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`). For the code list and handling, see `.claude/skills/org-delegate/references/renga-error-codes.md`
 2. On first Claude Code startup, the confirmation prompt `Load development channel? (Y/n)` appears. Approve it by sending Enter with `mcp__renga-peers__send_keys`:

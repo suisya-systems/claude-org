@@ -1,7 +1,7 @@
 # claude-org — Technical Overview
 
 A self-improving AI organization platform that coordinates multiple Claude Code instances.
-Humans only interact with the Lead (Secretary), while Workers are automatically dispatched and managed behind the scenes.
+Humans only interact with the Lead, while Workers are automatically dispatched and managed behind the scenes.
 
 ---
 
@@ -21,7 +21,7 @@ Humans only interact with the Lead (Secretary), while Workers are automatically 
 
 | Instance | Resident | Role | Allowed Tools |
 |---|---|---|---|
-| **Secretary** | Yes | User interaction, task breakdown, state management | All tools (but actual work is delegated) |
+| **Lead** | Yes | User interaction, task breakdown, state management | All tools (but actual work is delegated) |
 | **Dispatcher** | Yes | Handles pane startup, instruction delivery, and state logging on behalf of others | Bash, Read, Write, Edit, Glob, Grep, Skill, renga-peers |
 | **Curator** | Yes | Organizes knowledge with `/loop 30m /org-curate` | Read, Write, Edit, Glob, Grep, Skill, renga-peers |
 | **Worker** | No | Execution work (code edits, research, testing, etc.) | Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, renga-peers |
@@ -120,13 +120,13 @@ Keep CLAUDE.md minimal (behavior guidelines only), and delegate concrete procedu
 
 | Skill | Trigger | Executor |
 |---|---|---|
-| `org-start` | Manually run right after startup | Secretary |
-| `org-delegate` | When a request involves execution work | Secretary → Dispatcher |
-| `org-suspend` | “Pause,” “done for today,” etc. | Secretary |
-| `org-resume` | On startup from a suspended state | Secretary |
-| `org-retro` | After work is completed | Secretary |
+| `org-start` | Manually run right after startup | Lead |
+| `org-delegate` | When a request involves execution work | Lead → Dispatcher |
+| `org-suspend` | “Pause,” “done for today,” etc. | Lead |
+| `org-resume` | On startup from a suspended state | Lead |
+| `org-retro` | After work is completed | Lead |
 | `org-curate` | Periodically run with `/loop 30m` | Curator |
-| `org-dashboard` | “Show me the dashboard,” etc. | Secretary |
+| `org-dashboard` | “Show me the dashboard,” etc. | Lead |
 
 ### Delegation Flow (`org-delegate`)
 

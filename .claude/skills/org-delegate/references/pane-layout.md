@@ -30,7 +30,7 @@ Tab 1: ops (ワーカー 0 人)
 | Curator | Vertically split the Dispatcher pane and use the right half | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="auto")` (org-start Step 3) |
 | Each Worker | **balanced split**: dynamically choose `target` and `direction` from the current rects returned by `list_panes`, then stack within the same tab | See the "Worker balanced split strategy" section below. `mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 
-> **Why use `spawn_claude_pane`**: this is the structured launch tool added in renga 0.18.0+. When `cwd` / `permission_mode` / `model` / `args[]` are passed as structured fields, renga internally composes `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old method of passing a `command` string with a `cd` prefix into `spawn_pane` is **forbidden** (if a cwd-change prefix is present, renga's bare-`claude` auto-upgrade does not trigger, and channel push via `send_message` stops working. Instructions from Lead to Dispatcher and from Dispatcher to Worker stop working entirely). Only the Secretary is launched as bare `claude` from `ops.toml` and relies on auto-upgrade.
+> **Why use `spawn_claude_pane`**: this is the structured launch tool added in renga 0.18.0+. When `cwd` / `permission_mode` / `model` / `args[]` are passed as structured fields, renga internally composes `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old method of passing a `command` string with a `cd` prefix into `spawn_pane` is **forbidden** (if a cwd-change prefix is present, renga's bare-`claude` auto-upgrade does not trigger, and channel push via `send_message` stops working. Instructions from Lead to Dispatcher and from Dispatcher to Worker stop working entirely). Only the Lead is launched as bare `claude` from `ops.toml` and relies on auto-upgrade.
 
 ## Worker balanced split strategy
 
@@ -44,7 +44,7 @@ The current design uses each pane's **rect information (`x / y / width / height`
 
 ### Algorithm
 
-The balanced split decision logic (target/direction selection, MIN_PANE constraints, Secretary guard, role-priority sorting, rect adjacency checks, and `split_capacity_exceeded` detection) is **defined by the helper in `claude-org-runtime` as the source of truth**. The Dispatcher takes the snapshot from `mcp__renga-peers__list_panes` and the task JSON, then calls one of the following and follows the returned action plan (`spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) to execute `spawn_claude_pane` or escalate:
+The balanced split decision logic (target/direction selection, MIN_PANE constraints, Lead guard, role-priority sorting, rect adjacency checks, and `split_capacity_exceeded` detection) is **defined by the helper in `claude-org-runtime` as the source of truth**. The Dispatcher takes the snapshot from `mcp__renga-peers__list_panes` and the task JSON, then calls one of the following and follows the returned action plan (`spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) to execute `spawn_claude_pane` or escalate:
 
 - CLI (standard operational entrypoint): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... [--template-repo ...] [--locale-json ...]`. For Dispatcher-side procedure, the primary reference is the delegate-plan helper section in `.dispatcher/CLAUDE.md`
 - Library: `build_plan(...)` in the `claude_org_runtime.dispatcher.runner` module (full action plan), and `choose_split(panes)` (low-level helper when only target/direction is needed)
@@ -55,12 +55,12 @@ If there are no candidates, the helper returns `status="split_capacity_exceeded"
 
 ### Verification trace (Issue #307 scenario, reference)
 
-This is a manual trace table showing `choose_split` behavior when given the immediate post-layout state `secretary 280×43 / dispatcher 140×43 / curator 140×43` (terminal ≈ 280×86, assuming `org-start` has just performed Secretary horizontal split then Dispatcher vertical split). **Canonical behavior is the runtime SoT**. If values in this doc differ from runtime behavior, trust the runtime.
+This is a manual trace table showing `choose_split` behavior when given the immediate post-layout state `secretary 280×43 / dispatcher 140×43 / curator 140×43` (terminal ≈ 280×86, assuming `org-start` has just performed Lead horizontal split then Dispatcher vertical split). **Canonical behavior is the runtime SoT**. If values in this doc differ from runtime behavior, trust the runtime.
 
 | spawn | Selected role | direction | Intuition |
 |---|---|---|---|
-| 1st | secretary | vertical | Secretary has top role priority as long as it still satisfies splitable size |
-| 2nd | curator | vertical | Secretary drops out due to the `SECRETARY_MIN_WIDTH` guard; Curator is selected as the next-highest priority |
+| 1st | secretary | vertical | Lead has top role priority as long as it still satisfies splitable size |
+| 2nd | curator | vertical | Lead drops out due to the `SECRETARY_MIN_WIDTH` guard; Curator is selected as the next-highest priority |
 | 3rd | curator | horizontal | Role priority is strict primary, so Curator continues until it drops below MIN_PANE |
 
 After Curator drops out for violating MIN_PANE, selection flows to Workers at priority 2. For the design rationale for putting Dispatcher last (avoid repeatedly halving the viewport of the actively monitored pane; Curator is mostly idle under `/loop 30m /org-curate`), see the `_ROLE_PRIORITY` comment in `runner.py`.

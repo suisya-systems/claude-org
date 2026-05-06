@@ -1,8 +1,8 @@
 # Sync Policy
 
-Rules for how edits propagate between this repository (`suisya-systems/claude-org`, ja) and its sibling repository `suisya-systems/claude-org` (en).
+Rules for how edits propagate between this repository (`suisya-systems/claude-org`, en) and its sibling repository `suisya-systems/claude-org-ja` (ja).
 
-See the en repo's `docs/canonical-ownership.md` for which side is canonical for each artifact category.
+See `docs/canonical-ownership.md` for which side is canonical for each artifact category.
 
 ## Release-Coupled SLA
 

@@ -1,4 +1,4 @@
-# renga-peers MCP error codes — Dispatcher / Secretary reference
+# renga-peers MCP error codes — Dispatcher / Lead reference
 
 The `renga-peers` MCP server in renga 0.14.0+ includes a stable, machine-readable `code` in error responses. For the Dispatcher / Curator / Lead, branching on **code rather than substring-matching the message text** is recommended.
 
