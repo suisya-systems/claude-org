@@ -120,10 +120,11 @@ jobs:
           PR_NUM: ${{ steps.meta.outputs.pr_number }}
         run: |
           set -euo pipefail
-          # gh api --paginate concatenates JSON-array pages into one big
-          # array, so a single jq pass projects the fields we need.
+          # gh api --paginate emits one JSON array per page (not a merged
+          # array), so slurp + add concatenates them into a single array
+          # before projecting the fields we need. Holds for any page count.
           gh api --paginate "repos/${JA_REPO}/pulls/${PR_NUM}/files" \
-            | jq 'map({filename, status, previous_filename})' \
+            | jq -s 'add | map({filename, status, previous_filename})' \
             > pr_files.json
           jq -r '.[].filename' pr_files.json > changed_files.txt
           echo "Changed files:"
@@ -136,11 +137,34 @@ jobs:
           python -m unittest discover -s tools -p test_sync_classifier.py -v
           python tools/sync_classifier.py < changed_files.txt > classification.json
           cat classification.json
-          runtime_count="$(jq '.by_class.runtime | length' classification.json)"
           translation_count="$(jq '.by_class.translation | length' classification.json)"
           unknown_count="$(jq '.by_class.unknown | length' classification.json)"
           divergence_count="$(jq '.by_class["divergence-allowed"] | length' classification.json)"
+          # The mirror-PR gate (runtime_touched_count) considers both the
+          # new path and the rename source. A runtime->non-runtime rename
+          # has runtime_count=0 from the new-path-only classifier, but en
+          # still needs a mirror PR to drop the orphaned old path.
+          runtime_touched_count="$(python - <<'PY'
+          import json, sys
+          sys.path.insert(0, 'tools')
+          from sync_classifier import classify_path, CLASS_RUNTIME
+          entries = json.load(open('pr_files.json'))
+          n = 0
+          for e in entries:
+              new_runtime = classify_path(e['filename']) == CLASS_RUNTIME
+              prev = e.get('previous_filename')
+              prev_runtime = bool(prev) and classify_path(prev) == CLASS_RUNTIME
+              if new_runtime or prev_runtime:
+                  n += 1
+          print(n)
+          PY
+          )"
+          # runtime_count keeps the legacy semantic (filename-only) for the
+          # tracking-issue summary table; runtime_touched_count drives the
+          # mirror-PR step.
+          runtime_count="$(jq '.by_class.runtime | length' classification.json)"
           echo "runtime_count=${runtime_count}" >> "$GITHUB_OUTPUT"
+          echo "runtime_touched_count=${runtime_touched_count}" >> "$GITHUB_OUTPUT"
           echo "translation_count=${translation_count}" >> "$GITHUB_OUTPUT"
           echo "unknown_count=${unknown_count}" >> "$GITHUB_OUTPUT"
           echo "divergence_count=${divergence_count}" >> "$GITHUB_OUTPUT"
@@ -192,7 +216,8 @@ jobs:
           JA_MERGE_SHA: ${{ steps.meta.outputs.merge_sha }}
 
       - name: Open mirror PR (P2, runtime files)
-        if: ${{ env.OPEN_PR == 'true' && steps.classify.outputs.runtime_count != '0' }}
+        id: mirror
+        if: ${{ env.OPEN_PR == 'true' && steps.classify.outputs.runtime_touched_count != '0' }}
         env:
           # Prefer AUTO_MIRROR_PAT (so resulting PR triggers pull_request
           # CI like tests.yml). Fall back to GITHUB_TOKEN — push and PR
@@ -313,6 +338,7 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No net runtime changes after applying ops — en already in sync. Skipping PR."
+            echo "pr_opened=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -356,13 +382,15 @@ jobs:
               --head "${BRANCH}" \
               --label auto-mirror-runtime
           fi
+          echo "pr_opened=true" >> "$GITHUB_OUTPUT"
 
       - name: Open or refresh tracking issue (translation / unknown)
-        if: ${{ steps.classify.outputs.translation_count != '0' || steps.classify.outputs.unknown_count != '0' || (env.OPEN_PR != 'true' && steps.classify.outputs.runtime_count != '0') }}
+        if: ${{ always() && (steps.classify.outputs.translation_count != '0' || steps.classify.outputs.unknown_count != '0' || (env.OPEN_PR != 'true' && steps.classify.outputs.runtime_count != '0')) }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JA_PR_NUM: ${{ steps.meta.outputs.pr_number }}
           JA_PR_TITLE: ${{ steps.meta.outputs.pr_title }}
+          PR_OPENED: ${{ steps.mirror.outputs.pr_opened }}
         run: |
           set -euo pipefail
           translation_count="${{ steps.classify.outputs.translation_count }}"
@@ -389,7 +417,11 @@ jobs:
             echo "${phase_tag} classification."
             echo
             cat classification_body.md
-            if [ "${OPEN_PR}" = 'true' ] && [ "${runtime_count}" -gt 0 ]; then
+            # Only mention the mirror PR if one was actually opened/
+            # refreshed. The mirror step also runs (and skips with
+            # pr_opened=false) when en is already in sync; in that case
+            # this issue should not falsely advertise a separate PR.
+            if [ "${PR_OPENED:-false}" = 'true' ]; then
               echo
               echo "Runtime files have been opened as a separate mirror PR (branch \`auto-mirror/ja-pr-${JA_PR_NUM}\`)."
             fi
