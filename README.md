@@ -4,8 +4,8 @@
 [![CI](https://github.com/suisya-systems/claude-org/actions/workflows/tests.yml/badge.svg)](https://github.com/suisya-systems/claude-org/actions/workflows/tests.yml)
 [![Install](https://img.shields.io/badge/install-one--liner-brightgreen.svg)](#quick-start)
 
-> **claude-org is a Japanese-first reference distribution.**
-> English edition: [suisya-systems/claude-org](https://github.com/suisya-systems/claude-org) (a dual Japanese/English repository setup. See [`docs/sync-policy.md`](docs/sync-policy.md) for synchronization rules between the two repositories).
+> **claude-org is the English-edition reference distribution.**
+> Japanese edition: [suisya-systems/claude-org-ja](https://github.com/suisya-systems/claude-org-ja) (a dual Japanese/English repository setup. See [`docs/sync-policy.md`](docs/sync-policy.md) for synchronization rules between the two repositories).
 
 ---
 

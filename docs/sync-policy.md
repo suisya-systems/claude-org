@@ -18,7 +18,7 @@ The ja side may lag behind the en side, but the upper bound is defined by releas
 
 Edits made directly on the ja side may be backported to the en side in only these **three categories**.
 
-1. **Terminology**: glossary fixes (example: `フォアマン` -> `ディスパッチャー`). Use this when the ja side finds clearer terminology and the en glossary should follow.
+1. **Terminology**: glossary fixes (example: `Foreman` -> `Dispatcher`). Use this when the ja side finds clearer terminology and the en glossary should follow.
 2. **Concept definitions**: text defining roles, lifecycle, invariants, and similar concepts where ja wording ends up sharper than en. The backport target is the **definition itself**, not surrounding prose.
 3. **API contracts**: schema, hook, or CLI surface changes where implementation discussion happened first in ja and the ja docs accidentally became canonical.
 
