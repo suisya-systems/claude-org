@@ -1,92 +1,93 @@
-# claude-org — What You Can Do
+# claude-org — Capabilities Guide
 
-This repository is **a system for getting work done with a team of AI assistants**.
-You only ever talk to one role: the **Lead**. Behind the scenes, several specialized roles run in parallel.
-
----
-
-## What it can do for you
-
-### Hand off work
-
-Say what you want done in plain language — "add a new post to the blog", "fix the product page on the storefront" — and the work begins. You don't need to use technical vocabulary.
-
-- The Lead understands the request and routes it to the right role (a Worker)
-- Several pieces of work can run at the same time
-- If it's unclear which project you mean, the Lead asks with a short list of choices
-
-### Check on what's happening
-
-- The Lead reports progress back to you
-- Say "show me the dashboard" and you'll get a browser view of:
-  - The list of projects
-  - Currently running work
-  - A recent activity timeline
-  - Knowledge accumulated so far
-
-### Suspend and resume
-
-- Say "we're done for today" and the full state is saved
-- Next time you start, the Lead reports the previous state and you pick up where you left off
-- Even if the terminal is closed abruptly, most of the state can still be recovered
+This repository is a **system for getting work done with a team of AI assistants**.
+You speak to only one "Lead." Behind the scenes, multiple specialists work in parallel.
 
 ---
 
-## The roles in the organization
+## What You Can Do
 
-| Role | What it does | Your interaction |
+### Request work
+
+You can start work by simply stating what you want, such as "Add an article to the blog" or "Fix the product page on the ecommerce site." You do not need to use technical terms.
+
+- The Lead understands the request and assigns the work to the appropriate specialist (Worker)
+- Multiple tasks can proceed at the same time
+- If the target project is unclear, the system presents options and asks
+
+### Check status
+
+- The Lead reports progress
+- If you say "Show me the dashboard," you can review the overall state in the browser
+  - Project list
+  - Current work status
+  - Recent events
+  - Accumulated knowledge
+
+### Pause and resume
+
+- If you say "We're done for today," all state is saved
+- The next time you start, it reports the previous state and resumes from there
+- Even if you close the terminal unexpectedly, some state can be recovered
+
+---
+
+## Organization Roles
+
+| Role | What it does | How it relates to you |
 |---|---|---|
-| **Lead** | Talks with you, assigns work, reports results | **The only role you speak to directly** |
-| **Dispatcher** | Spawns and manages Workers on the Lead's behalf | None needed |
-| **Curator** | Organizes accumulated knowledge, suggests improvements | None needed |
-| **Worker** | Does the actual work — code edits, investigation, file authoring, etc. | None needed |
+| **Lead (Secretary)** | Talks with you, assigns work, reports results | **The only role you speak to directly** |
+| **Dispatcher** | Launches and manages specialists on your behalf | No need to think about it |
+| **Curator** | Organizes learnings and proposes improvements | No need to think about it |
+| **Worker** | Performs the actual work (code edits, research, file creation, etc.) | No need to think about it |
 
-You only deal with the Lead. The rest run automatically in the background.
+You interact only with the Lead. Everything else runs automatically behind the scenes.
 
 ---
 
-## How a session flows
+## Basic Flow
 
 ```
 1. Start Claude Code
-2. Run /org-start (only the first time per session — prior state is reported automatically)
-3. Tell the Lead what you want done
-4. Receive the report when it's finished
-5. Say "we're done for today" when you're stopping
+2. Run /org-start (first time only. If previous state exists, it is reported automatically)
+3. State what you want to do
+4. Receive the result report
+5. When finished, say "We're done for today"
 ```
 
 ---
 
-## How the organization gets smarter over time
+## How the Organization Gets Smarter
 
 The more you use it, the more the organization learns and improves.
 
-1. Each time work completes, the responsible role records what was learned
-2. The Curator periodically organizes and consolidates those notes
-3. Curated knowledge is filed by topic
-4. When a process change would help, the Lead surfaces a proposal
-5. If you approve, future sessions run with the improvement in place
+1. Each time work completes, the specialist records what it learned
+2. The Curator periodically organizes and merges those learnings
+3. The organized knowledge is stored by theme
+4. When process improvements are needed, they are proposed through the Lead
+5. If you approve them, the improved process is used from the next run onward
 
-If a proposal misses the mark, just say "skip that" and it's discarded.
+If an improvement proposal misses the mark, you can reject it by saying "Not needed."
 
 ---
 
-## Project management
+## Project Management
 
-When you ask for work, the project (the thing being worked on) is registered automatically. After that, you can refer to it by a short nickname.
+When you request work, the project (work target) is registered automatically. After that, it can be recognized by a short name alone.
 
 Examples:
-- "the blog" → company blog site
-- "the storefront" → e-commerce site
-- "the CSV tool" → CSV upload + aggregation web app
+- "blog" -> company blog site
+- "ecommerce site" -> ecommerce sales site
+- "CSV aggregation tool" -> web app for CSV upload and aggregation
 
-To see what's registered, say "show me the dashboard".
+You can list registered projects with "Show me the dashboard."
 
 ---
 
-## When you're stuck
+## If Something Goes Wrong
 
-- **Not sure what to ask for** → Try "what can you do?"
-- **The result looks wrong** → Tell the Lead; corrections are dispatched to a Worker
-- **Want a sense of the whole picture** → "Show me the dashboard"
-- **Want to continue from last time** → Just start the session — the previous state is reported automatically
+- **Not sure what to ask for** -> Try asking, "What can you do?"
+- **The result looks wrong** -> Tell the Lead, and it will instruct the specialist to fix it
+- **Not sure about the overall state** -> Check with "Show me the dashboard"
+- **Want to continue from last time** -> Start it and the previous state is shown automatically
+---

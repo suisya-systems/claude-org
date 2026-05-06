@@ -2,7 +2,7 @@
 
 ## Source
 
-- Source repo: `suisya-systems/claude-org-ja`
+- Source repo: `suisya-systems/claude-org`
 - Source ref: `HEAD = 926df3943cb5df2d6ee419b020351178a96a88d1` (no v0.1.0 tag yet — see Issue #113)
 - Bootstrap mode: **transplant from HEAD**, not from a release tag
 

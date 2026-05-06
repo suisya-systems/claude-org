@@ -5,7 +5,7 @@
 # The 325-line implementation that previously lived here moved up to
 # core-harness 0.2.0 as `core_harness/hooks/lib/core_harness_hooks.sh`
 # (design PR #196 §4 Step C, Q4 one-way dependency). This file is now
-# a thin org-boundary shim: it sets the claude-org-ja deny-line locale
+# a thin org-boundary shim: it sets the claude-org deny-line locale
 # and forwards to the framework lib.
 #
 # Function names exposed (split_segments, flatten_substitutions,

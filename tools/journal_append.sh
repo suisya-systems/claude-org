@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claude-org-ja journal append wrapper (M4 DB-only, Issue #267).
+# claude-org journal append wrapper (M4 DB-only, Issue #267).
 #
 # Pre-M2 this script appended directly to .state/journal.jsonl. M2
 # routed writes through SQLite (`.state/state.db`) while still

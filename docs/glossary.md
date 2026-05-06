@@ -1,6 +1,6 @@
 # Glossary
 
-Canonical term mapping between `claude-org-ja` (Japanese source of truth)
+Canonical term mapping between `claude-org` (Japanese source of truth)
 and `claude-org` (English source of truth).
 
 This glossary is **locked** by user (Lead) approval as part of Issue #158.

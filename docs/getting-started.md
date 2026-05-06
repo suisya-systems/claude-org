@@ -1,6 +1,6 @@
 # Getting Started
 
-A usage guide for claude-org.
+A guide to using claude-org.
 
 ---
 
@@ -8,16 +8,16 @@ A usage guide for claude-org.
 
 ### Prerequisites
 
-The following must all be installed and configured. See [README.md](../README.md#quickstart) for details.
+Make sure all of the following are already installed and configured. See [README.md](../README.md#クイックスタート) for details.
 
-- **Claude Code** — the AI agent itself
-- **renga** — terminal multiplexer (used to manage the org's panes)
-- **renga-peers MCP** — same-tab inter-instance communication and pane control (registered with `renga mcp install`)
-- **GitHub CLI (`gh`)** — authenticated (verify with `gh auth status`)
+- **Claude Code** — the main AI agent
+- **renga** — terminal multiplexer (used for organization pane management)
+- **renga-peers MCP** — inter-instance communication and pane operations within the same tab (register with `renga mcp install`)
+- **GitHub CLI (`gh`)** — authenticated (check with `gh auth status`)
 
-### Install
+### Installation
 
-If the dependencies (`git` / `claude` / `renga` / `gh`) are present, a one-liner clones the repo and runs `renga mcp install`.
+If the required tools (`git` / `claude` / `renga` / `gh`) are installed, you can run a one-liner to clone the repo and run `renga mcp install` in one shot.
 
 **macOS / Linux (bash)**:
 
@@ -33,292 +33,288 @@ renga --layout ops
 ```powershell
 iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.ps1 | iex
 cd claude-org
-bash scripts/install-hooks.sh   # run inside Git Bash / WSL
+bash scripts/install-hooks.sh   # Run on Git Bash / WSL
 renga --layout ops
 ```
 
-The script checks whether each prerequisite is present and, if any is missing, prints installation guidance and exits (it does not auto-install).
+The scripts check whether the prerequisite commands are installed. If any are missing, they exit after showing setup instructions (they do not install anything automatically).
 
-To clone into a non-default directory name, don't use the one-liner — download the script and pass a flag (a piped invocation cannot forward flags):
+If you want to change the clone directory name, run the script directly instead of using the one-liner and pass flags to it (flags cannot be forwarded through pipe execution):
 
 ```bash
-# bash: save the script first, then run it
+# bash: save the script, then run it
 curl -fsSLo /tmp/install.sh https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.sh
 bash /tmp/install.sh --dir my-claude-org
 
-# PowerShell: download then run
+# PowerShell: download it first, then run it
 iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.ps1 -OutFile $env:TEMP\install.ps1
 pwsh -NoProfile -File $env:TEMP\install.ps1 -Dir my-claude-org
 ```
 
-For all flags see `bash install.sh --help` / `pwsh install.ps1 -Help`.
+For available flags, see `bash install.sh --help` / `pwsh install.ps1 -Help`.
 
-If you skip the one-liner, run the steps manually:
+If you do not use the one-liner, run the following manually:
 
 ```bash
 git clone https://github.com/suisya-systems/claude-org.git
 cd claude-org
-renga mcp install              # first time only — registers the renga-peers MCP at user scope
+renga mcp install              # First time only. Registers renga-peers MCP at user scope
 renga --layout ops
 ```
 
-A Lead pane comes up per the definition in `renga-layouts/ops.toml`.
-Once the Lead's Claude Code is up, **run the following in order**:
+Based on the definition in `renga-layouts/ops.toml`, the Lead (`Secretary`) pane starts up.
+Once Claude Code in the Lead pane has started, **run the following in order**:
 
-1. `/org-setup` — places per-role `settings.local.json` (Lead, Dispatcher, Curator, Worker) and the required hooks. **Required on the first run.** Without it, `renga-peers` MCP / git / gh produce a flood of permission prompts.
-2. `/org-start` — boots the organization. The Dispatcher and the Curator are spawned in the same tab.
+1. `/org-setup` — places role-specific `settings.local.json` files (Lead, Dispatcher, Curator, Worker) and required hooks. **Required on first run only**. If you skip this, you will get a large number of permission prompts for renga-peers MCP / git / gh.
+2. `/org-start` — starts the organization. Dispatcher and Curator are spawned in the same tab.
 
-`/org-setup` is **additive-only** (it adds what's missing without removing what exists). To return drift back to the baseline, replace `settings.local.json` by hand using the per-role sample JSON in [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md).
+`/org-setup` is **additive-only** (it only adds missing pieces and does not remove existing ones). If you want to return drifted settings to the baseline, manually replace `settings.local.json` using the role-specific sample JSON in [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md).
 
-### Compatibility preflight (optional, recommended)
+### Compatibility Preflight (Optional, Recommended)
 
-Before running `/org-start`, you can verify that the renga version and MCP tool surface meet claude-org's requirements:
+Before running `/org-start`, you can verify that your renga version and MCP tool surface meet claude-org's requirements:
 
 ```bash
 py -3 tools/check_renga_compat.py            # Windows
 python3 tools/check_renga_compat.py          # macOS / Linux
 ```
 
-This checks:
+- renga version (requires 0.18.0 or later)
+- `renga-peers` MCP registration (`Connected` in `claude mcp list`)
+- whether the required 14 tools appear in tools/list
 
-- The renga version (≥ 0.18.0)
-- That the `renga-peers` MCP is registered (`claude mcp list` reports Connected)
-- That all 14 required tools appear in `tools/list`
-
-For machine-readable JSON, pass `--json`. Use that variant in scripts that want to react to the exit code:
+If you want machine-readable JSON, use `--json`. Scripts that want to handle failures via exit code should use this:
 
 ```bash
 py -3 tools/check_renga_compat.py --json
 ```
 
-The script does not require a live renga session (static checks plus an MCP stdio probe), so it is safe to run before or after `renga --layout ops`.
+This script does not require a live renga session (static checks + MCP stdio probe only), so you can run it either before or after `renga --layout ops`.
 
 ---
 
-## Day-to-day usage
+## Basic Usage
 
-### Booting
+### Start It Up
 
-After the first clone, follow the "Install" section above and run `/org-setup` then `/org-start`, in that order, exactly once (skipping `/org-setup` will produce a flood of permission prompts).
+After the initial clone, follow the "Installation" section above and run `/org-setup` → `/org-start` once in that order (`/org-setup` prevents a flood of permission prompts).
 
-From the second session onward, just open the Lead pane with `renga --layout ops` and run `/org-start` in Claude Code.
-If a previous state exists, it is reported, and the Dispatcher (work assignment) and Curator (knowledge curation) are spawned automatically.
-
-```
-You:    /org-start
-Lead:   The organization is up.
-        Previous state: blog-post update completed; storefront fix is in progress.
-        The Dispatcher and the Curator have been started.
-        What would you like to do?
-```
-
-### Stating what you want done
-
-Just say what you want, in plain language.
-You don't need technical vocabulary; the Lead understands the request and dispatches a suitable Worker.
-For questions and discussion, the Lead answers directly.
+From the second time onward, just open the Lead pane with `renga --layout ops` and run `/org-start` in Claude Code.
+If there is saved state from the previous session, it will be reported, and Dispatcher (task assignment) and Curator (knowledge organization) will start automatically.
 
 ```
-You:    I want to add a new post to the blog
-Lead:   Got it — the blog. What's the title and content?
+You:  /org-start
+Lead: The organization has started.
+      Previous state: blog article update is complete, e-commerce site fixes are in progress.
+      Dispatcher and Curator have started.
+      What would you like to do?
 ```
 
-The Lead resolves "the blog" against the registered projects and proceeds appropriately.
-If the project is ambiguous, the Lead asks back with a list:
+### Tell It What You Want to Do
+
+Just say what you want to do.
+You do not need to use technical terms. The Lead Claude will understand the request and assign the work to the appropriate Workers.
+For consultations or questions, the Lead answers directly.
 
 ```
-Lead:   Which project do you mean?
-        - blog (company blog site)
-        - storefront (e-commerce site)
-        - admin console (internal admin tool)
+You:  I want to add a new article to the blog
+Lead: The blog, got it. Please tell me the article title and content.
 ```
 
-### Asking for several things at once
+The Lead identifies "the blog" from the registered projects and proceeds appropriately.
+If it cannot tell which project you mean, it will ask.
 
 ```
-You:    Update the blog post, and also fix the product page on the storefront
-Lead:   I'll run the two in parallel:
-        - blog: post update
-        - storefront: product-page fix
-        Each has been assigned. I'll report back as they complete.
+Lead: Which project is it?
+      ・Blog (company blog site)
+      ・E-commerce Site (online store)
+      ・Admin Panel (internal admin tool)
 ```
 
-Behind the scenes, separate Workers run in parallel; reports come back as they finish.
-
-### Reading the result
-
-The Lead reports without technical jargon.
+### Request Multiple Tasks at Once
 
 ```
-Lead:   The blog post update is complete.
-        - Added a new post titled "Spring 2026 New Arrivals"
-        - The change has been submitted; it's awaiting review
+You:  Update the blog article, and also fix the product page on the e-commerce site
+Lead: I will handle these two tasks in parallel.
+      ・Blog: article update
+      ・E-commerce Site: product page fix
+      I have assigned an owner to each. I will report back when they are done.
 ```
 
-### Suspending
+Separate Workers handle the tasks in parallel behind the scenes. Once they finish, you get a combined report.
+
+### Check the Work Results
+
+The Lead reports results without technical jargon.
 
 ```
-You:    We're done for today
-Lead:   The organization has been suspended. State has been saved.
+Lead: The blog article update is complete.
+      ・Added the new article "New Products for Spring 2026"
+      ・The changes have already been submitted. They are now waiting for review
 ```
 
-You can safely close the terminal at this point.
-
-### Resuming
-
-Next time you start `renga --layout ops` in this repository's directory and enter the Lead's Claude Code, the previous state is reported automatically.
+### Pause
 
 ```
-Lead:   Previous state (suspended at 4/5 18:30):
-        - Blog post update: complete
-        - Storefront product page: in progress (60%)
-        - Test addition: not started
-        Continue?
-You:    Please continue the storefront work
-Lead:   Understood. Resuming the storefront task.
+You:  That's it for today
+Lead: The organization has been suspended. The state has been saved.
+```
+
+You can safely close the terminal.
+
+### Resume
+
+Next time, start `renga --layout ops` in this repository directory and enter Claude Code in the Lead pane. It will automatically report the previous state.
+
+```
+Lead: Previous state (suspended at 4/5 18:30):
+      ・Blog article update: complete
+      ・E-commerce site product page: in progress (60%)
+      ・Add tests: not started yet
+      Continue?
+You:  Please continue with the e-commerce site work
+Lead: Understood. I will resume the e-commerce site work.
 ```
 
 ---
 
 ## Troubleshooting
 
-### A flood of permission prompts at boot
+### A Large Number of Permission Prompts Appear at Startup
 
-**Symptoms**: any of the Lead, Dispatcher, or Worker raises a permission dialog every time it calls `mcp__renga-peers__*` / `git` / `gh` tools.
+**Symptoms**: A permission dialog appears every time `mcp__renga-peers__*`, `git`, or `gh` tools are called in the Lead, Dispatcher, or Worker roles.
 
-**Diagnosis**: first, inspect the state of that role's `settings.local.json`:
+**Diagnosis**: First, check the state of `settings.local.json` for the affected role.
 
 ```bash
-# Windows: prefer `py -3`; on POSIX use `python3` (`python` is a fallback when neither launcher is available)
-py -3 tools/check_role_configs.py --include-local
+python tools/check_role_configs.py --include-local
 ```
 
-To inspect inside a specific role's worktree, also pass `--role <secretary|dispatcher|curator|worker>` (`secretary` is the implementation identifier for the Lead role; the CLI literal is kept as-is). The output enumerates per-role missing/unknown allow entries and missing required hooks.
+If you are running it inside a specific role's worktree, use it together with `--role <secretary|dispatcher|curator|worker>`. The output lists missing / unknown allow entries by role, as well as missing required hooks.
 
 **Fix**:
 
-- **No `settings.local.json`, or many required allows and hooks are missing**: run `/org-setup` from the Lead's Claude Code (additive-only — existing settings are not destroyed). After it runs, re-run `check_role_configs.py` to confirm the missing entries are gone.
-- **Only a couple of allows are missing locally**: add them in the order schema → `permissions.md` → actual `settings.local.json` (the same flow as the next section's drift fix).
+- **`settings.local.json` does not exist / many required allow entries and hooks are missing**: Run `/org-setup` in Claude Code in the Lead pane (it is additive-only, so it will not break existing settings). Afterward, run `check_role_configs.py` again to confirm the missing entries are gone.
+- **The missing entries are local and limited (only 1-2 specific allow entries are missing)**: Add the relevant entries in the order schema → `permissions.md` → actual `settings.local.json` (same procedure as the drift resolution flow in the next section).
 
-### `tools/check_role_configs.py` reports drift between schema, permissions, and settings
+### `tools/check_role_configs.py` Reports Drift Between schema/permissions/settings
 
-**Symptoms**: CI or local `py -3 tools/check_role_configs.py --include-local` (POSIX: `python3 tools/check_role_configs.py --include-local`) reports `unknown allow entry` / `permissions.md mismatch` / `missing required hook`.
+**Symptoms**: CI or your local `python tools/check_role_configs.py --include-local` reports `unknown allow entry`, `permissions.md mismatch`, or `missing required hook`.
 
-**Diagnosis**: identify which side the drift is on — schema, `permissions.md`, or actual `settings.local.json`.
+**Diagnosis**: Determine whether the source of the drift is on the schema side, the `permissions.md` side, or the actual `settings.local.json` side.
 
 ```bash
-# Windows: prefer `py -3`; on POSIX use `python3`
-py -3 tools/check_role_configs.py --include-local        # validate all roles at once
-py -3 tools/check_role_configs.py --role <role>          # individual validation in that role's worktree
-git diff tools/role_configs_schema.json                   # recent edits on the schema side
+python tools/check_role_configs.py --include-local        # Validate all roles at once
+python tools/check_role_configs.py --role <role>          # Validate the affected role individually in its worktree
+git diff tools/org_extension_schema.json                  # Check recent edits to the org-extension schema on this side
 git diff .claude/skills/org-setup/references/permissions.md
 ```
 
-`tools/role_configs_schema.json` is the canonical source. **Add or modify rules in the order schema → `permissions.md` → actual `settings.local.json`**, always. Reverse order will trip CI's drift detector.
+The canonical framework schema is bundled by the `claude-org-runtime` package (via `core_harness.schema.load_framework_schema()`), and `tools/org_extension_schema.json` is the source of truth for org-extension entries specific to this side. **When adding or changing rules, always apply them in the order schema → `permissions.md` → actual `settings.local.json`**. If you do it in reverse, CI will detect drift.
 
-**Fix** — by where the drift is:
+**Fix** — depending on where the drift came from:
 
-- **An allow entry not registered in the schema is present in `permissions.md` or actual settings**: if it's needed, add it to the schema first, then propagate to `permissions.md` and `settings.local.json`. If it isn't, delete it.
-- **The sample JSON in `permissions.md` has diverged from the schema**: treat the schema as canonical and rewrite the `permissions.md` side to match.
-- **`/org-setup` re-run does not eliminate drift in `settings.local.json`**: additive-only mode can't remove anything automatically. As a **last resort**, replace the role's `settings.local.json` wholesale with the per-role sample JSON in `.claude/skills/org-setup/references/permissions.md` to return to baseline. The `{worker_dir}` / `{claude_org_path}` placeholders in the worker sample must be hand-resolved to absolute paths in your environment. Make sure to record any local overrides before doing this. After updating, re-run `py -3 tools/check_role_configs.py --include-local` (POSIX: `python3 tools/check_role_configs.py --include-local`) to confirm the drift is gone.
+- **An allow entry not registered in the schema has been introduced into `permissions.md` or actual settings**: If the entry is needed, add it to the schema first, then propagate it to `permissions.md` / `settings.local.json`. If it is not needed, remove it.
+- **The sample JSON in `permissions.md` has diverged from the schema**: Treat the schema as correct and rewrite the `permissions.md` side to match it.
+- **Drift remains in `settings.local.json` even after rerunning `/org-setup`**: Because it is additive-only, it will not remove anything automatically. Restore the affected role's `settings.local.json` to baseline by **replacing it entirely** with the role-specific sample JSON in `.claude/skills/org-setup/references/permissions.md` (**last resort**). The `{worker_dir}` / `{claude_org_path}` placeholders in the Worker sample must be manually resolved to absolute paths in the real environment when replacing them. If you had added local custom overrides, note them down in advance.
 
-### Schema JSON parse error / read failure
+### JSON Parse Error / Load Failure in the schema
 
-**Symptoms**: `check_role_configs.py` or `/org-setup` fails immediately when reading the schema (JSON syntax error, etc.).
+**Symptoms**: `check_role_configs.py` or `/org-setup` fails immediately while loading the schema (JSON syntax error, etc.).
 
 **Diagnosis**:
 
 ```bash
-git status tools/role_configs_schema.json
-git diff tools/role_configs_schema.json
-# Windows: prefer `py -3`; on POSIX use `python3`
-py -3 -c "import json; json.load(open('tools/role_configs_schema.json'))"
+git status tools/org_extension_schema.json
+git diff tools/org_extension_schema.json
+python -c "import json; json.load(open('tools/org_extension_schema.json'))"
 ```
 
-**Fix**: if a recent edit broke the file, restore it with `git restore tools/role_configs_schema.json`, or temporarily set the change aside with `git stash push tools/role_configs_schema.json` and try again. After fixing the schema syntax, always run `py -3 tools/check_role_configs.py --include-local` (POSIX: `python3 tools/check_role_configs.py --include-local`) cleanly before committing.
+**Fix**: If a recent edit broke it, revert it with `git restore tools/org_extension_schema.json`, or temporarily save the uncommitted changes with `git stash push tools/org_extension_schema.json` and try again. After fixing the schema syntax, always run `python tools/check_role_configs.py --include-local` before committing.
 
 ---
 
-## See the whole picture in the dashboard
+## View the Big Picture in the Dashboard
 
-Say "show me the dashboard" and the browser opens with a high-level view.
+If you say "Show me the dashboard," you can view the organization's overall state in the browser.
 
 ```
-You:    Show me the dashboard
-Lead:   (starts the live server and opens http://localhost:8099 in the browser)
+You:  Show me the dashboard
+Lead: (starts the live server and opens http://localhost:8099 in the browser)
 ```
 
-The dashboard shows:
+The dashboard shows the following:
 
-- **Project list** — registered projects with example tasks
-- **Work status** — work items in progress, completed, or pending
-- **Recent activity** — a timeline of what happened when
-- **Accumulated knowledge** — what kinds of knowledge have been gathered, by topic
+- **Project list** — registered projects and common task examples
+- **Work status** — currently in progress, completed, and on-hold work items
+- **Recent activity** — a timeline of what happened and when
+- **Accumulated knowledge** — what kinds of knowledge have been collected by theme
 
-The dashboard auto-updates over SSE, so the latest state is reflected in real time without reloading the browser.
+The dashboard updates automatically via SSE. You do not need to reload the browser; the latest state is reflected in real time.
 
 ---
 
-## Skill index
+## Skill List
 
-| Command | Purpose | When to use |
+| Command | Purpose | When to use it |
 |---|---|---|
-| `/org-start` | Boot the organization | **Run once, right after Claude Code starts** |
-| `/org-delegate` | Assign work | Fires automatically when a request comes in (the Lead is a coordinator; real work goes to a Worker) |
-| `/org-suspend` | Suspend work | Auto-fires on "we're done", "suspend", etc. |
-| `/org-resume` | Resume work | Auto-called from `/org-start` when a previous suspend exists |
-| `/org-retro` | Capture learnings | After work completes (mostly auto) |
-| `/org-curate` | Curate knowledge | Auto-runs; manual is fine too |
-| `/org-dashboard` | Show the dashboard | Fires on "show me the dashboard" |
+| `/org-start` | Start the organization | **Run once immediately after Claude Code starts** |
+| `/org-delegate` | Assign work | Triggered automatically when work is requested (the Lead is the command center, Workers do the actual work) |
+| `/org-suspend` | Suspend work | Triggered automatically when you say "done" or "pause" |
+| `/org-resume` | Resume work | Automatically called from org-start if work was suspended previously |
+| `/org-retro` | Record learnings | After work is completed (often triggered automatically) |
+| `/org-curate` | Organize knowledge | Runs automatically. Can also be run manually |
+| `/org-dashboard` | Show the dashboard | Triggered when you say "Show me the dashboard" |
 
-You generally don't need to be aware of these — the Lead picks the right skill based on context.
+In general, you do not need to consciously call skills yourself.
+The Lead Claude uses the right skills based on the situation.
 
 ---
 
-## Directory layout
+## Directory Structure
 
 ```
 claude-org/
-  CLAUDE.md              <- Lead's behavior guide
-  .claude/skills/        <- Skill set (tracked)
-  .state/                <- Session state (untracked)
-  dashboard/             <- Dashboard (HTML/CSS/JS/server.py are tracked)
+  CLAUDE.md              <- Behavior guidelines for the Lead Claude
+  .claude/skills/        <- The organization's skills (tracked by git)
+  .state/                <- Session state (not tracked by git)
+  dashboard/             <- Dashboard (HTML/CSS/JS/server.py are tracked by git)
   knowledge/
-    raw/                 <- Raw notes (untracked)
-    curated/             <- Curated knowledge (tracked)
+    raw/                 <- Raw learnings (not tracked by git)
+    curated/             <- Organized knowledge (tracked by git)
   registry/
-    projects.md          <- Project list (auto-registered)
+    projects.md          <- Project list (registered automatically)
   docs/                  <- Documentation
 ```
 
-### Things you might touch
-- `knowledge/curated/` — review the curated knowledge (auto-generated)
+### Things You May Want to Touch
+- `knowledge/curated/` — review the organized knowledge (generated automatically)
 
-### Things you don't need to touch
-- `registry/projects.md` — auto-registered when work is requested
-- `dashboard/` — dashboard design and data; auto-managed
-- `.claude/skills/` — skill definitions; improved via auto proposals as the org evolves
-- `.state/` — session state; auto-managed
-- `CLAUDE.md` — change it if you want, but keep it thin
+### Things You Do Not Need to Touch
+- `registry/projects.md` — registered automatically when work is requested
+- `dashboard/` — the dashboard's design and data. Managed automatically
+- `.claude/skills/` — skill definitions. Improvement suggestions are generated automatically as the organization grows
+- `.state/` — session state. Managed automatically
+- `CLAUDE.md` — you can change it if you want, but keep it thin
 
 ---
 
-## How knowledge accumulates and the org grows
+## Accumulating Knowledge and Growing
 
-The organization gets smarter the more you use it.
+The more you use the organization, the smarter it gets.
 
-1. Every time work completes, a learning is recorded
-2. Curation runs automatically every 30 minutes (when 5+ entries have accumulated)
-3. Curated knowledge is filed by topic
-4. When a skill or process change would help, you'll see a proposal
-5. If you approve, the improvement takes effect, and the whole org runs with it from then on
+1. Each time work is completed, the learning is recorded
+2. Every 30 minutes, it is automatically organized (when 5 or more items have accumulated)
+3. Organized knowledge is saved by theme
+4. If improvements to skills or processes are needed, suggestions are made
+5. Once approved, the improvements are applied, and from the next run onward the entire organization operates in the improved state
 
 ---
 
 ## Tips
 
-- **Closing the terminal abruptly is OK**: state is saved periodically and is restored next launch. Saying "we're done for today" produces a more accurate save, though.
-- **Too many tasks at once?** Just say "one at a time" — the Lead obeys human direction.
-- **A learning misses the mark**: say "skip that learning" and it isn't recorded. Improvement proposals can also be rejected.
-- **Project registration is automatic**: when you ask about a new project, the Lead confirms its name and location and registers it.
-- **The dashboard is always available**: "show me the dashboard" or "show me the big picture" opens it in the browser.
+- **It is okay if the terminal closes suddenly**: state is saved periodically. It will be restored the next time you start it. Still, formally suspending it by saying "That's it for today" leaves a more accurate state.
+- **If it feels like there is too much work**: just say "Do them one at a time." The Lead prioritizes human instructions.
+- **If the learning is off target**: say "That learning is unnecessary" and it will not be recorded. You can also reject improvement suggestions.
+- **Project registration is automatic**: when you request work for a new project, it is automatically registered after confirming the name and location.
+- **You can view the dashboard anytime**: say "Show me the dashboard" or "Show me the big picture" and it will open in the browser.

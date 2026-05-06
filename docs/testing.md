@@ -1,26 +1,25 @@
 # Automated Tests
 
-Run guide bundling the Python-based parser/converter regression tests and the
-Bash-based hook regression tests.
+Execution guide for Python-based regression tests for the parser/converter and Bash-based regression tests for hooks.
 
-## Coverage
+## Scope
 
 | Function | Description |
 |------|------|
-| `_parse_org_state` | Parses org-state.md status, purpose, and work items |
-| `_parse_journal` | Parses the journal.jsonl event log |
-| `_parse_projects` | Parses the markdown table in projects.md |
-| `_parse_workers` | Parses the worker-*.md files |
-| `_parse_knowledge` | Counts H2 sections in curated/*.md |
-| `org_state_converter.py` | org-state Markdown → JSON conversion and dashboard JSON loading |
-| `.hooks/*.sh` | Worker boundary / claude-org structure / git push block regression detection |
+| `_parse_org_state` | Parse status, objective, and work items from `org-state.md` |
+| `_parse_journal` | Parse the event log in `journal.jsonl` |
+| `_parse_projects` | Parse the Markdown table in `projects.md` |
+| `_parse_workers` | Parse the `worker-*.md` files |
+| `_parse_knowledge` | Count H2 sections in `curated/*.md` |
+| `org_state_converter.py` | Convert `org-state` Markdown to JSON and load dashboard JSON |
+| `.hooks/*.sh` | Regression checks for worker boundary / claude-org structure / git push blocking |
 
-## How to run
+## How to Run
 
 ```bash
 # Python tests
-# Windows (use `python` as a fallback if `py -3` is unavailable)
-py -3 -m unittest discover -s tests -v
+# Windows (use `python` if `py -3` is not available)
+python -m unittest discover -s tests -v
 
 # Mac / Linux
 python3 -m unittest discover -s tests -v
@@ -29,17 +28,15 @@ python3 -m unittest discover -s tests -v
 bash tests/run-all.sh
 ```
 
-Run from the project root. No external libraries are required, but the shell
-hook tests need `bash` and `jq`.
+Run these from the project root. No external libraries are required, but the shell hook tests require `bash` and `jq`.
 
-In daily operation, treat success as "Python tests AND `bash tests/run-all.sh`
-both pass," not just the Python tests.
+In day-to-day use, do not treat Python tests alone as sufficient. Require `bash tests/run-all.sh` to pass as well.
 
-## Test layout
+## Test Layout
 
 ```
 tests/
-  __init__.py              # Package init (empty)
+  __init__.py              # Package initialization (empty)
   test_parsers.py          # Parser tests for dashboard/server.py
   test_org_state_converter.py
   run-all.sh               # Shell hook test runner
@@ -57,11 +54,11 @@ tests/
       sample-topic.md      # Sample for the knowledge parser
 ```
 
-## Saving test results
+## Storing Test Results
 
-When recording test results, save them under `docs/test-results/`.
+If you need to record test results, save them under `docs/test-results/`.
 
 ## CI
 
-GitHub Actions runs the same two test suites. To reduce failures that cannot
-be reproduced locally, run both suites before opening a PR.
+GitHub Actions runs the same two test suites. Run both locally before opening a PR to reduce failures that do not reproduce locally.
+---

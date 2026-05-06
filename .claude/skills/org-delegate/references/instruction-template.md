@@ -1,113 +1,114 @@
-# Worker instruction template
+# Worker Instruction Template
 
-The task-specific instruction sent via renga-peers `send_message` (`to_id="worker-{task_id}"`).
-Permissions, reporting destinations, SUSPEND handling, and knowledge recording are consolidated in worker-claude-template.md (via CLAUDE.md), so they are not repeated here.
+Task-specific instructions sent via renga-peers `send_message` (`to_id="worker-{task_id}"`).
+Instructions for permissions, reporting destination, SUSPEND handling, and knowledge logging are centralized in `worker-claude-template.md` (via `CLAUDE.md`), so they are not repeated here.
 
 ## Template
 
 ```
-Please carry out the following task. Detailed code of conduct is described in CLAUDE.md.
+Please carry out the following task. Detailed behavioral rules are documented in CLAUDE.md.
 
 ## Task
-{Concretely describe the task's goal and the expected deliverable}
+{Describe the task purpose and expected deliverables in detail}
 
-## Project preparation
+## Project Setup
 Important: your working directory is the absolute path described in CLAUDE.md.
-First, run `pwd` and confirm it matches the working directory in CLAUDE.md.
-All file creation is restricted to inside that directory. Moving to `..` and reproducing the claude-org structure is prohibited.
-{Choose one of the following based on the directory pattern}
+First, run `pwd` and confirm that it matches the working directory in CLAUDE.md.
+All file creation must be limited to this directory. Moving to `..` or recreating the claude-org structure is prohibited.
+{Include one of the following depending on the directory pattern}
 
 ### Pattern A (project directory, first time):
-{Choose one of the following}
-- For an existing local project: run `git clone {local path}` inside the current directory.
-- For a remote repository: run `git clone {URL}` inside the current directory.
-- For a new project: run `git init` in the current directory (the path output by `pwd`) and create files directly. Do not create directories that mimic the claude-org structure (.claude/, .state/, etc.).
+The working directory has already been prepared by the Lead (secretary) before spawn (clone / `git init`, etc. have already been completed on the Lead side).
+Your first action after startup: run `pwd` and confirm that it matches the expected directory described in CLAUDE.md.
+Do not run `git clone` / `git init` on the Worker side. Do not create directories that imitate the claude-org structure (`.claude/`, `.state/`, etc.).
+{Include only information such as the clone source URL / local path / whether it is a new project, as needed}
 
-### Pattern A (project directory, reuse):
-This directory was used by a previous task. Existing files and git history remain.
-No clone is needed. {Note any handoff items}
+### Pattern A (project directory, reused):
+This directory is a project directory used in a previous task. Existing files and git history remain.
+No clone is required. {Add handoff notes if any}
 
 ### Pattern B (worktree):
-This directory is prepared as a git worktree, checked out on branch `{branch_name}`.
-No clone is needed. Start working directly.
+This directory has already been prepared as a git worktree. It is checked out to branch `{branch_name}`.
+No clone is required. Start working as-is.
 
 ### Pattern C (ephemeral):
-{Choose one of the following}
-- For an existing repository: run `git clone {URL}` inside the current directory and work inside the cloned directory
-- For an existing local project: run `git clone {local path}` inside the current directory
-- For a new project: run `git init` in the current directory (the path output by `pwd`) and create files directly. Do not create directories that mimic the claude-org structure (.claude/, .state/, etc.)
+The working directory has already been prepared by the Lead (secretary) before spawn (clone / `git init`, etc. have already been completed on the Lead side).
+Your first action after startup: run `pwd` and confirm that it matches the expected directory described in CLAUDE.md.
+Do not run `git clone` / `git init` on the Worker side. Do not create directories that imitate the claude-org structure (`.claude/`, `.state/`, etc.).
+{Include only information such as the clone source URL / local path / whether it is a new project, as needed}
 
-## Branch strategy
-{Specify the branch name, or work directly on main, etc.}
+## Branch Strategy
+{Specify the branch name, or whether to work directly on main, etc.}
 
-## How to work
+## How to Proceed
 Work directly in auto mode. Do not use Plan mode.
 
 ## Constraints
-{Note any language, framework, test requirements, etc.}
+{Include any language, framework, test requirements, etc.}
 
-## Verification depth: {full | minimal}
-**Do not delete this line**; always send it. The Lead fills in exactly one of the two values.
-The default is `full`. Choose `minimal` only for trivial fixes; the Lead is the one filling it in.
+## Verification Depth: {full | minimal}
+Do **not** delete this line from the template; always send it. The Lead must fill in exactly one of the two values.
+The default is `full`. Only for a trivial fix should the Lead choose and fill in `minimal`.
 
-- **full** (new feature implementation / fix / refactor / adding tests / hook / skill / settings edits, etc., anything that changes code or behavior)
-  - **Required regardless of whether codex is available**: run the repository's normal verification (existing test suite / lint / type-check, etc.) to green and report in the normal completion format (deliverable description, remaining work, PR draft / retro record)
-  - **Additional gate (optional)**: after commit completes, if the `codex` CLI is available, run Codex self-review via `codex exec --skip-git-repo-check`
-    - Detection commands: `command -v codex` (Bash/zsh) / `Get-Command codex -ErrorAction SilentlyContinue` (PowerShell)
-    - In environments where codex is not installed, skip the self-review and proceed to the completion report on the normal verification alone (the round discipline below does not apply)
-  - **The following applies only when codex was run**:
-    - Stack a fix commit before the completion report for Blocker / Major
-    - **If the same finding category (e.g. loose-match precision / type narrowing, etc.) cannot be eliminated in 3 rounds, treat it as a design issue**. Send the completion report immediately and ask the Lead for a scope-reduction decision (to prevent infinite loops)
-    - Minor / Nit are left in place by default. Document them as known limitations in README / Issue / PR body
-    - Do not use the `codex:rescue` skill (there are cases of >18-minute hangs; direct `codex exec` is more stable)
-  - Example review instruction: `codex exec --skip-git-repo-check "Review the diff between this branch and main. Classify findings as Blocker/Major/Minor/Nit and add target file:line and the rationale to each, concise in Japanese"`
+- **full** (new feature implementation / fix / refactor / test addition / hook, skill, or config edits, and anything else involving code or behavior changes)
+  - **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs into these directories. If you learn something that includes such information, do not record it; escalate to the Lead (secretary) instead.
+  - **Required regardless of whether codex is present**: run the repository's normal verification steps such as the existing test suite / lint / type-check until green, and report using the normal completion format (deliverable summary, remaining work, PR draft / retrospective record)
+  - **Additional gate (optional)**: after completing the commit, if the `codex` CLI is available, run a Codex self-review with `codex exec --skip-git-repo-check`
+    - Check command: `command -v codex` (Bash/zsh) / `Get-Command codex -ErrorAction SilentlyContinue` (PowerShell)
+    - In environments where codex is not installed, skip the self-review and proceed to the completion report with only the normal verification above (the round rules below do not apply)
+  - **The following applies only if codex is run**:
+    - For Blocker / Major findings, add a fix commit before the completion report
+    - **If the same finding category (for example: tightening a loose match / narrowing a type) cannot be cleared after 3 rounds, it is a design problem**. Report completion immediately and ask the Lead to decide whether to reduce scope (prevents infinite loops)
+    - Minor / Nit findings should generally be left as-is. Document them as known limitations in the README / Issue / PR body
+    - Do not use the `codex:rescue` skill (there have been hangs longer than 18 minutes; running `codex exec` directly is more stable)
+  - Review instruction example: `codex exec --skip-git-repo-check "Review the diff in this branch from main. Classify findings as Blocker/Major/Minor/Nit, and for each finding include the target file:line number and rationale, concisely in Japanese"`
 
-- **minimal** (trivial fixes: CI output formatting / typo / comment edits / matching to existing test format, etc., where the instruction limits changes to a few lines in 1 file)
-  - Apply the requested fix → `git add` → `git commit` straight through
-  - Operational checks beyond Codex self-review / additional test runs / diff inspection are **strictly forbidden**
-  - The completion report is a single line sent to the Lead (`secretary`):
-    - `done: {short commit SHA} {changed file name}` (e.g. `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
-    - SHA is from `git rev-parse --short HEAD`; file name is one if a single file, space-separated if multiple
-    - Other information (deliverable description, PR draft, remaining points, etc.) is unnecessary. push / PR creation are done on the Lead side
-  - Retro record (`knowledge/raw/`) is **not needed** for minimal (trivial fixes are presumed to have no reusable lessons). If you make a non-obvious discovery, you may create one as in `full`
+- **minimal** (trivial fix: CI output formatting / typo / comment correction / aligning to an existing test format, etc., where the instructed changes are limited to a few lines in a single file)
+  - Apply the instructed fix → `git add` → go straight to `git commit`
+  - Codex self-review, additional test execution, and any behavioral verification beyond checking the diff are **strictly prohibited**
+  - Send the completion report to the Lead (`secretary`) as a single line:
+    - `done: {short commit SHA} {changed filename}` (example: `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
+    - Use `git rev-parse --short HEAD` for the SHA. For filenames, send one if only one file changed, or separate multiple filenames with spaces
+    - No other information is needed (deliverable summary, PR draft, remaining issues, etc.). Push / PR creation will be handled by the Lead side
+  - A retrospective record (`knowledge/raw/`) is **not required** for minimal mode (on the assumption that there is no reusable learning in a trivial fix). If there is a non-obvious finding, you may create one entry just as in `full`
 
-**Choosing the value is the Lead's responsibility.** The Worker follows the value (`full` or `minimal`) as written in the instruction; do not switch on your own. If this line itself was not sent at dispatch time, or the value is unclear, the Worker should confirm with the Lead (do not silently fall back to `full`).
+**The choice is the Lead's responsibility**. The Worker must follow the value written in the instruction (`full` or `minimal`) as-is and must not decide to switch it independently. If this line itself was not sent at dispatch time, or if the value was ambiguous, the Worker must ask the Lead for confirmation (do not unilaterally fall back to `full`).
 ```
 
 ## Consistency grep target list for cross-cutting operational changes
 
-When delegating a **cross-cutting change** (one that does not stay in a single file but spans multiple roles / skills / settings / docs) — such as operational mode, common settings, naming conventions — explicitly state the grep scope for consistency check in the "Constraints" or "Task" section of the Worker instruction. Without scope, the Worker fixes only the files in front of them and misses the same-name references on the other-role / docs side (often happens with renames / mode changes).
+When delegating **cross-cutting changes** such as operating mode changes, shared configuration changes, or naming convention changes (changes that are not confined to one file and span multiple roles / skills / settings / documents), explicitly specify the grep scope for consistency checking in the Worker's "Constraints" or "Task" section. If you do not specify the scope, the Worker may fix only the files they happen to notice and miss same-name references on other roles or documentation sides, which is especially common in renames and mode changes.
 
-### Examples judged as "cross-cutting"
+### Examples of changes that should be classified as "cross-cutting"
 
-- **Operational mode change**: switching the default of Plan / auto / `bypassPermissions` etc.
-- **Wholesale change of permissions / hook settings**: cross-cutting rewrites to allow / deny / hooks of `.claude/settings*.json`
-- **Renaming communication channels / MCP server names**: renaming peer names of renga-peers / MCP server names / role identifiers (e.g. `foreman` → `dispatcher`)
-- **Adding / removing common flags / env vars**: environment variables or CLI flags read by all roles or multiple skills
+- **Operating mode changes**: switching defaults such as Plan / auto / `bypassPermissions`
+- **Wholesale changes to permissions / hook settings**: rewriting allow / deny / hooks across `.claude/settings*.json`
+- **Communication channel / MCP server name changes**: renaming renga-peers peer names, MCP server names, or role identifiers (example: `foreman` → `dispatcher`)
+- **Adding or removing shared flags / env vars**: environment variables or CLI flags read by all roles or multiple skills
 
-Conversely, behavior changes confined to a single skill or role (e.g. format adjustment within `org-retro`) are not cross-cutting, so this section is unneeded.
+Conversely, behavior changes confined within a single skill or a single role (for example, format adjustments within `org-retro`) are not cross-cutting, so this section is unnecessary.
 
 ### Recommended grep target directories
 
-If judged cross-cutting, **enumerate at least the following as the grep scope** in the Worker instruction. Trim those that don't exist depending on the project layout:
+If a change is judged to be cross-cutting, **list at least the following as grep scope in the Worker instructions**. Remove any that do not exist in the project structure:
 
-- `.claude/` — in addition to skills (`skills/`), include `settings.json` / `settings.local.json`. Permissions / hook / env changes often remain in the settings themselves; scanning only `.claude/skills/` misses the canonical settings
-- `registry/` — projects.md / org-config.md / worker-directory.md
+- `.claude/` — include not only the skill bodies (`skills/`) but also `settings.json` / `settings.local.json`. Permission / hook / env changes often remain in the settings themselves, and scanning only `.claude/skills/` can miss the canonical configuration
+- `registry/` — `projects.md` / `org-config.md` / `worker-directory.md`
 - `knowledge/curated/` — accumulated operational knowledge (patterns written under old names tend to remain)
 - `dashboard/` — JSON generation scripts and templates
-- `.dispatcher/` — Dispatcher role's runtime / prompt
-- `.curator/` — Curator role's runtime / prompt
-- `.hooks/` — PreToolUse / PostToolUse hook scripts themselves (references to hook file names / role identifiers tend to remain)
+- `.dispatcher/` — Dispatcher role runtime / prompts
+- `.curator/` — Curator role runtime / prompts
+- `.hooks/` — PreToolUse / PostToolUse hook scripts themselves (references to hook filenames and role identifiers tend to remain)
 - `docs/` — public documentation
-- `tools/` — checkers / helper scripts (`check_role_configs.py`, etc.)
-- `tests/` — hook / runner / checker tests (missing fixture names from rename / mode changes can break CI)
+- `tools/` — checkers and helper scripts (`check_role_configs.py`, etc.)
+- `tests/` — tests for hooks / runners / checkers (if fixture names are missed in a rename or mode change, CI can break)
 
-Example Worker instruction:
+Example Worker instructions:
 
 ```
 ## Constraints
-- grep for any remaining references to old name `foo` in the following directories, and replace all with the new name `bar` if found:
-  - .claude/                (also include settings.json / settings.local.json)
+- Grep the following directories to ensure no references to the old name `foo` remain, and if found, replace all of them with the new name `bar`:
+  - .claude/                (including settings.json / settings.local.json)
   - registry/
   - knowledge/curated/
   - dashboard/
@@ -121,62 +122,72 @@ Example Worker instruction:
 - Example grep command (PowerShell): `Select-String -Path .claude\,registry\,knowledge\curated\,dashboard\,.dispatcher\,.curator\,.hooks\,docs\,tools\,tests\ -Pattern "foo" -Recurse`
 ```
 
-If the old / new names are not yet decided at delegation time, run the Worker in two steps: "detect the target patterns and list them → confirm with the Lead → replace".
+If the old name / new name has not yet been finalized at the time of delegation, have the Worker operate in two stages: "detect and list target patterns → confirm with the Lead → replace".
 
-## Notes on use
+## doc-audit role only: chunked transfer method for write artifacts
 
-- Make the task description concrete; ambiguous instructions raise the Worker's judgment cost
-- Always state constraints explicitly when there are any
+In the doc-audit role, Edit / Write / MultiEdit / NotebookEdit are denied, and Bash heredoc is also blocked by the deny-circumvention safeguard. In tasks that require writing out artifacts such as `AUDIT.md`, incidents reproducibly occur where the Worker gets stuck holding the body text (example: 2026-05-03 readme-drift-audit, 26 findings × 7 repos).
 
-## Auto-expand template (helper-rendered)
+For delegations with the doc-audit role plus a write artifact, **always add** the following text to the "Constraints" section:
 
-When a task JSON contains `instruction_vars`, `tools/dispatcher_runner.py delegate-plan` substitutes variables into the strict template below and writes it as the Worker instruction. If `instruction` is supplied directly, it wins and this template is not used (backward compat).
+> Do not write the artifact (`{ARTIFACT_NAME}`) to a file. Instead, split the body into chunks of about 8000 characters and send them sequentially via renga-peers `mcp__renga-peers__send_message(to_id="secretary")`. Add a `[CHUNK n/N]` header at the start of each chunk, and send `[CHUNK_END]` at the end. The Lead side will concatenate them and write them out as `{worker_dir}/{ARTIFACT_NAME}`. Do not attempt Edit/Write (it will be denied).
 
-Variable list (referenced by the helper):
+Replace `{ARTIFACT_NAME}` with the actual filename such as `AUDIT.md` or `REPORT.md`.
 
-- `task_description` (required): goal of the task and expected deliverable
-- `dir_setup` (required): project preparation instructions. The Lead passes a string with Pattern A/B/C already resolved
-- `branch_strategy` (required): branch strategy. Required because defaulting it would silently mis-instruct worktree-deployed Workers to commit on main
+## Notes for Use
+
+- Describe the task concretely. Ambiguous instructions increase the Worker's decision cost
+- If there are constraints, always state them explicitly
+
+## Auto-Expansion Template (helper-rendered)
+
+If the task JSON includes `instruction_vars`, `claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` expands the variables in the following strict template and writes the result as Worker instructions (defaults such as Japanese greeting text or `(none)` are overridden in `tools/ja_locale.json` directly under the repository root. Because the Dispatcher runs with `cwd=".dispatcher/"`, the actual invocation should point one level up, such as `--locale-json ../tools/ja_locale.json --template-repo ..`. See the command example in `.dispatcher/CLAUDE.md` for details). If the `instruction` field is specified directly, that takes precedence and this template is not used (backward-compat).
+
+Variable list (referenced by the helper side):
+
+- `task_description` (required): the task purpose and expected deliverables
+- `dir_setup` (required): project setup instructions. The Lead passes a resolved string for Pattern A/B/C
+- `branch_strategy` (required): branch strategy. Required because defaulting to main when deploying a worktree would be misleading
 - `verification_depth` (required): `full` or `minimal`
-- `constraints` (optional): constraints. Defaults to "(none)"
-- `report_target` (optional): peer name for completion reports. Defaults to `secretary`
-- `claude_md_filename` (optional): the conduct-rules file the Worker reads. Defaults to `CLAUDE.md`. For claude-org self-edit tasks, pass `CLAUDE.local.md` (see `references/claude-org-self-edit.md`)
+- `constraints` (optional): constraints. Defaults to "(none)" when omitted
+- `report_target` (optional): peer name for completion reports. Defaults to `secretary` when omitted
+- `claude_md_filename` (optional): filename of the behavioral rules file the Worker reads. Defaults to `CLAUDE.md`. For claude-org self-edit tasks, pass `CLAUDE.local.md` (see `references/claude-org-self-edit.md`)
 
-Unknown variable keys are rejected as input_invalid. A `verification_depth` other than `full` / `minimal` is also input_invalid.
+Unknown variable keys are rejected as input_invalid. `verification_depth` is also input_invalid if it is anything other than `full` / `minimal`.
 
 <!-- AUTO-EXPAND-TEMPLATE-START -->
 ```
-Please carry out the following task. The detailed code of conduct is described in {claude_md_filename}.
+Please carry out the following task. Detailed behavioral rules are documented in {claude_md_filename}.
 
 ## Task
 {task_description}
 
-## Project preparation
+## Project Setup
 Important: your working directory is the absolute path described in {claude_md_filename}.
-First run `pwd` and confirm it matches the working directory in {claude_md_filename}.
-All file creation must stay inside this directory. Moving up to `..` or recreating the claude-org structure is forbidden.
+First, run `pwd` and confirm that it matches the working directory in {claude_md_filename}.
+All file creation must be limited to this directory. Moving to `..` or recreating the claude-org structure is prohibited.
 
 {dir_setup}
 
-## Branch strategy
+## Branch Strategy
 {branch_strategy}
 
-## How to work
+## How to Proceed
 Work directly in auto mode. Do not use Plan mode.
 
 ## Constraints
 {constraints}
 
-## Verification depth: {verification_depth}
-- full: run normal verification (existing test suite / lint / type-check, etc.) to green; after commit completes, if the Codex CLI is available, run `codex exec --skip-git-repo-check` for self-review. Stack fix commits for any Blocker / Major before reporting completion. If the same finding category does not clear after 3 rounds, report completion immediately. Minor / Nit may remain (record explicitly as known limitations).
-- minimal: trivial fix only. Codex self-review and additional verification are forbidden. Send a one-line completion report (`done: <SHA> <files>`) to the Lead.
+## Verification Depth: {verification_depth}
+- full: run normal verification such as the existing test suite / lint / type-check until green, and after completing the commit, if the codex CLI is available, run a self-review with `codex exec --skip-git-repo-check`. For Blocker / Major findings, add a fix commit before the completion report. If the same finding category cannot be cleared after 3 rounds, report completion immediately. Minor / Nit findings should be left as-is (document them as known limitations). **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs. Do not record learnings that include such information; escalate them to the Lead (secretary).
+- minimal: only for trivial fixes. Codex self-review and additional verification are prohibited. Send the completion report to the Lead as a single line (`done: <SHA> <files>`).
 
-## Report destination
-Send completion / progress / blocker reports via renga-peers to `to_id="{report_target}"`. The Lead handles push / PR creation.
+## Reporting Destination
+Send completion / progress / block reports via renga-peers to `to_id="{report_target}"`. Push / PR creation will be handled by the Lead side.
 
-## SUSPEND handling
-If you receive a message starting with "SUSPEND:", interrupt the work and report the situation.
+## SUSPEND Handling
+If you receive a message starting with `SUSPEND:`, stop work and report the situation.
 ```
 <!-- AUTO-EXPAND-TEMPLATE-END -->
 
-The body of this template is read by the helper, so do not change the position of the marker comments or the code fence (when changing, also update the parser in `tools/dispatcher_runner.py`).
+This template body is read by the helper, so do not change the position of the marker comments or the code fence above (if you modify them, also verify consistency with the parser implementation on the `claude-org-runtime` side: `claude_org_runtime.dispatcher.runner.load_instruction_template`).
