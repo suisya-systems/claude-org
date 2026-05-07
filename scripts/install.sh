@@ -376,7 +376,7 @@ Done. Next steps:
 
   cd $TARGET_DIR
   bash scripts/install-hooks.sh   # enable pre-commit secret scanner
-  $RENGA_NEXT_STEP --layout ops              # launch the Secretary pane
+  "$RENGA_NEXT_STEP" --layout ops              # launch the Secretary pane
 
 Inside the Secretary's Claude Code pane, run:
 
