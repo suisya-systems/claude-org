@@ -265,14 +265,22 @@ _CLAUDE_ORG_SELF_EDIT_SLUGS: tuple[str, ...] = ("claude-org-ja", "claude-org")
 # Tuple constant so adding additional mirrors is a one-line change.
 _CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja", "claude-org")
 
-# Capture <owner>/<repo> from common github URL forms:
-#   https://github.com/owner/repo(.git)
-#   git@github.com:owner/repo(.git)
-#   ssh://git@github.com/owner/repo(.git)
+# Capture <owner>/<repo> from common github URL forms, with ``github.com``
+# anchored at the host position so URLs that merely *contain* the literal
+# ``github.com`` somewhere (e.g. ``file:///tmp/github.com/foo/claude-org.git``
+# or ``https://mirror.example/github.com/foo/claude-org.git``) do NOT match.
+# Accepted forms:
+#   https://[user[:pw]@]github.com/owner/repo(.git)
+#   http://[user[:pw]@]github.com/owner/repo(.git)
+#   ssh://[user@]github.com/owner/repo(.git)
+#   git://[user@]github.com/owner/repo(.git)
+#   git@github.com:owner/repo(.git)         (scp-like SSH form)
 # A local-path origin (worker-dir clones use these) has no ``github.com``
-# segment, so the regex naturally rejects it — even when the upstream dir
-# happens to be named ``claude-org-ja``.
-_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$")
+# host, so the anchored regex naturally rejects it.
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"^(?:(?:https?|ssh|git)://(?:[^@/\s]+@)?|git@)"
+    r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$"
+)
 
 
 def _extract_github_repo_name(url: str) -> Optional[str]:

@@ -808,6 +808,22 @@ class TestIsClaudeOrgProject(unittest.TestCase):
         )
         self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
 
+    def test_origin_with_github_com_in_path_returns_false(self):
+        """Anchor guard: a non-github host whose URL merely *contains* the
+        literal ``github.com`` somewhere (mirror server path, file:// URI
+        with a coincidentally named directory) must NOT pass the host
+        gate, even when the slug matches."""
+        bad_origins = [
+            "https://mirror.example/github.com/suisya-systems/claude-org-ja.git",
+            "file:///tmp/github.com/suisya-systems/claude-org-ja.git",
+        ]
+        for i, origin in enumerate(bad_origins):
+            with self.subTest(origin=origin):
+                repo = self.tmp / f"masquerade-{i}"
+                repo.mkdir()
+                _Sandbox.init_git_with_origin(repo, origin)
+                self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
+
     def test_en_slug_in_ja_checkout_returns_false(self):
         """Symmetric cross-match guard: slug=claude-org from inside the ja
         checkout (origin=.../claude-org-ja.git) must also be False."""
