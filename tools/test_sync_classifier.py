@@ -27,6 +27,10 @@ RUNTIME_PATHS = [
     "tools/test_check_renga_compat.py",
     "tools/migrations/2026-05-runtime.sh",
     "tools/data/fixtures/sample.yaml",
+    # Templates dir mechanics (loader scripts / JSON schemas) stay runtime;
+    # only the prose .md / .toml templates fall through to translation.
+    "tools/templates/loader.py",
+    "tools/templates/schema.json",
     "dashboard/app.js",
     "dashboard/server.py",
     "dashboard/index.html",
@@ -46,6 +50,11 @@ TRANSLATION_PATHS = [
     "docs/runbook/auto-mirror-runtime.md",
     "README.md",
     "CLAUDE.md",
+    # Worker brief templates: prose rendered into Worker prompts. Must reach
+    # en harness in English via the translation pipeline.
+    "tools/templates/worker_brief_self_edit.md",
+    "tools/templates/worker_brief_normal.md",
+    "tools/templates/worker_brief.example.toml",
 ]
 
 DIVERGENCE_PATHS = [
