@@ -99,7 +99,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 ## Watching Worker panes
 
-While any Worker pane is live, you watch it. Implementation: after the first dispatch completes, start a `/loop 1m` monitoring loop. Stop the loop once all Worker panes have closed.
+While any Worker pane is live, you watch it. Implementation: after the first dispatch completes, start a `/loop 3m` monitoring loop. Stop the loop once all Worker panes have closed.
 
 > **Channel separation** (renga 0.14.0+ exposes everything over MCP):
 > - **Pane lifecycle (start / exit)** — `mcp__renga-peers__poll_events`, cursor-based long-poll.
@@ -108,7 +108,7 @@ While any Worker pane is live, you watch it. Implementation: after the first dis
 > - **Pane enumeration / closing** — `mcp__renga-peers__list_panes` / `close_pane`.
 > - **Raw key input** — `mcp__renga-peers__send_keys` (Shift+Tab, Enter, Esc, ...).
 
-### One pass of the monitoring loop (every 1 min)
+### One pass of the monitoring loop (every 3 min)
 
 Run these in order each cycle:
 
@@ -265,7 +265,7 @@ The pane name to monitor is the Pane Name (`worker-{task_id}`) recorded in `.sta
 
 ### Design notes
 
-- **Why `poll_events` with `timeout_ms=5000`**: shorten the 1-minute polling interval. Each cycle long-polls for 5s; the remaining 55s is covered by `check_messages` + `list_panes` + `inspect_pane`. Reduces average pane-exit detection latency from ~30s to ~2.5s.
+- **Why `poll_events` with `timeout_ms=5000`**: shorten the 3-minute polling interval. Each cycle long-polls for 5s; the remaining 175s is covered by `check_messages` + `list_panes` + `inspect_pane`. Reduces average pane-exit detection latency from ~90s to ~2.5s.
 - **Cursor management**: `.state/dispatcher-event-cursor.txt` stores the previous `next_since`. First run (no cursor): omit `since` for "from now on" semantics. On crash recovery, missing cursor means losing up to 5 seconds of events — recoverable via the `list_panes` reconciliation.
 - **Why two layers (events + `list_panes`)**: events are best-effort (`EventsDropped` happens), so `mcp__renga-peers__list_panes` reconciliation is the safety net.
 - **Why inspect is an independent observation channel**: when a Worker stalls on an approval prompt, relying only on Worker self-report (renga-peers) means the Worker may stall before sending the notification. Inspect actively observes from the Dispatcher side, backstopping any missed / delayed self-report. Self-report and inspect together give "two-channel observation of the same event" — redundancy by design.
