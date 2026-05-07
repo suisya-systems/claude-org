@@ -1,7 +1,7 @@
 name: Auto-mirror runtime (ja -> en)
 
 # Phase P2 (mirror PR, manual merge). Listens to repository_dispatch
-# ja_pr_merged from suisya-systems/claude-org, classifies the changed
+# ja_pr_merged from suisya-systems/claude-org-ja, classifies the changed
 # files via tools/sync_classifier.py, and:
 #
 #   - For runtime-class files: opens (or refreshes) a mirror PR on this
@@ -52,7 +52,7 @@ env:
   # P2 = open mirror PR for runtime-class files. Flip to "false" to
   # revert to P1 warn-only (tracking issue only, even for runtime files).
   OPEN_PR: 'true'
-  JA_REPO: suisya-systems/claude-org
+  JA_REPO: suisya-systems/claude-org-ja
 
 jobs:
   classify-and-mirror:
