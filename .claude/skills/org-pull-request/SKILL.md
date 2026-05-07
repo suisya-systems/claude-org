@@ -37,6 +37,7 @@ Trigger this immediately after the user gives **explicit approval** such as "OK"
 - Keep `run.status` **at REVIEW** (so the same pane can handle GitHub-side PR review feedback if it arrives. Transition to COMPLETED happens in 2b-ii by calling `update_run_status('<task_id>', 'completed')`). Do not edit markdown directly
 - **Do not close the pane yet**: do not send `CLOSE_PANE` immediately after PR creation. Delay worktree removal and Worker Directory Registry updates until 2b-ii
 - If PR review feedback arrives, follow flow 2c and send follow-up instructions to the same Worker with `send_message`, then have it stack fix commits in the same pane (avoid dispatching a new Worker; that would pay the cost of reconstructing the Issue / diff / decision boundary)
+- **For a dogfood-target PR (Issue #338)**: in `registry/dogfood_pending.md`, find the `status=pending` row for this `task_id` and (a) fill in `impl_pr=#<PR>`, (b) create the paired follow-up issue with `gh issue create --title "dogfood follow-up: <surface>" --body-file <rendered template>` (template: [`.claude/skills/org-delegate/references/dogfood-issue-template.md`](../org-delegate/references/dogfood-issue-template.md)), (c) fill the created issue number into `dogfood_issue=#<MMM>` and transition `status` from `pending → open`, (d) append `Paired dogfood issue: #<MMM>` to the bottom of the PR body. The full protocol's SoT is [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8
 
 ## 2c. Review Feedback / CI Failure Feedback Loop
 
@@ -82,6 +83,7 @@ Actions:
   - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (do not delete it even after merge; preserve PR history)
     - **For self-edit (`pattern_variant='live_repo_worktree'`)**: because the worktree base is `{claude_org_path}`, run `git -C {claude_org_path} worktree remove .worktrees/{task_id}` (Issue #289). Keep the branch here as well
   - Pattern C (ephemeral): keep the directory (consider manual deletion only if disk usage becomes a problem)
+- **On paired-issue close for a dogfood-target PR (Issue #338)**: because the implementation PR merge and the paired follow-up issue close can have independent lifecycles, this skill does not guarantee the `consumed → closed` transition simply because the implementation PR was merged. The terminal `consumed → closed` transition is the Lead's register-hygiene responsibility, collected via [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §`consumed → closed` observation timing (verify the paired-issue state with `gh issue view` at register-write time + at `/org-resume` startup). If this skill happens to observe the relevant row at PR-merge time, opportunistically run the hygiene step
 - **For PR-based close-out, call `tools/run_complete_on_merge.py`** (Issue #317. Normally no manual invocation is needed because the merge-watch loop in `pr-watch --merge-watch` starts automatically, but call it explicitly if merge-watch was skipped or merge was observed manually):
   ```bash
   python tools/run_complete_on_merge.py --pr <PR>

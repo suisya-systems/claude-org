@@ -84,6 +84,10 @@ python tools/gen_delegate_payload.py preview \
     --target <path>... --description "<desc>" \
     --verification-depth full
 
+# 1.5. Step 1.7 gate: evaluate Codex design-review trigger conditions against the preview output.
+#      Only when applicable, run a design review with `codex exec` and pass the summary to apply
+#      via --impl-guidance or --knowledge (see Step 1.7 below).
+
 # 2. apply: reserve state.db with runs.status='queued' + place CLAUDE.md/CLAUDE.local.md
 #    + run claude-org-runtime settings generate + output send_plan.json
 python tools/gen_delegate_payload.py apply \
@@ -119,6 +123,123 @@ The Lead extracts "target files" from the task description: paths explicitly nam
 ### When the standard path returns unexpected output
 
 If the standard path (`gen_delegate_payload.py apply`) returns unexpected output such as a wrong Pattern decision, resolver error, or brief inconsistency, the Lead must **not manually reproduce the same work**. File an Issue for the resolver bug and pause delegation for that task until the resolver is fixed. Manual fallback is out of scope for this skill. In environments without the CLI, only the `--skip-settings` flag is allowed. A museum copy of the historical handwritten path exists at `docs/legacy/hand-typed-delegate-path.md`, but it must not be referenced in standard operations.
+
+## Step 1.7: Codex Design-Review Trigger (run by the Lead, Issue #337)
+
+Looking at the `preview` output (`description` / number of `--target` entries / referenced documents), if **at least one** of the following applies, run a Codex design review **before** `apply`. This gate is based on Curator session #18 retrospective (Issue #283 / session #12), where "an up-front Codex design review caught 2 Blocker + 5 Major findings in a single round."
+
+| Trigger | How to evaluate |
+|---|---|
+| Estimated effort ≥ 3h | Lead's judgment from the task description (user input / preview scale) |
+| Introduces a new module / new tool | The description contains "new", "new tool", "newly introduced", etc., or the planned files in preview are all new paths |
+| File changes ≥ 3 | Number of `--target` entries + edit targets enumerated in the preview brief |
+| References a contract document under `docs/contracts/` | The description / brief / `--knowledge` references something under `docs/contracts/` |
+
+**Procedure:**
+
+```bash
+codex exec --skip-git-repo-check "Design review for <task-id>.\
+  Task: <description>.\
+  Target files: <target paths>.\
+  Related contracts / references: <docs paths>.\
+  Classify pre-implementation findings as Blocker / Major / Minor / Nit, and for each finding include the target file:line and the rationale, in concise English."
+```
+
+Do not use the `codex:rescue` skill (forbidden by `CLAUDE.local.md`). Use `codex exec` directly only.
+
+**Embedding the review summary:**
+
+- Save the summary at `tmp/codex-review-{task-id}.md`
+- When calling `apply`, pass **`--impl-guidance "<summary body>"`**. This expands the summary body into `[implementation].guidance` in the brief, so the Worker can read it directly
+- As a supplement, add `--knowledge tmp/codex-review-{task-id}.md` so the brief's `[references].knowledge` enumerates the path and the Worker can refer to the full text on demand (`gen_worker_brief.py` only enumerates paths and does not embed bodies). Reliably delivering the body to the Worker is the responsibility of `--impl-guidance`
+- If a Blocker / Major is reported, escalate to the user and confirm whether the approach should change before proceeding to apply
+
+**Helper script:** marked optional in the Issue #337 acceptance and not implemented in this PR. The Lead evaluates the table above manually.
+
+## Step 1.8: Dogfood Follow-up Issue Protocol (Lead + org-pull-request, Issue #338)
+
+For PRs that introduce a new tool / runtime / workflow, create a "dogfood follow-up" issue paired with the implementation PR, and explicitly earmark the next delegation that actually uses the new tool as a **dogfood pass**. This protocol is based on the Curator session #18 retrospective, where "PR #288 surfaced 4 categories of defects only on first real use" (also reproduced in session #11).
+
+### Applicability
+
+Triggered when the task is one of the following:
+
+- Adds a new CLI tool / script (`tools/*.py`, `tools/*.sh`, `tools/*.ps1`, etc.)
+- Introduces a new runtime / new workflow / new protocol
+- A breaking redesign of an existing tool
+
+### Lead (org-delegate) responsibilities
+
+The dogfood protocol spans **two delegations**: (A) the **implementation delegation** that introduces the new tool, and (B) the **dogfood pass delegation** that actually uses that tool afterward. The Lead reads/writes `registry/dogfood_pending.md` in both.
+
+**(A) When opening the implementation delegation (same timing as Step 1.7 evaluation):**
+
+1. Determine that applicability is satisfied, and in parallel with preview, mark the task as a "dogfood target task"
+2. Append one new row to `registry/dogfood_pending.md` with `status=pending`, empty `dogfood_issue` / `dogfood_run_task_id`, and empty `impl_pr` (the PR number is filled in later). At this point the implementation PR itself does not yet exist
+3. The implementation Worker brief does not need to mention dogfood (neither the issue number nor the PR number is finalized at this point). The implementation Worker just builds the tool as usual
+
+**(B) When opening the dogfood pass delegation:**
+
+4. Whenever opening a new delegation, check rows in `registry/dogfood_pending.md` whose `status=open` (= the paired follow-up issue is created and a dogfood pass has not yet been run)
+5. If the new task being opened actually uses the tool / surface in question, earmark that task as the dogfood pass:
+   - Add `--impl-guidance "Dogfood pass for paired follow-up issue #<N>. Report any defects to that issue using the format in references/dogfood-issue-template.md. Refs #<N>, do not Closes."` to the `apply` call
+   - Additionally pass `--knowledge .claude/skills/org-delegate/references/dogfood-issue-template.md` so the defect-reporting format is included in the brief
+6. Update the relevant row: fill in `dogfood_run_task_id=<new task_id>`, leave `status` at `open` (it transitions to `consumed` upon receipt of the dogfood Worker's completion report — see §register state transitions)
+
+### org-pull-request responsibilities (cross-ref)
+
+At PR creation / merge time, the org-pull-request side does the following (detailed steps live there; Issue #338 only records the protocol in this SKILL):
+
+1. Right after creating the implementation PR: find the row in `registry/dogfood_pending.md` with `status=pending`, fill in `impl_pr=#<NNN>`, and create the paired follow-up issue with `gh issue create --body-file <rendered template>` (template: [`references/dogfood-issue-template.md`](references/dogfood-issue-template.md))
+2. Fill the created issue number into `dogfood_issue=#<MMM>` on that row, and transition `status` from `pending → open`
+3. Append `Paired dogfood issue: #<MMM>` to the bottom of the implementation PR body
+4. When the paired issue is closed, transition `status` from `consumed → closed` on that row
+
+### `dogfood_pending` register format
+
+`registry/dogfood_pending.md` is **not append-only but a partial-update register**: appending rows is via append, and per-column updates (`impl_pr` / `dogfood_issue` / `dogfood_run_task_id` / `status`) are allowed. Logical deletion and row reordering are forbidden.
+
+```
+| task_id | tool / surface | impl_pr | dogfood_issue | dogfood_run_task_id | status |
+|---------|----------------|---------|---------------|---------------------|--------|
+| issue-XXX-new-tool | tools/foo.py | #YYY | #ZZZ | issue-MMM-bar | open |
+```
+
+### register state transitions
+
+```
+[Append row] (org-delegate Step 1.8 §A.2)
+  status = pending      ← issue not created yet / impl_pr also empty
+       │
+       │ Implementation PR created + paired issue created (org-pull-request §1-2)
+       ▼
+  status = open         ← paired issue created / dogfood pass not yet run
+       │
+       │ Earmarked by a follow-up delegation (org-delegate Step 1.8 §B.5-6)
+       │ Fill in dogfood_run_task_id. status stays open
+       │
+       │ Dogfood pass Worker completion report received → defects already aggregated on the paired issue
+       ▼
+  status = consumed     ← defect monitoring period
+       │
+       │ Paired issue closed (org-pull-request §4)
+       ▼
+  status = closed       ← terminal
+```
+
+Each transition is a **single-column delta on a single row**. Updating multiple columns at once is allowed within the same row (e.g., `pending → open` updates `impl_pr` + `dogfood_issue` + `status` together).
+
+### `consumed → closed` observation timing (Lead's register-hygiene responsibility)
+
+A paired follow-up issue may be closed outside the implementation PR's lifecycle (manual close / split into individual fix issues / cleanup after a long idle period), so detection cannot be guaranteed by org-pull-request triggers (PR creation / review / post-merge close) alone. The Lead runs the following hygiene check at **every moment it writes to `registry/dogfood_pending.md`** (= opening the implementation delegation / earmarking the dogfood pass / receiving the dogfood-pass completion report / state inspection):
+
+```bash
+# For each row with status=consumed, transition to closed if the paired dogfood_issue is closed
+gh issue view <dogfood_issue> --json state -q .state
+  # → if "CLOSED", rewrite status from consumed to closed
+```
+
+In addition, the `/org-resume` startup briefing also scans rows with `status=consumed` once each and closes them (resume-time hygiene). This way, even if `consumed` rows linger in the register, they are reliably collected by the next register operation.
 
 ## Step 3 / 4: Worker Launch, Instruction Delivery, State Recording (run by the Dispatcher)
 
@@ -179,6 +300,7 @@ worker → Secretary peer message
   "
   ```
 - Append the event to the DB `events` table (`bash tools/journal_append.sh ...`)
+- **Register update on dogfood-pass completion (Issue #338)**: if the completed task is earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition `status` on that row from `open → consumed`. Defects are assumed to already be aggregated on the paired follow-up issue (`dogfood_issue` column) per the format pre-specified in the dogfood-pass Worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
 - Report the result to the human and **stop, waiting for approval without closing the pane**. Issuing push/PR without approval violates protocol for both the Worker and the user
 
 #### 2b / 2c. After user approval, review comments, post-merge close
