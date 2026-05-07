@@ -32,6 +32,16 @@ RUNTIME_GLOBS: tuple[str, ...] = (
     "tests/**/*",
 )
 
+# Carve-outs from RUNTIME_GLOBS. A path that matches a runtime glob but also
+# matches one of these is *not* classified as runtime; it falls through to the
+# next rule (typically translation). Used so the broad tools/** runtime rule
+# can still hand off prose templates like worker_brief_*.md to the translation
+# pipeline. tools/templates/**/*.py / *.json remain runtime-mirrored.
+RUNTIME_EXCLUDE_GLOBS: tuple[str, ...] = (
+    "tools/templates/**/*.md",
+    "tools/templates/**/*.toml",
+)
+
 TRANSLATION_GLOBS: tuple[str, ...] = (
     ".claude/skills/*",
     ".claude/skills/**/*",
@@ -39,6 +49,11 @@ TRANSLATION_GLOBS: tuple[str, ...] = (
     "docs/**/*",
     "README.md",
     "CLAUDE.md",
+    # Worker brief templates contain prose / placeholder text rendered into
+    # Worker prompts. en harness needs the English version, so the
+    # translation pipeline owns these.
+    "tools/templates/**/*.md",
+    "tools/templates/**/*.toml",
 )
 
 DIVERGENCE_GLOBS: tuple[str, ...] = (
@@ -104,7 +119,7 @@ def classify_path(path: str) -> str:
     allowed paths under .state/ etc. should never be queued for translation.
     """
     p = _normalize(path)
-    if _matches_any(p, RUNTIME_GLOBS):
+    if _matches_any(p, RUNTIME_GLOBS) and not _matches_any(p, RUNTIME_EXCLUDE_GLOBS):
         return CLASS_RUNTIME
     if _matches_any(p, DIVERGENCE_GLOBS):
         return CLASS_DIVERGENCE
