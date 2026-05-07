@@ -324,6 +324,13 @@ if command -v python3 >/dev/null 2>&1; then
 elif command -v python >/dev/null 2>&1; then
   PY=python
 elif [[ "$IS_WINDOWS_SHELL" == "1" ]] && command -v py >/dev/null 2>&1; then
+  # `command -v py` is safe here even though the renga case needed the
+  # full resolve_command ladder: Git Bash / MSYS bash auto-appends
+  # `.exe` for bare-name lookups but not `.cmd` / `.bat`, and the
+  # Python launcher ships as `py.exe` under `C:\Windows\` (always on
+  # PATH on a stock Python install). Verified empirically — see the
+  # commit message for the repro.
+  #
   # Probe with --version so we don't accidentally pick up a launcher
   # whose configured Python 3 is broken or removed; same defensive
   # check install.ps1 does for the Microsoft Store stub.
@@ -355,13 +362,21 @@ fi
 
 # --- Done ------------------------------------------------------------------
 
+# Mirror the same RENGA_BIN/$renga substitution in the Done banner.
+# Without it, a Windows user whose `renga` resolved as `renga.cmd`
+# would see prereq [ok] and the install succeed, then immediately hit
+# `command not found` when they ran the suggested next-step command —
+# Git Bash / MSYS bash auto-appends `.exe` for bare-name invocations
+# but not `.cmd` / `.bat`. Falling back to the bare name on POSIX
+# (RENGA_BIN empty) keeps the printed banner stable for everyone else.
+RENGA_NEXT_STEP="${RENGA_BIN:-renga}"
 cat <<MSG
 
 Done. Next steps:
 
   cd $TARGET_DIR
   bash scripts/install-hooks.sh   # enable pre-commit secret scanner
-  renga --layout ops              # launch the Secretary pane
+  $RENGA_NEXT_STEP --layout ops              # launch the Secretary pane
 
 Inside the Secretary's Claude Code pane, run:
 
