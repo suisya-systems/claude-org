@@ -79,7 +79,12 @@ VALID_PATTERNS = ("A", "B", "C")
 # tasks: the worktree base is Secretary's live repo (claude_org_root) instead
 # of the conventional {workers_dir}/{project_slug}/. See Issue #289 and
 # references/claude-org-self-edit.md for the rationale.
-VALID_VARIANTS = ("ephemeral", "gitignored_repo_root", "live_repo_worktree")
+VALID_VARIANTS = (
+    "ephemeral",
+    "gitignored_repo_root",
+    "live_repo_worktree",
+    "claude_org_repo_worktree",
+)
 VALID_ROLES = ("default", "claude-org-self-edit", "doc-audit")
 
 # Active reservation states — these mean someone else is occupying the base
@@ -248,39 +253,29 @@ def infer_branch(task_id: str, description: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Canonical claude-org self-edit slugs. The resolver short-circuits Pattern B +
-# live_repo_worktree for these slugs when claude_org_root's git origin matches
+# Canonical claude-org self-edit slug. The resolver short-circuits Pattern B +
+# live_repo_worktree for this slug when claude_org_root's git origin matches
 # one of the canonical repos below. Detection runs off the origin URL so the
 # registry need not carry a user-specific local path for the self-edit target.
-# Both the ja source repo (``claude-org-ja``) and the en mirror (``claude-org``)
-# are treated as self-edit targets so Secretaries running from either repo get
-# the same role auto-switch.
-_CLAUDE_ORG_SELF_EDIT_SLUGS: tuple[str, ...] = ("claude-org-ja", "claude-org")
+_CLAUDE_ORG_SELF_EDIT_SLUG = "claude-org-ja"
 
 # Repo names (lowercased, no owner, no trailing ``.git``) that count as
 # claude-org self-edit targets. Owner is intentionally NOT pinned: the
 # project documents fork-based contribution (see CONTRIBUTING.md), and a
 # fork's ``origin`` points at the contributor's fork (e.g.
 # ``git@github.com:<user>/claude-org-ja.git``), not at suisya-systems'.
-# Tuple constant so adding additional mirrors is a one-line change.
-_CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja", "claude-org")
+# Tuple constant so adding additional self-edit repo names is a one-line
+# change.
+_CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja",)
 
-# Capture <owner>/<repo> from common github URL forms, with ``github.com``
-# anchored at the host position so URLs that merely *contain* the literal
-# ``github.com`` somewhere (e.g. ``file:///tmp/github.com/foo/claude-org.git``
-# or ``https://mirror.example/github.com/foo/claude-org.git``) do NOT match.
-# Accepted forms:
-#   https://[user[:pw]@]github.com/owner/repo(.git)
-#   http://[user[:pw]@]github.com/owner/repo(.git)
-#   ssh://[user@]github.com/owner/repo(.git)
-#   git://[user@]github.com/owner/repo(.git)
-#   git@github.com:owner/repo(.git)         (scp-like SSH form)
+# Capture <owner>/<repo> from common github URL forms:
+#   https://github.com/owner/repo(.git)
+#   git@github.com:owner/repo(.git)
+#   ssh://git@github.com/owner/repo(.git)
 # A local-path origin (worker-dir clones use these) has no ``github.com``
-# host, so the anchored regex naturally rejects it.
-_GITHUB_OWNER_REPO_RE = re.compile(
-    r"^(?:(?:https?|ssh|git)://(?:[^@/\s]+@)?|git@)"
-    r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$"
-)
+# segment, so the regex naturally rejects it — even when the upstream dir
+# happens to be named ``claude-org-ja``.
+_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$")
 
 
 def _extract_github_repo_name(url: str) -> Optional[str]:
@@ -309,15 +304,68 @@ def _git_origin_url(repo_path: Path) -> Optional[str]:
     return out or None
 
 
+# claude-org mirror clone — the sibling clone of claude-org-ja. Like the ja
+# self-edit target, the mirror has no registry row to avoid leaking a
+# user-specific local path; detection runs off the clone's git origin URL.
+# The canonical project slug is ``claude-org`` (matches the github repo
+# name and ``tools/state_db/migrate_workers.py:PROJECT_RENAMES``); the
+# 通称 ``claude-org-en`` is recognized as a registry-display alias and
+# normalized to the canonical slug at the resolve() boundary.
+# Two signals must hold for detection:
+# 1. The (already-normalized) slug equals ``claude-org``.
+# 2. ``{workers_dir}/claude-org`` exists as a git repo whose origin URL
+#    points at a github repo named ``claude-org`` (no ``-ja`` suffix).
+#    Owner is intentionally NOT pinned: forks contribute the same way
+#    claude-org-ja does (see ``CONTRIBUTING.md``).
+_CLAUDE_ORG_MIRROR_REPO_NAMES: tuple[str, ...] = ("claude-org",)
+_CLAUDE_ORG_CLONE_DIRNAME = "claude-org"
+
+# Registry-display aliases that resolve to the canonical project slug. The
+# checked-in registry's 通称 column carries ``claude-org-en`` for
+# readability; normalize at the boundary so downstream code only sees the
+# canonical project slug.
+_CLAUDE_ORG_SLUG_ALIASES: dict[str, str] = {
+    "claude-org-en": "claude-org",
+}
+
+
+def find_claude_org_clone(
+    project_slug: str, workers_dir: Path
+) -> Optional[Path]:
+    """Return the canonical claude-org clone path if slug + origin URL
+    match, else None.
+
+    Issue #370: the mirror lives at ``{workers_dir}/claude-org``. Without
+    this detection the resolver returned Pattern C ephemeral for unknown
+    slugs (or Pattern B with ``variant=None`` + ``base_repo=None`` when a
+    legacy registry row was present), and ``apply`` failed with "no usable
+    base repo could be determined". Anchoring on the clone's origin URL
+    makes detection independent of registry state.
+
+    Caller must pass the already-normalized canonical slug (``claude-org``).
+    The resolve() boundary maps registry-display aliases via
+    :data:`_CLAUDE_ORG_SLUG_ALIASES` before reaching here.
+    """
+    if project_slug != _CLAUDE_ORG_CLONE_DIRNAME:
+        return None
+    candidate = (Path(workers_dir) / _CLAUDE_ORG_CLONE_DIRNAME).resolve()
+    if not is_local_git_repo(str(candidate)):
+        return None
+    url = _git_origin_url(candidate)
+    if url is None:
+        return None
+    repo_name = _extract_github_repo_name(url)
+    return candidate if repo_name in _CLAUDE_ORG_MIRROR_REPO_NAMES else None
+
+
 def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
     """True iff this delegation targets claude-org self-edit.
 
     Two signals must both hold:
-    1. ``project_slug`` is one of the canonical self-edit slugs
-       (``claude-org-ja`` or its en mirror ``claude-org``). Without this
-       gate any edit task — clock-app, renga, etc. — would be flagged
-       self-edit because Secretary always runs the resolver from inside
-       the live claude-org checkout.
+    1. ``project_slug`` equals the canonical self-edit slug
+       (``claude-org-ja``). Without this gate any edit task — clock-app,
+       renga, etc. — would be flagged self-edit because Secretary always
+       runs the resolver from inside the live claude-org checkout.
     2. ``claude_org_root``'s ``origin`` remote URL points at a github
        repo whose name matches a known claude-org target. Owner is not
        pinned — fork-based contribution is the documented workflow and a
@@ -327,20 +375,13 @@ def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
        does not match; a fresh repo without any remote also does not
        match.
     """
-    if project_slug not in _CLAUDE_ORG_SELF_EDIT_SLUGS:
+    if project_slug != _CLAUDE_ORG_SELF_EDIT_SLUG:
         return False
     url = _git_origin_url(claude_org_root)
     if url is None:
         return False
     repo_name = _extract_github_repo_name(url)
-    if repo_name not in _CLAUDE_ORG_REPO_NAMES:
-        return False
-    # Require slug ↔ origin repo-name agreement so a delegation targeting
-    # the ja repo from inside the en checkout (or vice-versa) is NOT
-    # misclassified as self-edit. Without this 1:1 gate the resolver would
-    # plant a ja worktree under the en claude_org_root and corrupt the
-    # wrong repo on commit. See Codex review of this PR.
-    return repo_name == project_slug
+    return repo_name in _CLAUDE_ORG_REPO_NAMES
 
 
 def decide_role(
@@ -385,6 +426,11 @@ def resolve(
     if mode not in VALID_MODES:
         raise ResolveError(f"mode must be one of {VALID_MODES}, got {mode!r}")
 
+    # Normalize registry-display aliases to the canonical project slug.
+    # ``claude-org-en`` is the 通称 (display name) for the ``claude-org``
+    # mirror; downstream code only operates on the canonical form.
+    project_slug = _CLAUDE_ORG_SLUG_ALIASES.get(project_slug, project_slug)
+
     targets = list(targets or [])
     claude_org_root = Path(claude_org_root).resolve()
     if registry_path is None:
@@ -399,12 +445,12 @@ def resolve(
         projects = []
     project = find_project(projects, project_slug)
 
-    # claude-org self-edit slugs (claude-org-ja / claude-org) are intentionally
-    # absent from the checked-in registry (the row used to leak a user-specific
-    # local path). When the slug + claude_org_root's git origin both signal
-    # self-edit, synthesize a virtual project pointing at the live checkout so
-    # audit mode and the active-run/state.db driven Pattern A↔B logic below
-    # keep treating it the same as a registered project.
+    # claude-org-ja is intentionally absent from the checked-in registry
+    # (the row used to leak a user-specific local path). When the slug +
+    # claude_org_root's git origin both signal self-edit, synthesize a
+    # virtual project pointing at the live checkout so audit mode and the
+    # active-run/state.db driven Pattern A↔B logic below keep treating it
+    # the same as a registered project.
     if project is None and is_claude_org_project(project_slug, claude_org_root):
         project = RegistryProject(
             name=project_slug,
@@ -412,6 +458,30 @@ def resolve(
             path=str(claude_org_root),
             description="",
             common_tasks="",
+        )
+
+    # Issue #370: claude-org mirror at {workers_dir}/claude-org should
+    # anchor any Pattern A/B for that repo regardless of whether the slug
+    # is missing from the registry, present with a URL path (the live
+    # deployment, where the row reads
+    # ``| claude-org-en | claude-org | https://github.com/...``), or present
+    # with a placeholder. We always re-pin onto the local clone when
+    # detection succeeds — synthesizing a virtual project record when the
+    # registry row is absent or carries a non-local path so downstream
+    # Pattern A/B logic and ``gen_delegate_payload``'s ``base_repo``
+    # derivation can reach it.
+    claude_org_clone: Optional[Path] = find_claude_org_clone(
+        project_slug, workers_dir
+    )
+    if claude_org_clone is not None and (
+        project is None or not is_local_git_repo(project.path)
+    ):
+        project = RegistryProject(
+            name=project_slug,
+            nickname=project.nickname if project is not None else project_slug,
+            path=str(claude_org_clone),
+            description=project.description if project is not None else "",
+            common_tasks=project.common_tasks if project is not None else "",
         )
 
     # --- Role decision (computed first so Pattern B can branch on it) -----
@@ -439,11 +509,25 @@ def resolve(
         # for "no concurrent work known". The dispatcher / Stage 3 apply step
         # will re-validate before actually creating any worktree.
         active = False
+        # Issue #370: legacy state.db rows may still carry the registry-display
+        # alias ``claude-org-en`` (the post-migration canonical is
+        # ``claude-org``). When the mirror is in play, gate on either form
+        # so an active run recorded before normalization still forces
+        # Pattern B for the new delegation.
+        active_run_slugs: tuple[str, ...]
+        if claude_org_clone is not None:
+            active_run_slugs = (project_slug,) + tuple(
+                k for k, v in _CLAUDE_ORG_SLUG_ALIASES.items() if v == project_slug
+            )
+        else:
+            active_run_slugs = (project_slug,)
         if state_db_path is not None and Path(state_db_path).exists():
             try:
                 conn = db_connect(state_db_path)
                 try:
-                    active = project_has_active_run(conn, project_slug)
+                    active = any(
+                        project_has_active_run(conn, s) for s in active_run_slugs
+                    )
                 finally:
                     conn.close()
             except sqlite3.Error:
@@ -464,6 +548,19 @@ def resolve(
             worker_dir = workers_dir / project_slug
 
     worker_dir = worker_dir.resolve() if worker_dir.is_absolute() else worker_dir.resolve()
+
+    # --- claude-org mirror anchoring (Issue #370) -------------------------
+    # Re-pin worker_dir on the actual clone (which lives at
+    # ``{workers_dir}/claude-org``). For Pattern B, also tag the variant so
+    # gen_delegate_payload can derive base_repo from worker_dir.parent.parent
+    # without needing a registry row. Skipped for Pattern C / gitignored
+    # cases — those already use the synthesized project.path directly.
+    if claude_org_clone is not None and pattern in ("A", "B"):
+        if pattern == "B":
+            variant = "claude_org_repo_worktree"
+            worker_dir = (claude_org_clone / ".worktrees" / task_id).resolve()
+        else:
+            worker_dir = claude_org_clone.resolve()
 
     # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
     # Honor explicit values from the caller (typically a worker_brief.toml
@@ -493,6 +590,26 @@ def resolve(
             # → re-derive to claude_org_root/.worktrees/{task_id}/ (Issue #289).
             if pattern == "B" and variant == "live_repo_worktree" and not explicit_worker_dir:
                 worker_dir = (claude_org_root / ".worktrees" / task_id).resolve()
+            # Issue #370 (Codex Minor): same re-derivation for the
+            # claude-org mirror variant — without it, an explicit override
+            # leaves worker_dir at whatever auto-derive produced (often the
+            # clone root) and gen_delegate_payload's
+            # ``base_repo = worker_dir.parent.parent`` derivation lands on
+            # the wrong directory.
+            if pattern == "B" and variant == "claude_org_repo_worktree" and not explicit_worker_dir:
+                clone_for_override = claude_org_clone or find_claude_org_clone(
+                    project_slug, workers_dir
+                )
+                if clone_for_override is None:
+                    raise ResolveError(
+                        "layout_overrides requested pattern=B "
+                        "variant=claude_org_repo_worktree but no claude-org "
+                        f"clone was detected at {workers_dir}/"
+                        f"{_CLAUDE_ORG_CLONE_DIRNAME} (slug={project_slug!r}). "
+                        "Either supply layout_overrides['worker_dir'] "
+                        "explicitly or clone the mirror at that path."
+                    )
+                worker_dir = (clone_for_override / ".worktrees" / task_id).resolve()
         if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
             worker_dir = Path(layout_overrides["worker_dir"]).resolve()
         if "role" in layout_overrides and layout_overrides["role"]:
