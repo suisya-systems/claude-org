@@ -31,21 +31,57 @@ def _build(*body_lines: str, intro: str = "# Projects Registry\n\n") -> str:
 class TestParseProjects(unittest.TestCase):
 
     def test_real_registry_fixture(self):
-        path = PROJECT_ROOT / "registry" / "projects.md"
+        # Parses a checked-in fixture (not the live registry/projects.md), since
+        # the live registry is divergence-allowed across ja / en / forks per
+        # docs/sync-policy.md. The fixture pins a known project list so this
+        # test stays deterministic regardless of the host repo's roster.
+        path = PROJECT_ROOT / "tests" / "fixtures" / "registry" / "projects.md"
         projects = parse_projects(path)
         names = [p.name for p in projects]
-        # registry/projects.md is divergence-allowed per docs/sync-policy.md;
-        # both ja (claude-org-ja registry) and en (claude-org registry)
-        # checkouts should produce a non-empty, well-formed parse. The
-        # specific project name set is repo-local. A follow-up issue will
-        # convert this assertion to a fixture-based test that does not
-        # depend on the live registry contents.
-        self.assertGreater(len(projects), 0)
+        self.assertIn("clock-app", names)
+        self.assertIn("renga", names)
+        self.assertNotIn("claude-org-ja", names)
         # All rows are fully populated Project instances.
         for p in projects:
             self.assertIsInstance(p, Project)
             self.assertTrue(p.nickname)
             self.assertTrue(p.name)
+
+    def test_live_registry_smoke(self):
+        # Smoke check: the live registry/projects.md (which may diverge per
+        # repo/fork) must remain parseable and yield at least one well-formed
+        # row. We do NOT assert specific project names here — that is the
+        # fixture-based test's job.
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():  # pragma: no cover - safety for fork checkouts
+            self.skipTest("live registry/projects.md not present")
+        # parse_projects must not raise and must not emit malformed-row
+        # warnings against the live file. An empty registry is valid (fresh
+        # checkout / fork) — but if the file *contains* table data rows, at
+        # least one must parse cleanly, otherwise the registry is silently
+        # corrupt (e.g. separator dropped → every row classified as
+        # non_table and parser returns []).
+        text = path.read_text(encoding="utf-8")
+        with self.assertNoLogs("tools.registry_parser", level="WARNING"):
+            projects = parse_projects(path)
+        for p in projects:
+            self.assertIsInstance(p, Project)
+            self.assertTrue(p.nickname)
+            self.assertTrue(p.name)
+        # Detect "looks like a markdown table" by counting pipe-prefixed
+        # lines, not by iter_rows() kinds: when the separator row is missing
+        # iter_rows classifies every `| ... |` line (header AND would-be
+        # data rows) as "header", so a kind-based check would silently miss
+        # exactly the corruption mode we want to catch.
+        pipe_lines = sum(
+            1 for ln in text.splitlines() if ln.lstrip().startswith("|")
+        )
+        if pipe_lines >= 2:
+            self.assertGreater(
+                len(projects), 0,
+                "live registry has pipe-table lines but none parsed — "
+                "likely separator/header corruption",
+            )
 
     def test_happy_path(self):
         text = _build(
