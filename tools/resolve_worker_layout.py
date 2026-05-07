@@ -325,7 +325,14 @@ def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
     if url is None:
         return False
     repo_name = _extract_github_repo_name(url)
-    return repo_name in _CLAUDE_ORG_REPO_NAMES
+    if repo_name not in _CLAUDE_ORG_REPO_NAMES:
+        return False
+    # Require slug ↔ origin repo-name agreement so a delegation targeting
+    # the ja repo from inside the en checkout (or vice-versa) is NOT
+    # misclassified as self-edit. Without this 1:1 gate the resolver would
+    # plant a ja worktree under the en claude_org_root and corrupt the
+    # wrong repo on commit. See Codex review of this PR.
+    return repo_name == project_slug
 
 
 def decide_role(

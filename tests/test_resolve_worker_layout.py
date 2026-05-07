@@ -796,6 +796,28 @@ class TestIsClaudeOrgProject(unittest.TestCase):
         )
         self.assertTrue(rwl.is_claude_org_project("claude-org", repo))
 
+    def test_ja_slug_in_en_checkout_returns_false(self):
+        """Cross-match guard: a ja-targeted delegation (slug=claude-org-ja)
+        run from inside the en checkout (origin=.../claude-org.git) must
+        NOT be flagged self-edit. Otherwise the resolver would plant a ja
+        worktree under the en claude_org_root."""
+        repo = self.tmp / "en-live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org.git"
+        )
+        self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_en_slug_in_ja_checkout_returns_false(self):
+        """Symmetric cross-match guard: slug=claude-org from inside the ja
+        checkout (origin=.../claude-org-ja.git) must also be False."""
+        repo = self.tmp / "ja-live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org-ja.git"
+        )
+        self.assertFalse(rwl.is_claude_org_project("claude-org", repo))
+
 
 if __name__ == "__main__":
     unittest.main()
