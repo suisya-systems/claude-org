@@ -30,6 +30,11 @@ RUNTIME_GLOBS: tuple[str, ...] = (
     ".hooks/**/*",
     "tests/*",
     "tests/**/*",
+    # Runtime installer scripts (Issue #159). Narrow on purpose: only the two
+    # documented entry points are ja-canonical; other scripts/* paths fall
+    # through to unknown for manual triage.
+    "scripts/install.sh",
+    "scripts/install.ps1",
 )
 
 # Carve-outs from RUNTIME_GLOBS. A path that matches a runtime glob but also
