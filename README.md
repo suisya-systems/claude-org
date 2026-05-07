@@ -208,6 +208,17 @@ Human <-> Lead Claude (command role)
               +-> Worker pool (implementation work, automatically disappears after completion)
 ```
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="Pane layout right after /org-start: only Lead (Secretary), Dispatcher, and Curator are running; no Worker has been derived yet"></td>
+    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="Pane layout in action: in addition to Lead (Secretary), Dispatcher, and Curator, parallel Workers derived through task delegation are running in the same tab"></td>
+  </tr>
+  <tr>
+    <td><em>Just started: right after running <code>/org-start</code>. The Lead, Dispatcher, and Curator have come up; no Worker exists yet.</em></td>
+    <td><em>In action with workers: the Dispatcher has derived parallel Workers via task delegation, and the four-role configuration is running.</em></td>
+  </tr>
+</table>
+
 - **Lead**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting. The Lead's operational responsibilities are split into the following three skills as part of the Issue [#320](https://github.com/suisya-systems/claude-org-ja/issues/320) carve-out (the role itself is still one — this is an internal skill split):
   - [`/org-delegate`](.claude/skills/org-delegate/SKILL.md) — Delegating work (assembling Worker instructions and dispatching them via the Dispatcher)
   - [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) — The canonical flow for escalating Worker decision requests to a human and updating `.state/pending_decisions.json`
