@@ -35,7 +35,7 @@ from tools.state_db.writer import StateWriter  # noqa: E402
 class _Sandbox:
     """One self-contained claude-org-like tree for a single test."""
 
-    def __init__(self, td: Path):
+    def __init__(self, td: Path, *, with_claude_org_origin: bool = False):
         self.root = td
         self.workers = td / "workers"
         self.workers.mkdir()
@@ -44,6 +44,11 @@ class _Sandbox:
         self.claude_org_root.mkdir()
         (self.claude_org_root / ".state").mkdir()
         (self.claude_org_root / "registry").mkdir()
+        if with_claude_org_origin:
+            self.init_git_with_origin(
+                self.claude_org_root,
+                "https://github.com/suisya-systems/claude-org-ja.git",
+            )
         # workers_dir relative to claude-org root → ../workers
         (self.claude_org_root / "registry" / "org-config.md").write_text(
             "## Workers Directory\nworkers_dir: ../workers\n",
@@ -54,6 +59,20 @@ class _Sandbox:
         conn = connect(self.db_path)
         apply_schema(conn)
         conn.close()
+
+    # ---- git helpers -------------------------------------------------------
+
+    @staticmethod
+    def init_git(repo: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+
+    @classmethod
+    def init_git_with_origin(cls, repo: Path, origin_url: str) -> None:
+        cls.init_git(repo)
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin", origin_url],
+            check=True,
+        )
 
     # ---- registry helpers --------------------------------------------------
 
@@ -301,18 +320,13 @@ class TestPatternCGitignored(unittest.TestCase):
 class TestRoleDetection(unittest.TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
-        self.sb = _Sandbox(Path(self._td.name))
-        # Register the sandbox claude-org root as a project so role detection
-        # has something to compare against.
+        # claude-org-ja self-edit detection runs off the sandbox's git origin
+        # URL, so the sandbox needs ``with_claude_org_origin=True`` and no
+        # registry row for the self-edit target.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=True)
         self.sb.write_registry(
             [
                 ("時計", "clock-app", "-", "Demo clock"),
-                (
-                    "claude-org-ja",
-                    "claude-org-ja",
-                    str(self.sb.claude_org_root),
-                    "claude-org self",
-                ),
             ]
         )
 
@@ -351,6 +365,28 @@ class TestRoleDetection(unittest.TestCase):
         )
         self.assertEqual(layout.role, "doc-audit")
         self.assertFalse(layout.self_edit)
+
+    def test_audit_mode_for_claude_org_keeps_pattern_a_via_synthesized_project(self):
+        """Regression: the production registry no longer carries a
+        claude-org-ja row, but ``mode='audit'`` on this slug must still
+        land on Pattern A with worker_dir under workers_dir/claude-org-ja
+        (read-only audit clone) — not silently fall through to Pattern C
+        ephemeral. The resolver synthesizes a virtual project entry from
+        the slug + matching git origin so the legacy pattern logic keeps
+        working."""
+        layout = rwl.resolve(
+            task_id="audit-task",
+            project_slug="claude-org-ja",
+            mode="audit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.role, "doc-audit")
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "claude-org-ja").resolve(),
+        )
 
     def test_audit_mode_for_non_claude_org_also_doc_audit(self):
         layout = rwl.resolve(
@@ -493,16 +529,13 @@ class TestPatternBLiveRepoWorktree(unittest.TestCase):
 
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
-        self.sb = _Sandbox(Path(self._td.name))
+        # Self-edit detection runs off git origin (claude-org-ja has no
+        # registry row); the active-run gate on Pattern B vs A still
+        # applies the same way it did when the row was present.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=True)
         self.sb.write_registry(
             [
                 ("時計", "clock-app", "-", "Demo clock"),
-                (
-                    "claude-org-ja",
-                    "claude-org-ja",
-                    str(self.sb.claude_org_root),
-                    "claude-org self",
-                ),
             ]
         )
         # An active run on claude-org-ja forces Pattern B for the next task.
@@ -634,6 +667,172 @@ class TestPatternBLiveRepoWorktree(unittest.TestCase):
             Path(layout.worker_dir),
             (self.sb.claude_org_root / ".worktrees" / "explicit-self-edit").resolve(),
         )
+
+
+# ---------------------------------------------------------------------------
+# is_claude_org_project() — git origin URL based self-edit detection
+# ---------------------------------------------------------------------------
+
+
+class TestIsClaudeOrgProject(unittest.TestCase):
+    """Self-edit detection runs off ``git -C <claude_org_root> remote
+    get-url origin`` so the claude-org-ja target has no registry row to
+    leak a user-specific local path. Two signals must both hold: the
+    canonical slug AND a matching origin URL."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_live_claude_org_checkout_returns_true(self):
+        """(a) Inside the live claude-org-ja checkout (origin =
+        ``https://github.com/suisya-systems/claude-org-ja.git``) returns
+        True for the canonical slug."""
+        repo = self.tmp / "live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org-ja.git"
+        )
+        self.assertTrue(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_worker_dir_clone_returns_false(self):
+        """(b) A worker-dir clone has origin pointing at a local filesystem
+        path (no ``github.com`` segment), so detection returns False even
+        for the canonical slug.
+
+        Implementation note: we do NOT invoke ``git clone`` here. The
+        contract under test is purely about the recorded ``origin`` URL —
+        ``is_claude_org_project`` only reads ``git remote get-url origin``
+        and rejects any value lacking a ``github.com`` segment. Driving an
+        actual clone (via ``file://`` URI or plain path) is fragile on
+        Windows because Git for Windows / MSYS path translation rules
+        differ across installations. Instead, we initialize a repo and
+        register a local-path origin directly, modeling each origin shape
+        a worker-dir clone would plausibly record. Trade-off: this no
+        longer asserts the exact string Git itself would write — only
+        that the github-URL gate rejects each modeled local form. The
+        gate's regex (no ``github.com`` segment → reject) is what guards
+        the contract, so this coverage is sufficient and stable."""
+        upstream = self.tmp / "upstream"
+        # ``git clone`` of a local source records origin in one of these
+        # shapes depending on how the source was specified. We assert that
+        # ALL of them fail the github-URL gate.
+        local_origin_forms = [
+            upstream.as_uri(),                  # file:///... URI form
+            str(upstream),                      # raw absolute path form
+            upstream.as_posix(),                # forward-slash path form
+        ]
+        for i, origin_url in enumerate(local_origin_forms):
+            with self.subTest(origin_url=origin_url):
+                worker_clone = self.tmp / f"worker-{i}"
+                worker_clone.mkdir()
+                _Sandbox.init_git_with_origin(worker_clone, origin_url)
+                self.assertFalse(
+                    rwl.is_claude_org_project("claude-org-ja", worker_clone)
+                )
+
+    def test_repo_without_remote_returns_false(self):
+        """(c) A fresh git repo with no ``origin`` remote returns False."""
+        repo = self.tmp / "noremote"
+        repo.mkdir()
+        _Sandbox.init_git(repo)
+        self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_non_self_edit_slug_returns_false_even_with_matching_origin(self):
+        """Slug gate: even with a matching origin URL, a non-canonical slug
+        (clock-app, renga, ...) must not be flagged as self-edit. Without
+        this gate every edit task run from inside the live claude-org
+        checkout would misfire as self-edit, since Secretary always
+        operates from there."""
+        repo = self.tmp / "live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org-ja.git"
+        )
+        self.assertFalse(rwl.is_claude_org_project("clock-app", repo))
+
+    def test_ssh_origin_form_normalizes(self):
+        """``git@github.com:suisya-systems/claude-org-ja.git`` → match."""
+        repo = self.tmp / "ssh"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "git@github.com:suisya-systems/claude-org-ja.git"
+        )
+        self.assertTrue(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_fork_origin_still_matches(self):
+        """CONTRIBUTING.md documents fork-based contribution: a fork's
+        ``origin`` points at the contributor's fork, not at suisya-systems.
+        Self-edit detection must still fire so fork-based maintainers
+        keep getting Pattern B + CLAUDE.local.md."""
+        repo = self.tmp / "fork-origin"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "git@github.com:some-contributor/claude-org-ja.git"
+        )
+        self.assertTrue(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_unrelated_github_repo_returns_false(self):
+        """A different github repo (e.g. an unrelated fork) must not match."""
+        repo = self.tmp / "fork"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/someone-else/some-other-repo.git"
+        )
+        self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_en_mirror_slug_and_origin_returns_true(self):
+        """The en mirror (``suisya-systems/claude-org``) is also a self-edit
+        target: slug ``claude-org`` + matching github origin → True. Without
+        this, Secretaries running from the en checkout never get the
+        claude-org-self-edit role auto-switch."""
+        repo = self.tmp / "en-live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org.git"
+        )
+        self.assertTrue(rwl.is_claude_org_project("claude-org", repo))
+
+    def test_ja_slug_in_en_checkout_returns_false(self):
+        """Cross-match guard: a ja-targeted delegation (slug=claude-org-ja)
+        run from inside the en checkout (origin=.../claude-org.git) must
+        NOT be flagged self-edit. Otherwise the resolver would plant a ja
+        worktree under the en claude_org_root."""
+        repo = self.tmp / "en-live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org.git"
+        )
+        self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_origin_with_github_com_in_path_returns_false(self):
+        """Anchor guard: a non-github host whose URL merely *contains* the
+        literal ``github.com`` somewhere (mirror server path, file:// URI
+        with a coincidentally named directory) must NOT pass the host
+        gate, even when the slug matches."""
+        bad_origins = [
+            "https://mirror.example/github.com/suisya-systems/claude-org-ja.git",
+            "file:///tmp/github.com/suisya-systems/claude-org-ja.git",
+        ]
+        for i, origin in enumerate(bad_origins):
+            with self.subTest(origin=origin):
+                repo = self.tmp / f"masquerade-{i}"
+                repo.mkdir()
+                _Sandbox.init_git_with_origin(repo, origin)
+                self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_en_slug_in_ja_checkout_returns_false(self):
+        """Symmetric cross-match guard: slug=claude-org from inside the ja
+        checkout (origin=.../claude-org-ja.git) must also be False."""
+        repo = self.tmp / "ja-live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org-ja.git"
+        )
+        self.assertFalse(rwl.is_claude_org_project("claude-org", repo))
 
 
 if __name__ == "__main__":
