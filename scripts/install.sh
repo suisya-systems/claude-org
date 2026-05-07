@@ -93,14 +93,108 @@ run() {
   fi
 }
 
+# Detect a Windows-style POSIX shell (Git Bash / MSYS2 / Cygwin). WSL
+# reports OSTYPE=linux-gnu and is intentionally excluded — there the
+# Linux PATH conventions apply, so the extra fallbacks would just slow
+# things down without fixing anything.
+#
+# OSTYPE is the cheap probe; `uname -s` is a fallback for shells that
+# don't export OSTYPE (some minimal POSIX shims). Either matching is
+# enough.
+IS_WINDOWS_SHELL=0
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*) IS_WINDOWS_SHELL=1 ;;
+esac
+if [[ "$IS_WINDOWS_SHELL" != "1" ]] && command -v uname >/dev/null 2>&1; then
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*) IS_WINDOWS_SHELL=1 ;;
+  esac
+fi
+
+resolve_command() {
+  # Echoes the resolved path of a command, or returns non-zero when not
+  # found. On Git Bash / MSYS, `command -v claude` does NOT auto-append
+  # PATHEXT (`.exe` / `.cmd` / `.bat`) the way the exec layer does at
+  # actual invocation time, so a tool installed as `claude.cmd` shows
+  # up as missing here even though `claude foo` would have worked.
+  # That trips the prerequisite gate for users who run
+  # `curl ... | bash` from PowerShell, where claude / renga are
+  # installed via npm or cargo and end up at `<name>.cmd` /
+  # `<name>.exe` rather than as bare-name shims.
+  #
+  # The fallback ladder mirrors install.ps1's `py -3` candidate-list
+  # philosophy: try the cheap thing first, then explicit extensions,
+  # then a small set of common Windows install locations under $HOME.
+  local cmd="$1" found="" ext cand
+  if found=$(command -v "$cmd" 2>/dev/null); then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  if [[ "$IS_WINDOWS_SHELL" != "1" ]]; then
+    return 1
+  fi
+  for ext in .exe .cmd .bat; do
+    if found=$(command -v "${cmd}${ext}" 2>/dev/null); then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  done
+  # Common Windows install locations that aren't always on PATH when
+  # bash is launched from PowerShell. Order: language-package managers
+  # (npm / cargo) first, since claude / renga ship through them; then
+  # POSIX-style $HOME bin dirs; then scoop shims for users on that
+  # package manager.
+  for cand in \
+    "$HOME/AppData/Roaming/npm/${cmd}.cmd" \
+    "$HOME/AppData/Roaming/npm/${cmd}.exe" \
+    "$HOME/AppData/Roaming/npm/${cmd}" \
+    "$HOME/.cargo/bin/${cmd}.exe" \
+    "$HOME/.cargo/bin/${cmd}" \
+    "$HOME/.local/bin/${cmd}.exe" \
+    "$HOME/.local/bin/${cmd}" \
+    "$HOME/AppData/Local/Programs/${cmd}/${cmd}.exe" \
+    "$HOME/scoop/shims/${cmd}.exe" \
+    "$HOME/scoop/shims/${cmd}.cmd"; do
+    # Use -f, not -x: npm-installed `.cmd` shims on Windows ship
+    # without the POSIX execute bit (they're invoked by cmd.exe, not
+    # by /bin/sh), but Windows can still launch them and Git Bash
+    # forwards the call. -f keeps `.exe` and bare POSIX shims working
+    # too.
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
 require_or_warn() {
   # $1 = command name, $2 = install hint URL/text.
-  local cmd="$1" hint="$2"
-  if command -v "$cmd" >/dev/null 2>&1; then
-    echo "  [ok]   $cmd: $(command -v "$cmd")"
+  local cmd="$1" hint="$2" path dir
+  if path=$(resolve_command "$cmd"); then
+    echo "  [ok]   $cmd: $path"
+    # When resolve_command found the tool via a Windows-only fallback,
+    # its parent dir may not be on PATH yet. Prepend it so later steps
+    # that invoke the tool through PATH (`.exe` invocations, bare
+    # POSIX shims) keep working. NOTE: this is NOT enough on its own
+    # for `.cmd` / `.bat` shims — Git Bash / MSYS bash's exec layer
+    # auto-appends `.exe` for bare-name invocations but does NOT try
+    # `.cmd` / `.bat`. So tools resolved as `<name>.cmd` (renga is the
+    # canonical case — `npm install -g @suisya-systems/renga` lays
+    # down `renga.cmd`) must be invoked via the absolute path captured
+    # by the caller. See RENGA_BIN below.
+    dir=$(dirname "$path")
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) PATH="$dir:$PATH" ;;
+    esac
     return 0
   fi
   echo "  [miss] $cmd not found. Install hint: $hint"
+  if [[ "$IS_WINDOWS_SHELL" == "1" ]]; then
+    echo "         (Probed .exe/.cmd/.bat on PATH and common install dirs"
+    echo "          under \$HOME — npm / cargo / scoop / .local. None matched.)"
+  fi
   return 1
 }
 
@@ -114,6 +208,20 @@ require_or_warn claude "https://claude.ai/code (Claude Code CLI)" || missing=1
 require_or_warn renga  "npm install -g @suisya-systems/renga@0.18.0" || missing=1
 require_or_warn gh     "https://cli.github.com/" || missing=1
 echo
+
+# Capture renga's absolute path for the later `renga mcp install` step.
+# Git Bash / MSYS bash auto-appends `.exe` on bare-name invocations
+# but not `.cmd` / `.bat`, and `npm install -g @suisya-systems/renga`
+# lays down `renga.cmd` on Windows — so a bare `run renga mcp install`
+# would exit 127 (command not found) for npm-installed users even
+# though require_or_warn just printed [ok] for it. Prefer the
+# explicit absolute path on Windows; fall back to the bare name (so
+# POSIX users still see the same `+ renga mcp install` echo line they
+# always have, and so the dry-run smoke regex stays happy).
+RENGA_BIN=""
+if [[ "$IS_WINDOWS_SHELL" == "1" ]]; then
+  RENGA_BIN=$(resolve_command renga 2>/dev/null || true)
+fi
 
 if [[ "$missing" == "1" ]]; then
   cat <<'MSG' >&2
@@ -186,7 +294,7 @@ else
   echo
   echo "Registering renga-peers MCP with Claude Code (user-scope)..."
   echo "Note: Claude Code may show a permission prompt; approve it to continue."
-  run renga mcp install
+  run "${RENGA_BIN:-renga}" mcp install
 fi
 
 # --- Python deps (core-harness pin) ----------------------------------------
@@ -198,25 +306,51 @@ fi
 # claude-org-runtime package. Phase 5c (Issue #130) moved the install
 # path from `requirements.txt` to `pyproject.toml`; we prefer the
 # editable install so the dep set comes from the canonical source.
+# PY is a single-token interpreter command for POSIX (`python3` or
+# `python`). On Git Bash / MSYS, neither name is on PATH by default;
+# only the `py.exe` launcher is present. Git Bash users have hit this
+# enough times that the install.ps1 sibling already has a `py -3`
+# candidate for it. Mirror that here so `bash <(curl ...)` from
+# PowerShell doesn't dead-end the Python deps step on stock Windows.
+#
+# PY_LAUNCHER carries the optional `-3` flag so the call site can pin
+# the launcher to a Python 3 interpreter without hard-coding a major
+# version into every invocation. It is empty for the POSIX-friendly
+# names so they continue to invoke as `python3 -m pip ...`.
+PY=""
+PY_LAUNCHER=""
 if command -v python3 >/dev/null 2>&1; then
   PY=python3
 elif command -v python >/dev/null 2>&1; then
   PY=python
-else
-  PY=""
+elif [[ "$IS_WINDOWS_SHELL" == "1" ]] && command -v py >/dev/null 2>&1; then
+  # `command -v py` is safe here even though the renga case needed the
+  # full resolve_command ladder: Git Bash / MSYS bash auto-appends
+  # `.exe` for bare-name lookups but not `.cmd` / `.bat`, and the
+  # Python launcher ships as `py.exe` under `C:\Windows\` (always on
+  # PATH on a stock Python install). Verified empirically — see the
+  # commit message for the repro.
+  #
+  # Probe with --version so we don't accidentally pick up a launcher
+  # whose configured Python 3 is broken or removed; same defensive
+  # check install.ps1 does for the Microsoft Store stub.
+  if py -3 --version >/dev/null 2>&1; then
+    PY=py
+    PY_LAUNCHER="-3"
+  fi
 fi
 PYPROJECT_FILE="$TARGET_DIR/pyproject.toml"
 REQ_FILE="$TARGET_DIR/requirements.txt"
 if [[ -f "$PYPROJECT_FILE" && -n "$PY" ]]; then
   echo
   echo "Installing Python deps via pyproject.toml (editable) ..."
-  run $PY -m pip install --user -e "$TARGET_DIR"
+  run $PY $PY_LAUNCHER -m pip install --user -e "$TARGET_DIR"
 elif [[ -f "$REQ_FILE" && -n "$PY" ]]; then
   # Backward-compat path for refs that predate Phase 5c (no
   # pyproject.toml) but post-date Step B (have requirements.txt).
   echo
   echo "Installing Python deps (core-harness pin, requirements.txt) ..."
-  run $PY -m pip install --user -r "$REQ_FILE"
+  run $PY $PY_LAUNCHER -m pip install --user -r "$REQ_FILE"
 elif [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
   # Older refs / fixtures predate Step B and ship neither file.
   # The shim CLIs only exist on Step-B-or-later commits, so skipping
@@ -228,13 +362,21 @@ fi
 
 # --- Done ------------------------------------------------------------------
 
+# Mirror the same RENGA_BIN/$renga substitution in the Done banner.
+# Without it, a Windows user whose `renga` resolved as `renga.cmd`
+# would see prereq [ok] and the install succeed, then immediately hit
+# `command not found` when they ran the suggested next-step command —
+# Git Bash / MSYS bash auto-appends `.exe` for bare-name invocations
+# but not `.cmd` / `.bat`. Falling back to the bare name on POSIX
+# (RENGA_BIN empty) keeps the printed banner stable for everyone else.
+RENGA_NEXT_STEP="${RENGA_BIN:-renga}"
 cat <<MSG
 
 Done. Next steps:
 
   cd $TARGET_DIR
   bash scripts/install-hooks.sh   # enable pre-commit secret scanner
-  renga --layout ops              # launch the Secretary pane
+  "$RENGA_NEXT_STEP" --layout ops              # launch the Secretary pane
 
 Inside the Secretary's Claude Code pane, run:
 
