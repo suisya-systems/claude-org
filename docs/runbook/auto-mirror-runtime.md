@@ -1,11 +1,11 @@
 # Runbook: auto-mirror-runtime workflow
 
 `.github/workflows/auto-mirror-runtime.yml` mirrors runtime code from
-`suisya-systems/claude-org` into this repo when a ja PR merges. This page
+`suisya-systems/claude-org-ja` into this repo when a ja PR merges. This page
 covers operational tasks and the phased rollout plan.
 
-Design source: `suisya-systems/claude-org#189` (and Lead decision #171).
-P2 implementation tracked under `suisya-systems/claude-org#335`.
+Design source: `suisya-systems/claude-org-ja#189` (and Lead decision #171).
+P2 implementation tracked under `suisya-systems/claude-org-ja#335`.
 
 ## What it does today (Phase P2)
 
@@ -97,7 +97,7 @@ gh workflow run auto-mirror-runtime.yml \
   -R suisya-systems/claude-org \
   -f ja_pr_number=<NUMBER> \
   -f ja_pr_title="<TITLE>" \
-  -f ja_pr_url="https://github.com/suisya-systems/claude-org/pull/<NUMBER>"
+  -f ja_pr_url="https://github.com/suisya-systems/claude-org-ja/pull/<NUMBER>"
 ```
 
 `ja_merge_sha` is optional — the workflow resolves it from the PR via
@@ -162,4 +162,4 @@ flipped with doc-only edits if Lead changes course:
 - Tests: `tools/test_sync_classifier.py`
 - Workflow: `.github/workflows/auto-mirror-runtime.yml`
 - Canonical mapping: `docs/canonical-ownership.md`
-- Sibling policy (ja): `docs/sync-policy.md` in `suisya-systems/claude-org`
+- Sibling policy (ja): `docs/sync-policy.md` in `suisya-systems/claude-org-ja`
