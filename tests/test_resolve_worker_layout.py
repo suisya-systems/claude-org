@@ -784,6 +784,18 @@ class TestIsClaudeOrgProject(unittest.TestCase):
         )
         self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
 
+    def test_en_mirror_slug_and_origin_returns_true(self):
+        """The en mirror (``suisya-systems/claude-org``) is also a self-edit
+        target: slug ``claude-org`` + matching github origin → True. Without
+        this, Secretaries running from the en checkout never get the
+        claude-org-self-edit role auto-switch."""
+        repo = self.tmp / "en-live"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "https://github.com/suisya-systems/claude-org.git"
+        )
+        self.assertTrue(rwl.is_claude_org_project("claude-org", repo))
+
 
 if __name__ == "__main__":
     unittest.main()
