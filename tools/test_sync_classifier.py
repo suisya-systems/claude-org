@@ -41,6 +41,9 @@ RUNTIME_PATHS = [
     ".hooks/lib/segment-split.sh",
     "tests/integration/test_flow.py",
     "tests/unit.py",
+    # Issue #159: documented installer entry points are runtime.
+    "scripts/install.sh",
+    "scripts/install.ps1",
 ]
 
 TRANSLATION_PATHS = [
@@ -69,6 +72,10 @@ DIVERGENCE_PATHS = [
 UNKNOWN_PATHS = [
     "Makefile",
     "scripts/build.sh",
+    # The install rule is narrow — sibling scripts under scripts/ stay unknown
+    # so they get manual triage rather than silently mirroring.
+    "scripts/install-hooks.sh",
+    "scripts/install.bat",
     "random/file.txt",
     "tools-not-tools/foo.py",
     "knowledge/raw/2026-05-01-note.md",
