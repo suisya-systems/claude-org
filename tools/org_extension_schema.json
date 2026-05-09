@@ -146,7 +146,9 @@
         "Write(*/workers/*/.claude/settings.local.json)",
         "Edit(*/workers/*/.claude/settings.local.json)",
         "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
-        "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)"
+        "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)",
+        "Write(*/.worktrees/*/.claude/settings.local.json)",
+        "Edit(*/.worktrees/*/.claude/settings.local.json)"
       ],
       "required_hooks": [
         {
@@ -296,7 +298,12 @@
           "Bash(git push *)",
           "Bash(git push)",
           "Bash(rm -rf *)",
-          "Bash(rm -r *)"
+          "Bash(rm -r *)",
+          "Read(.env)",
+          "Read(.env.*)",
+          "Read(**/credentials*)",
+          "Read(**/*.pem)",
+          "Read(~/.config/gh/hosts.yml)"
         ]
       },
       "hooks": {
@@ -354,7 +361,12 @@
           "Bash(git push *)",
           "Bash(git push)",
           "Bash(rm -rf *)",
-          "Bash(rm -r *)"
+          "Bash(rm -r *)",
+          "Read(.env)",
+          "Read(.env.*)",
+          "Read(**/credentials*)",
+          "Read(**/*.pem)",
+          "Read(~/.config/gh/hosts.yml)"
         ]
       },
       "hooks": {
