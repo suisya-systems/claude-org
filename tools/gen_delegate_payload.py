@@ -338,6 +338,19 @@ def build_delegate_plan(
         elif project_path and rwl.is_local_git_repo(project_path):
             base_repo = Path(project_path).resolve()
 
+    # Phase 1 PR4: surface base_clone into settings_args for Pattern B so the
+    # runtime can substitute `{base_clone}` in
+    # `worker_roles.<role>.sandbox_by_pattern.B.filesystem`. resolve_worker_layout
+    # leaves this slot empty (the resolver does not materialize base_repo) and
+    # gen_delegate_payload is the right place to fill it in because base_repo
+    # is computed here (lines 310-339 above) from project_path / variant. For
+    # Pattern A / C base_repo is None and base-clone is omitted from
+    # settings_args — the runtime then errors if a Pattern A / C sandbox body
+    # references {base_clone}, which is the desired loud-failure behaviour.
+    settings_args = dict(layout.settings_args)
+    if base_repo is not None:
+        settings_args["base-clone"] = str(base_repo)
+
     return DelegatePlan(
         task_id=task_id,
         project_slug=project_slug,
@@ -346,7 +359,7 @@ def build_delegate_plan(
         layout=layout,
         delegate_body=delegate_body,
         brief_out_path=brief_out_path,
-        settings_args=dict(layout.settings_args),
+        settings_args=settings_args,
         permission_mode=permission_mode,
         verification_depth=verification_depth,
         closes_issue=closes_issue,
@@ -601,6 +614,52 @@ def _write_brief(plan: DelegatePlan) -> Path:
     return out
 
 
+def _build_settings_generate_cmd(
+    settings_args: dict[str, Any],
+    *,
+    runtime_cmd: str,
+) -> list[str]:
+    """Build the ``claude-org-runtime settings generate`` argv list.
+
+    Pure helper extracted from :func:`_run_settings_generate` so the
+    Phase 1 PR4 dispatch-context pass-through (``--pattern`` /
+    ``--base-clone`` / ``--task-id`` / ``--branch-ref``) is unit-testable
+    without subprocess mocking.
+
+    The mandatory flags (``--role`` / ``--worker-dir`` / ``--claude-org-path``
+    / ``--out``) are always emitted in a stable order. The optional
+    dispatch-context flags are emitted only when the corresponding key is
+    present and non-None in ``settings_args`` — the runtime CLI accepts
+    each independently and errors only if the rendered body references a
+    placeholder for which the corresponding context is missing (that
+    loud-failure surface is intentional: Pattern A / C without
+    ``--base-clone`` must NOT silently substitute an empty string into a
+    ``{base_clone}``-using sandbox body).
+    """
+    cmd = [
+        runtime_cmd,
+        "settings",
+        "generate",
+        "--role",
+        settings_args["role"],
+        "--worker-dir",
+        settings_args["worker-dir"],
+        "--claude-org-path",
+        settings_args["claude-org-path"],
+        "--out",
+        settings_args["out"],
+    ]
+    for flag, key in (
+        ("--pattern", "pattern"),
+        ("--base-clone", "base-clone"),
+        ("--task-id", "task-id"),
+        ("--branch-ref", "branch-ref"),
+    ):
+        if key in settings_args and settings_args[key] is not None:
+            cmd.extend([flag, str(settings_args[key])])
+    return cmd
+
+
 def _run_settings_generate(
     plan: DelegatePlan,
     *,
@@ -620,19 +679,7 @@ def _run_settings_generate(
     settings_args = plan.settings_args
     out = Path(settings_args["out"])
     out.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        runtime_cmd,
-        "settings",
-        "generate",
-        "--role",
-        settings_args["role"],
-        "--worker-dir",
-        settings_args["worker-dir"],
-        "--claude-org-path",
-        settings_args["claude-org-path"],
-        "--out",
-        settings_args["out"],
-    ]
+    cmd = _build_settings_generate_cmd(settings_args, runtime_cmd=runtime_cmd)
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
@@ -748,6 +795,21 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
         type=Path,
         default=None,
         help="Load task arguments from a worker_brief-style TOML instead of CLI flags.",
+    )
+    # Issue #374: Secretary-side pattern override. The resolver enforces a
+    # strict contract (B requires a usable base, A forbidden on self-edit,
+    # C always permitted); see ``ResolveError`` raised from
+    # ``resolve_worker_layout.resolve``. Default None means "let the
+    # resolver auto-derive" — preserves the pre-#374 behaviour.
+    p.add_argument(
+        "--pattern",
+        choices=("A", "B", "C"),
+        default=None,
+        help=(
+            "Force a specific dispatch pattern (A/B/C). Validated by the "
+            "resolver: B requires a worktree base; A forbidden on "
+            "claude-org-self-edit; C always permitted."
+        ),
     )
 
 
@@ -899,6 +961,27 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     base: dict[str, Any] = {}
     if args.from_toml is not None:
         base.update(_load_task_args_from_toml(args.from_toml))
+    # Issue #374: ``--pattern`` is a layout override, not a task field, so
+    # merge it into ``layout_overrides`` rather than into the top-level
+    # kwargs. CLI wins over a TOML [worker].pattern of the same key, matching
+    # the rest of the merge order documented above. ``None`` means "no CLI
+    # override", which preserves any TOML value already merged into base.
+    #
+    # When the CLI flag is supplied, also drop the TOML's [worker].dir and
+    # [worker].pattern_variant from the override dict — otherwise the
+    # resolver treats them as explicit values and skips its pattern-driven
+    # re-derivation, leaving worker_dir / variant on the previous pattern's
+    # convention. Codex Round 2 Major: ``--pattern C`` on a TOML that
+    # carries [worker].dir = workers/<slug>/ used to keep worker_dir at
+    # the registered clone, producing a contradictory C layout.
+    pattern_override = getattr(args, "pattern", None)
+    if pattern_override is not None:
+        existing_overrides = base.get("layout_overrides") or {}
+        merged = dict(existing_overrides)
+        merged["pattern"] = pattern_override
+        merged.pop("worker_dir", None)
+        merged.pop("pattern_variant", None)
+        base["layout_overrides"] = merged
     # CLI overrides — only when caller actually provided a value.
     cli_overrides: dict[str, Any] = {
         "task_id": args.task_id,

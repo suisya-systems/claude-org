@@ -261,6 +261,88 @@ class TestApplyDelegatePlan(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# settings_args dispatch-context pass-through (Phase 1 PR4)
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsGenerateCmd(unittest.TestCase):
+    """Verifies _build_settings_generate_cmd forwards the dispatch context
+    (--pattern / --base-clone / --task-id / --branch-ref) so the runtime
+    can substitute `worker_roles.<role>.sandbox_by_pattern` placeholders.
+    """
+
+    _MANDATORY = {
+        "role": "default",
+        "worker-dir": "/wd",
+        "claude-org-path": "/co",
+        "out": "/wd/.claude/settings.local.json",
+    }
+
+    def _build(self, **extra: str) -> list[str]:
+        args = dict(self._MANDATORY)
+        args.update(extra)
+        return gdp._build_settings_generate_cmd(args, runtime_cmd="claude-org-runtime")
+
+    def test_pattern_a_omits_pattern_b_only_flags(self):
+        cmd = self._build(pattern="A", **{"task-id": "t-1", "branch-ref": "feat/x"})
+        # Pattern A leaves base-clone unset because the resolver does not
+        # supply it; the runtime must error if a Pattern A body references
+        # {base_clone}, so we MUST NOT pass an empty --base-clone here.
+        self.assertNotIn("--base-clone", cmd)
+        self.assertIn("--pattern", cmd)
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "A")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "t-1")
+        self.assertEqual(cmd[cmd.index("--branch-ref") + 1], "feat/x")
+
+    def test_pattern_b_passes_full_dispatch_context(self):
+        cmd = self._build(
+            pattern="B",
+            **{
+                "base-clone": "/bc",
+                "task-id": "T123",
+                "branch-ref": "feat/self-edit",
+            },
+        )
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "B")
+        self.assertEqual(cmd[cmd.index("--base-clone") + 1], "/bc")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "T123")
+        self.assertEqual(cmd[cmd.index("--branch-ref") + 1], "feat/self-edit")
+
+    def test_pattern_c_ephemeral_omits_branch_ref(self):
+        # Pattern C ephemeral has planned_branch=None; settings_args
+        # therefore omits branch-ref entirely. The cmd builder MUST drop
+        # the flag rather than emit "--branch-ref None" or empty string.
+        cmd = self._build(pattern="C", **{"task-id": "t-c"})
+        self.assertNotIn("--branch-ref", cmd)
+        self.assertNotIn("--base-clone", cmd)
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "C")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "t-c")
+
+    def test_pre_pr4_settings_args_renders_minimum_cmd(self):
+        # Backward compatibility: a settings_args dict that lacks the
+        # PR4-added keys (e.g. an old caller that constructs the dict by
+        # hand) must still render a runnable cmd — the runtime CLI's
+        # required args are only the four mandatory ones.
+        cmd = self._build()
+        self.assertEqual(
+            cmd,
+            [
+                "claude-org-runtime",
+                "settings",
+                "generate",
+                "--role",
+                "default",
+                "--worker-dir",
+                "/wd",
+                "--claude-org-path",
+                "/co",
+                "--out",
+                "/wd/.claude/settings.local.json",
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI smoke tests (preview + apply paths)
 # ---------------------------------------------------------------------------
 
@@ -1273,6 +1355,145 @@ class TestPatternBClaudeOrgRepoWorktreePlan(unittest.TestCase):
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"
+
+
+# ---------------------------------------------------------------------------
+# Issue #374: ``--pattern {A|B|C}`` override propagates into brief / send_plan
+# ---------------------------------------------------------------------------
+
+
+class TestPatternOverrideCLI(unittest.TestCase):
+    """Issue #374: Secretary may force a specific pattern via ``--pattern``.
+    The override must reach (a) the resolved layout, (b) the DELEGATE body
+    rendering, and (c) the ``summary`` block in send_plan.json. Invalid
+    combinations must surface as preview-time errors rather than after a DB
+    reservation.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _common_args(self, *, slug: str = "clock-app") -> list[str]:
+        return [
+            "--task-id", "override-task",
+            "--project-slug", slug,
+            "--description", "force the pattern",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ]
+
+    def _run_preview_json(self, argv: list[str]) -> dict:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *argv, "--json"])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue())
+
+    def test_force_pattern_c_overrides_auto_a(self):
+        """Without override, clock-app + no active run = Pattern A. With
+        ``--pattern C`` the layout flips to ephemeral and planned_branch
+        becomes None (Pattern C has no branch by contract)."""
+        data = self._run_preview_json([*self._common_args(), "--pattern", "C"])
+        s = data["summary"]
+        self.assertEqual(s["pattern"], "C")
+        self.assertIsNone(s["planned_branch"])
+        # The DELEGATE body label reflects the override.
+        self.assertIn("ディレクトリパターン: C", data["delegate_body"])
+
+    def test_apply_writes_override_into_send_plan_summary(self):
+        """End-to-end: apply with ``--pattern C`` produces a send_plan.json
+        whose summary carries the overridden pattern (= what dispatcher
+        will see when it copies the manifest into renga-peers)."""
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "apply", *self._common_args(),
+                "--pattern", "C",
+                "--skip-settings",
+            ])
+        self.assertEqual(rc, 0)
+        # send_plan.json lives alongside the brief (Pattern C ephemeral
+        # writes to workers_dir/<task_id>/CLAUDE.md).
+        worker_dir = self.sb.workers / "override-task"
+        send_plan_path = worker_dir / "send_plan.json"
+        self.assertTrue(send_plan_path.exists())
+        send_plan = json.loads(send_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(send_plan["summary"]["pattern"], "C")
+
+    def test_cli_pattern_drops_toml_worker_dir_and_variant(self):
+        """Codex Round 2 Major: ``--pattern X`` together with ``--from-toml``
+        used to keep the TOML's ``[worker].dir`` and ``[worker].pattern_variant``
+        in the override dict, so the resolver treated worker_dir as
+        explicitly set and skipped its pattern-driven re-derivation. Result
+        was an inconsistent layout (e.g. ``pattern=C`` but worker_dir on
+        the registered clone). The CLI flag must override fully."""
+        # TOML pre-pins Pattern A worker_dir to a deterministic path.
+        toml_path = self.sb.root / "in.toml"
+        explicit_dir = self.sb.workers / "clock-app"
+        toml_path.write_text(
+            "[task]\n"
+            'id = "toml-pattern"\n'
+            'description = "drop dir on cli pattern"\n'
+            "\n[worker]\n"
+            f'dir = "{explicit_dir.as_posix()}"\n'
+            'pattern = "A"\n'
+            'role = "default"\n'
+            'self_edit = false\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{self.sb.claude_org_root.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "preview",
+                "--from-toml", str(toml_path),
+                "--state-db-path", str(self.sb.db_path),
+                "--pattern", "C",
+                "--json",
+            ])
+        self.assertEqual(rc, 0)
+        s = json.loads(buf.getvalue())["summary"]
+        # CLI pattern wins over TOML's pattern.
+        self.assertEqual(s["pattern"], "C")
+        # And worker_dir gets re-derived for the new pattern (workers_dir/<task_id>),
+        # not left at the TOML-supplied registered clone path.
+        self.assertEqual(
+            Path(s["worker_dir"]).resolve(),
+            (self.sb.workers / "toml-pattern").resolve(),
+        )
+        # Variant from TOML (or derived for old pattern) is dropped — Pattern
+        # C ephemeral default.
+        self.assertEqual(s["pattern_variant"], "ephemeral")
+
+    def test_force_pattern_a_on_self_edit_slug_errors_in_preview(self):
+        """Resolver rejects pattern=A on a self-edit slug — the error must
+        propagate out of ``preview`` rather than letting the bad layout
+        slip through."""
+        # ResolveError is raised inside build_delegate_plan, which runs
+        # under preview without reaching apply.
+        from tools.resolve_worker_layout import ResolveError as _RE
+
+        with self.assertRaises(_RE):
+            gdp.main([
+                "preview",
+                *self._common_args(slug="claude-org-ja"),
+                "--pattern", "A",
+            ])
 
 
 if __name__ == "__main__":
