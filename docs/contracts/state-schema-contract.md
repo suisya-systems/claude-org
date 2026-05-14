@@ -232,4 +232,3 @@ Lead-confirmed decisions for the 14 questions raised in the outline (2026-05-03 
 6. **Atomic-write requirements** (§3.5) — Enumerated: tempfile + rename for `org-state.md`, `org-state.json`, `worker-{task_id}.md`; append for `journal.jsonl`; in-place rewrite is acceptable for the dispatcher event cursor.
 7. **Encoding / line endings** (§3.6) — UTF-8 universally; LF on writes; readers tolerate CRLF in legacy inputs.
 8. **Migration policy** (§4) — Hybrid versioning (per-file top-level integer `version` for JSON, preserving the `org-state.json` precedent; implicit for Markdown). Deprecation window N = 2 minor versions. Tolerant readers (ignore unknown keys, default missing keys). Centralized `tools/state_migrate.py` as the long-term migration entry point (skeleton landed; per-reader shims permitted transitionally). Simultaneous-readable bound: N-1 and N.
----
