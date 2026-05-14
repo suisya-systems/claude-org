@@ -261,6 +261,88 @@ class TestApplyDelegatePlan(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# settings_args dispatch-context pass-through (Phase 1 PR4)
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsGenerateCmd(unittest.TestCase):
+    """Verifies _build_settings_generate_cmd forwards the dispatch context
+    (--pattern / --base-clone / --task-id / --branch-ref) so the runtime
+    can substitute `worker_roles.<role>.sandbox_by_pattern` placeholders.
+    """
+
+    _MANDATORY = {
+        "role": "default",
+        "worker-dir": "/wd",
+        "claude-org-path": "/co",
+        "out": "/wd/.claude/settings.local.json",
+    }
+
+    def _build(self, **extra: str) -> list[str]:
+        args = dict(self._MANDATORY)
+        args.update(extra)
+        return gdp._build_settings_generate_cmd(args, runtime_cmd="claude-org-runtime")
+
+    def test_pattern_a_omits_pattern_b_only_flags(self):
+        cmd = self._build(pattern="A", **{"task-id": "t-1", "branch-ref": "feat/x"})
+        # Pattern A leaves base-clone unset because the resolver does not
+        # supply it; the runtime must error if a Pattern A body references
+        # {base_clone}, so we MUST NOT pass an empty --base-clone here.
+        self.assertNotIn("--base-clone", cmd)
+        self.assertIn("--pattern", cmd)
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "A")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "t-1")
+        self.assertEqual(cmd[cmd.index("--branch-ref") + 1], "feat/x")
+
+    def test_pattern_b_passes_full_dispatch_context(self):
+        cmd = self._build(
+            pattern="B",
+            **{
+                "base-clone": "/bc",
+                "task-id": "T123",
+                "branch-ref": "feat/self-edit",
+            },
+        )
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "B")
+        self.assertEqual(cmd[cmd.index("--base-clone") + 1], "/bc")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "T123")
+        self.assertEqual(cmd[cmd.index("--branch-ref") + 1], "feat/self-edit")
+
+    def test_pattern_c_ephemeral_omits_branch_ref(self):
+        # Pattern C ephemeral has planned_branch=None; settings_args
+        # therefore omits branch-ref entirely. The cmd builder MUST drop
+        # the flag rather than emit "--branch-ref None" or empty string.
+        cmd = self._build(pattern="C", **{"task-id": "t-c"})
+        self.assertNotIn("--branch-ref", cmd)
+        self.assertNotIn("--base-clone", cmd)
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "C")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "t-c")
+
+    def test_pre_pr4_settings_args_renders_minimum_cmd(self):
+        # Backward compatibility: a settings_args dict that lacks the
+        # PR4-added keys (e.g. an old caller that constructs the dict by
+        # hand) must still render a runnable cmd — the runtime CLI's
+        # required args are only the four mandatory ones.
+        cmd = self._build()
+        self.assertEqual(
+            cmd,
+            [
+                "claude-org-runtime",
+                "settings",
+                "generate",
+                "--role",
+                "default",
+                "--worker-dir",
+                "/wd",
+                "--claude-org-path",
+                "/co",
+                "--out",
+                "/wd/.claude/settings.local.json",
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI smoke tests (preview + apply paths)
 # ---------------------------------------------------------------------------
 
@@ -1270,9 +1352,389 @@ class TestPatternBClaudeOrgRepoWorktreePlan(unittest.TestCase):
         self.assertTrue((worker_dir / "CLAUDE.md").exists())
 
 
+# ---------------------------------------------------------------------------
+# Issue #450: Pattern B base_repo fallback to workers_dir/<slug>
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
+    """Issue #450: registry rows with a URL-only path (e.g. renga registered
+    as ``| renga | renga | https://github.com/.../renga.git | ... |``) used to
+    fall through all three base_repo branches in build_delegate_plan, leaving
+    base_repo=None and causing apply to raise WorktreeApplyError. The fallback
+    must pick up a manually-cloned local repo at ``workers_dir/<project_slug>``
+    so Pattern B delegation works for URL-only registry entries."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # Replace the auto-seeded registry with a URL-only row for ``renga``
+        # so the build_delegate_plan path lookup yields a non-local path.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _init_bare_repo(self, base: Path) -> None:
+        base.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(base), "init", "-q"], check=True
+        )
+
+    def _init_repo_with_origin(self, base: Path, origin_url: str) -> None:
+        base.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(base), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(base), "remote", "add", "origin", origin_url],
+            check=True,
+        )
+
+    def _force_pattern_b(self, slug: str) -> None:
+        self.sb.add_active_run(
+            task_id=f"prev-{slug}",
+            project_slug=slug,
+            worker_dir=str(self.sb.workers / slug),
+        )
+
+    def test_fallback_to_workers_dir_slug_when_registry_path_is_url(self):
+        """workers_dir/<slug> with origin URL matching the registered github
+        repo → base_repo resolves to that clone."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/suisya-systems/renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-fallback-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.layout.pattern_variant)
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
+    def _set_registry(self, url: str) -> None:
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| renga | renga | {url} | Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def test_ssh_style_registry_url_still_enforces_origin_match(self):
+        """Codex Round 3 Blocker: ``git@github.com:org/renga.git`` SSH-style
+        registry entries used to bypass the github gate because the helper
+        keyed on ``"://"``. ``_extract_github_repo_name`` accepts both forms
+        so the gate must too — a bare-init clone under an SSH-registered
+        slug must still be rejected."""
+        self._set_registry("git@github.com:suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-bare-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_explicit_port_ssh_url_still_enforces_origin_match(self):
+        """Codex Round 4 Blocker: ``ssh://git@github.com:22/org/repo.git``
+        (explicit-port SSH form) used to escape the github gate because the
+        regex's ``[^/:\\s]+`` owner slot was eaten by the port digits, so
+        ``_extract_github_repo_name`` returned None and origin matching was
+        skipped. Regex now tolerates an optional ``:port``. Bare-init clone
+        under such a registry entry must still be rejected."""
+        self._set_registry("ssh://git@github.com:22/suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-port-bare-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_ssh_style_registry_url_accepts_matching_origin(self):
+        """SSH-registered renga + clone whose origin (https or ssh) resolves
+        to the same github repo name → fallback accepts. Owner is
+        intentionally unpinned so forks remain accepted, mirroring
+        ``find_claude_org_clone``."""
+        self._set_registry("git@github.com:suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        # Mismatched owner (fork), same repo name — must still match.
+        self._init_repo_with_origin(
+            clone, "https://github.com/happy-ryo/renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-match-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
+    def test_fallback_rejected_when_clone_has_no_origin(self):
+        """Codex Round 2 Blocker: a bare ``git init`` clone with no origin
+        must not be accepted as a base for a github-registered project —
+        otherwise any leftover same-named directory silently adopts the
+        registered slug. ``origin`` URL must match the registered repo
+        name for github URLs."""
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin remote
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-no-origin-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_no_fallback_when_workers_dir_slug_missing(self):
+        """No directory at workers_dir/<slug> → base_repo stays None
+        (existing apply-time error path preserved)."""
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-no-clone-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_fallback_rejected_when_clone_origin_url_mismatches_registry(self):
+        """A leftover unrelated github repo at workers_dir/<slug> must not be
+        adopted as the base — would redirect dispatch into the wrong repo
+        (Issue #370 precedent). Origin URL repo-name match guards against it."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/some-other-org/not-renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-mismatch-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_pattern_b_override_uses_url_only_fallback_for_preflight(self):
+        """Issue #450 consistency: ``--pattern B`` override preflight must
+        accept the same workers_dir/<slug> base that auto-derived Pattern B
+        uses, otherwise the same setup errors at preview only when forced."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/suisya-systems/renga.git"
+        )
+        # No add_active_run — this is the no-concurrent-run case where
+        # ``--pattern B`` override is the only way to get Pattern B.
+        plan = gdp.build_delegate_plan(
+            task_id="renga-override-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), clone.resolve()
+        )
+
+    def test_no_fallback_when_workers_dir_slug_is_not_git_repo(self):
+        """A plain directory (no .git) at workers_dir/<slug> must not be
+        accepted as a base_repo — would yield "fatal: not a git repository"
+        from git worktree add. Stay None and surface the existing error."""
+        (self.sb.workers / "renga").mkdir()
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-plain-dir-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"
+
+
+# ---------------------------------------------------------------------------
+# Issue #374: ``--pattern {A|B|C}`` override propagates into brief / send_plan
+# ---------------------------------------------------------------------------
+
+
+class TestPatternOverrideCLI(unittest.TestCase):
+    """Issue #374: Secretary may force a specific pattern via ``--pattern``.
+    The override must reach (a) the resolved layout, (b) the DELEGATE body
+    rendering, and (c) the ``summary`` block in send_plan.json. Invalid
+    combinations must surface as preview-time errors rather than after a DB
+    reservation.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _common_args(self, *, slug: str = "clock-app") -> list[str]:
+        return [
+            "--task-id", "override-task",
+            "--project-slug", slug,
+            "--description", "force the pattern",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ]
+
+    def _run_preview_json(self, argv: list[str]) -> dict:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *argv, "--json"])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue())
+
+    def test_force_pattern_c_overrides_auto_a(self):
+        """Without override, clock-app + no active run = Pattern A. With
+        ``--pattern C`` the layout flips to ephemeral and planned_branch
+        becomes None (Pattern C has no branch by contract)."""
+        data = self._run_preview_json([*self._common_args(), "--pattern", "C"])
+        s = data["summary"]
+        self.assertEqual(s["pattern"], "C")
+        self.assertIsNone(s["planned_branch"])
+        # The DELEGATE body label reflects the override.
+        self.assertIn("ディレクトリパターン: C", data["delegate_body"])
+
+    def test_apply_writes_override_into_send_plan_summary(self):
+        """End-to-end: apply with ``--pattern C`` produces a send_plan.json
+        whose summary carries the overridden pattern (= what dispatcher
+        will see when it copies the manifest into renga-peers)."""
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "apply", *self._common_args(),
+                "--pattern", "C",
+                "--skip-settings",
+            ])
+        self.assertEqual(rc, 0)
+        # send_plan.json lives alongside the brief (Pattern C ephemeral
+        # writes to workers_dir/<task_id>/CLAUDE.md).
+        worker_dir = self.sb.workers / "override-task"
+        send_plan_path = worker_dir / "send_plan.json"
+        self.assertTrue(send_plan_path.exists())
+        send_plan = json.loads(send_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(send_plan["summary"]["pattern"], "C")
+
+    def test_cli_pattern_drops_toml_worker_dir_and_variant(self):
+        """Codex Round 2 Major: ``--pattern X`` together with ``--from-toml``
+        used to keep the TOML's ``[worker].dir`` and ``[worker].pattern_variant``
+        in the override dict, so the resolver treated worker_dir as
+        explicitly set and skipped its pattern-driven re-derivation. Result
+        was an inconsistent layout (e.g. ``pattern=C`` but worker_dir on
+        the registered clone). The CLI flag must override fully."""
+        # TOML pre-pins Pattern A worker_dir to a deterministic path.
+        toml_path = self.sb.root / "in.toml"
+        explicit_dir = self.sb.workers / "clock-app"
+        toml_path.write_text(
+            "[task]\n"
+            'id = "toml-pattern"\n'
+            'description = "drop dir on cli pattern"\n'
+            "\n[worker]\n"
+            f'dir = "{explicit_dir.as_posix()}"\n'
+            'pattern = "A"\n'
+            'role = "default"\n'
+            'self_edit = false\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{self.sb.claude_org_root.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "preview",
+                "--from-toml", str(toml_path),
+                "--state-db-path", str(self.sb.db_path),
+                "--pattern", "C",
+                "--json",
+            ])
+        self.assertEqual(rc, 0)
+        s = json.loads(buf.getvalue())["summary"]
+        # CLI pattern wins over TOML's pattern.
+        self.assertEqual(s["pattern"], "C")
+        # And worker_dir gets re-derived for the new pattern (workers_dir/<task_id>),
+        # not left at the TOML-supplied registered clone path.
+        self.assertEqual(
+            Path(s["worker_dir"]).resolve(),
+            (self.sb.workers / "toml-pattern").resolve(),
+        )
+        # Variant from TOML (or derived for old pattern) is dropped — Pattern
+        # C ephemeral default.
+        self.assertEqual(s["pattern_variant"], "ephemeral")
+
+    def test_force_pattern_a_on_self_edit_slug_errors_in_preview(self):
+        """Resolver rejects pattern=A on a self-edit slug — the error must
+        propagate out of ``preview`` rather than letting the bad layout
+        slip through."""
+        # ResolveError is raised inside build_delegate_plan, which runs
+        # under preview without reaching apply.
+        from tools.resolve_worker_layout import ResolveError as _RE
+
+        with self.assertRaises(_RE):
+            gdp.main([
+                "preview",
+                *self._common_args(slug="claude-org-ja"),
+                "--pattern", "A",
+            ])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
 [task]
 id = "issue-217-renga-decoration-doc"
 description = "Issue #217 の解決 PR。renga decoration は装飾、authoritative source は peer client_kind であることを documentation として明記"
-issue_url = "https://github.com/suisya-systems/claude-org/issues/217"
+issue_url = "https://github.com/suisya-systems/claude-org-ja/issues/217"
 verification_depth = "full"     # "full" or "minimal"
 branch = "issue-217-renga-decoration-doc"
 commit_prefix = "docs(operations):"
@@ -21,7 +21,7 @@ role = "claude-org-self-edit"   # "default" / "claude-org-self-edit" / "doc-audi
 self_edit = true                # true → CLAUDE.local.md + ignore-root note; false → CLAUDE.md
 
 [project]
-name = "claude-org"
+name = "claude-org-ja"
 description = "Claude Code 多役 AI 組織ハーネス（Secretary / Dispatcher / Curator / Worker）日本語版本体"
 
 [paths]
