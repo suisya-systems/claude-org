@@ -68,7 +68,7 @@
 ### Lifecycle / boundaries
 
 - **Spawn**: Started by the human running `renga --layout ops`. There is exactly one secretary per org session.
-- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. Step 1 reads `.state/org-state.md` and resumes / briefs. Steps 2–3 spawn the dispatcher and curator panes.
+- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. After Step 0 completes, the dispatcher / curator panes are spawned (Block A) in parallel with the DB-backed state read (Block B) and dashboard server launch (Block C); the four identities converge in Block D where peer registration, greeting, and `org_sessions` DB writes happen in one batched transaction.
 - **Termination**: `/org-suspend` (graceful, persists state) or hard close. Must not be killed while workers are alive without going through suspend, otherwise pane-id remapping and worker reply paths break.
 - **Hard prohibitions**:
   - Must NOT silently delete worker directories during `org-start` (they may hold reusable project state — `org-start` Step 0.4 explicit ban).
@@ -136,7 +136,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Step 2. `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
+- **Spawn**: By the secretary during `/org-start` Block A (the parallelized spawn phase that fires dispatcher + curator after Step 0 identity check). `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
 - **Activation**: Receives an initial `send_message` from secretary instructing it of its role. Begins waiting for `DELEGATE`.
 - **Watch loop**: Started after the first worker spawn via `/loop 3m`; stops when all worker panes have exited.
 - **Suspension**: Via `/org-suspend` flow (state flushed to `.state/dispatcher-event-cursor.txt` and `.state/workers/`).
@@ -185,7 +185,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Step 3. `cwd=".curator"`, `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`.
+- **Spawn**: By the secretary during `/org-start` Block A (the parallelized spawn phase that fires dispatcher + curator after Step 0 identity check). `cwd=".curator"`, `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`.
 - **Activation**: Receives an initial `send_message` from secretary telling it to start the `/loop 30m /org-curate` schedule.
 - **Steady state**: Wakes on the loop, runs `org-curate`, sleeps. Also processes ad-hoc messages from secretary.
 - **Termination**: Pane closed by secretary or by org shutdown.
@@ -282,4 +282,3 @@ A digest of the Lead-confirmed choices made during the 2026-05-03 Q&A session, b
 3. **Carve-outs to "no direct spawn"** — Codified. The secretary may directly spawn dispatcher and curator only during `/org-start`; all other pane spawns route through the dispatcher.
 4. **Self-management permissions** — Curator may archive but not delete `knowledge/raw/` entries. Workers may not spawn sub-workers (must escalate to secretary). Workers have no branch / worktree cleanup responsibility — branches are kept as audit trail; worktree handling follows `org-delegate` Step 5 patterns.
 5. **Suspend participation contracts** — `/org-suspend` skill at `.claude/skills/org-suspend/SKILL.md` is the authoritative flush list (the contract does not enumerate files). The curator does not participate in `/org-suspend`.
----
