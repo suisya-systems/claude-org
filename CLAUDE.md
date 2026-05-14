@@ -29,6 +29,26 @@ You are the Lead for this organization. The only point of contact with humans.
 
 When a completion / progress / Codex round / escalation-for-decision message arrives from a Worker over `renga-peers`, the Lead must **first send an ack to the worker** with `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)`. Without an ack, the worker stays idle in "keep pane open; waiting for next instruction" and deadlocks. See the canonical event flow and ack examples in [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) and [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md). **ack != user approval**: only issue push / `gh pr create` / `tools/pr-watch.*` after explicit user approval.
 
+## Notify when the Secretary is waiting on a user judgment (Issue #28)
+
+At gates where the Secretary stops because "the next move is waiting on a user reply", emit a one-line signal so the attention watcher can alert the user. The Secretary side stops inside this claude-org-ja repo, so when the user is not at the screen the awaiting_user state can sit unattended for a long time. By having the runtime classifier map this emit to `secretary_awaiting_user` (default severity `urgent`), the user is notified by a beep or equivalent.
+
+### Target gates (3 sites)
+- **`worker_completed`**: after receiving a completion report from a Worker → issuing an ack + appending the review transition to the DB `events` table → just before stopping to wait on the user's approval. [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) Step 5 sub 2a.
+- **`ci_green_merge_gate`**: during post-PR CI monitoring, on receipt of `CI_COMPLETED` (CI green) → just before asking the user for merge approval. [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i.
+- **`escalation_reply_forward`**: after escalating a decision request to a human, receiving the user's reply, and just before forwarding it to the Worker. The `mark-user-replied` → `resolve --kind to_worker` boundary of [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md).
+
+### Canonical emit form
+```
+bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=TASK gate=GATE note=SHORT
+```
+- `task_id`: the task_id corresponding to the target Worker / PR / decision (for `escalation_reply_forward`, the task_id tied to the decision).
+- `gate`: one of `worker_completed` / `ci_green_merge_gate` / `escalation_reply_forward`.
+- `note`: short context of one line or less (PR number / Issue number / summary, etc.).
+
+### Notifier behavior
+The parallel runtime PR adds a mapping in the attention watcher classifier that recognizes `notify_sent` payloads with `kind=awaiting_user` as the `secretary_awaiting_user` subkind. Default severity is `urgent` (immediate beep).
+
 ## Escalate Worker Decision Requests to Humans
 
 If any of the following messages arrive from a Worker over `renga-peers`, the Lead must **always escalate to a human**. Do not give a first-pass approval or reply based on your own interpretation:

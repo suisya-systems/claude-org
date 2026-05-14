@@ -64,6 +64,12 @@ When the Lead receives a peer message containing "approval request", "judgment e
    ```
    No-op if no escalated entry exists; idempotent if already set. This lets [`../../../.dispatcher/references/worker-monitoring.md` Step 5.1 (a-2)](../../../.dispatcher/references/worker-monitoring.md#step-5-1) deterministically detect "user has replied but Lead forgot to relay".
 
+4.5. **Emit the awaiting_user notification (Issue #28)**: on the `mark-user-replied` → `resolve --kind to_worker` boundary, emit one line telling the attention watcher about the user-driven action on the Secretary side between "the user reply has landed at the Secretary" and "the Secretary forwards it to the worker":
+   ```bash
+   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id={task_id} gate=escalation_reply_forward note="<short summary of the decision>"
+   ```
+   The classifier in the parallel runtime PR picks it up as `secretary_awaiting_user` (default severity `urgent`). See the "Notify when the Secretary is waiting on a user judgment" section in CLAUDE.md. This emit leaves no side effects regardless of whether an escalated entry exists (a single journal-line append only; it does not touch the register or pending_decisions).
+
 5. **Relay the human's decision to the worker** (`send_message` with `to_id="worker-{task_id}"`). Right after sending, update the register to `resolved`:
    ```bash
    python tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker
