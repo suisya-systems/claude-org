@@ -8,16 +8,26 @@ A guide to using claude-org.
 
 ### Prerequisites
 
-Make sure all of the following are already installed and configured. See [README.md](../README.md#quick-start) for details.
+Whether you use the one-liner or the manual steps, you need to install the following tools in advance. The installers (`scripts/install.sh` / `scripts/install.ps1`) fail closed when checking for the five required commands `git` / `claude` / `renga` / `gh` / `jq`; Python produces only a warning, and Node.js is checked only on Linux / macOS (none of these are auto-installed). To cover the use cases in the table below, all seven tools are required.
 
-- **Claude Code** — the main AI agent
-- **renga** — terminal multiplexer (used for organization pane management)
+| Tool | Minimum version | Purpose | Install link |
+|---|---|---|---|
+| **`git`** | Any stable 2.x release | Repository checkout (`git clone`), commits, Worker working-directory management | [git-scm.com/downloads](https://git-scm.com/downloads) |
+| **GitHub CLI (`gh`)** | Any stable 2.x release | Pull request creation, Issue operations, CI monitoring (`gh pr checks --watch`) | [cli.github.com](https://cli.github.com/) |
+| **Node.js** | v18+ | Runtime for installing `renga` via npm | [nodejs.org](https://nodejs.org/) |
+| **Python** | 3.10+ | Running `pip install -e .` for `core-harness` / `claude-org-runtime` (aligned with `requires-python` in `pyproject.toml`) | [python.org/downloads](https://www.python.org/downloads/) |
+| **`jq`** | 1.6+ | Formatting and extracting `.state/` JSON / `gh api` output (used in hooks and tools) | [jqlang.org/download](https://jqlang.org/download/) |
+| **Claude Code CLI (`claude`)** | Latest stable release | Main executable for each role pane. Initial login is also done when launching `claude` | [claude.ai/code](https://claude.ai/code) |
+| **`renga`** | 0.18.0+ | The Layer 3 terminal multiplexer + `renga-peers` MCP server (`npm install -g @suisya-systems/renga@0.18.0`) | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
+
+In addition, the following Claude Code configuration is required:
+
 - **renga-peers MCP** — inter-instance communication and pane operations within the same tab (register with `renga mcp install`)
-- **GitHub CLI (`gh`)** — authenticated (check with `gh auth status`)
+- **GitHub CLI authentication** — `gh auth status` must report "Logged in"
 
 ### Installation
 
-If the required tools (`git` / `claude` / `renga` / `gh`) are installed, you can run a one-liner to clone the repo and run `renga mcp install` in one shot.
+If the required tools (`git` / `claude` / `renga` / `gh` / `jq`) are installed, you can run a one-liner to clone the repo and run `renga mcp install` in one shot.
 
 **macOS / Linux (bash)**:
 
@@ -25,6 +35,7 @@ If the required tools (`git` / `claude` / `renga` / `gh`) are installed, you can
 curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.sh | bash
 cd claude-org
 bash scripts/install-hooks.sh
+python tools/org_setup_prune.py --user-common-sandbox   # Required once after pulling main (Issue #429 Task B/C + Issue #433 denyWrite)
 renga --layout ops
 ```
 
@@ -33,7 +44,8 @@ renga --layout ops
 ```powershell
 iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.ps1 | iex
 cd claude-org
-bash scripts/install-hooks.sh   # Run on Git Bash / WSL
+bash scripts/install-hooks.sh                            # Run on Git Bash / WSL
+py -3 tools/org_setup_prune.py --user-common-sandbox     # Required once after pulling main (Issue #429 Task B/C + Issue #433 denyWrite)
 renga --layout ops
 ```
 
@@ -58,7 +70,9 @@ If you do not use the one-liner, run the following manually:
 ```bash
 git clone https://github.com/suisya-systems/claude-org.git
 cd claude-org
-renga mcp install              # First time only. Registers renga-peers MCP at user scope
+renga mcp install                                            # First time only. Registers renga-peers MCP at user scope
+bash scripts/install-hooks.sh                                # Enables the pre-commit secret scanner
+python tools/org_setup_prune.py --user-common-sandbox        # Required once after pulling main (Issue #429 Task B/C + Issue #433 denyWrite)
 renga --layout ops
 ```
 
@@ -69,6 +83,16 @@ Once Claude Code in the Lead pane has started, **run the following in order**:
 2. `/org-start` — starts the organization. Dispatcher and Curator are spawned in the same tab.
 
 `/org-setup` is **additive-only** (it only adds missing pieces and does not remove existing ones). If you want to return drifted settings to the baseline, manually replace `settings.local.json` using the role-specific sample JSON in [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md).
+
+> **⚠️ Required once after pulling main (Issue #429 Task B / C + Issue #433)**: Because personal-path entries have been removed from the shared `.claude/settings.json` (denyRead entries such as `Read(~/.ssh/*)` / `Read(~/.aws/*)`, and denyWrite entries such as `~/.claude/settings.json`), **run `python tools/org_setup_prune.py --user-common-sandbox` once** on first setup / after pulling main (a single flag covers both denyRead and denyWrite). If you skip this, your personal-environment sandbox defenses will be temporarily weakened (see [README §Reinforcing the personal sandbox](../README.md) and [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md)). Note that `~/.config/gh` is excluded from the candidate list because gh CLI is required for the Lead's normal workflow; if a past revision left it in your personal `settings.json`, it will be pruned automatically on the next run.
+>
+> ```bash
+> # Preview the diff
+> python tools/org_setup_prune.py --user-common-sandbox --dry-run
+>
+> # Apply (idempotent — re-running is a no-op)
+> python tools/org_setup_prune.py --user-common-sandbox
+> ```
 
 ### Compatibility Preflight (Optional, Recommended)
 
