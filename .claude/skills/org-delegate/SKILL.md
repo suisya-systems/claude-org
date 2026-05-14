@@ -347,6 +347,11 @@ worker → Secretary peer message
   ```
 - Append the event to the DB `events` table (`bash tools/journal_append.sh ...`)
 - **Register update on dogfood-pass completion (Issue #338)**: if the completed task is earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition `status` on that row from `open → consumed`. Defects are assumed to already be aggregated on the paired follow-up issue (`dogfood_issue` column) per the format pre-specified in the dogfood-pass Worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
+- **Emit the awaiting_user notification (Issue #28)**: just before reporting to the human and stopping to wait for approval, tell the attention watcher that the Secretary is about to stop waiting on a user judgment:
+  ```bash
+  bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<short context such as PR/Issue>"
+  ```
+  The classifier in the parallel runtime PR picks this single line up as `secretary_awaiting_user` (default severity `urgent`), so the user gets a beep even when not at the screen. See the "Notify when the Secretary is waiting on a user judgment" section in CLAUDE.md.
 - Report the result to the human and **stop, waiting for approval without closing the pane**. Issuing push/PR without approval violates protocol for both the Worker and the user
 
 #### 2b / 2c. After user approval, review comments, post-merge close
