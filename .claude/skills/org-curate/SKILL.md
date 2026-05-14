@@ -4,6 +4,16 @@ description: >
   Consolidate and reorganize accumulated raw learnings (knowledge/raw/).
   Periodically called from the Curator Claude's /loop.
   Also fires manually when asked to "organize the knowledge".
+effort: medium
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Bash(mkdir -p knowledge/raw/archive/)
+  - Bash(mv knowledge/raw/*)
+  - Bash(grep:*)
+  - Bash(find knowledge/*)
+  - mcp__renga-peers__send_message
 ---
 
 # org-curate: knowledge curation

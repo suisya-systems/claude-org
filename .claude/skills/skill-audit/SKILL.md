@@ -7,6 +7,13 @@ description: >
   OR when the work-skill count under .claude/skills/ (excluding org-*)
   reaches 20 or more. Not started by a time-based /loop (avoids
   polluting raw logs on quiet days).
+effort: medium
+allowed-tools:
+  - Read
+  - Bash(grep:*)
+  - Bash(find:*)
+  - Bash(wc:*)
+  - mcp__renga-peers__send_message
 ---
 
 # skill-audit: skill inventory pass

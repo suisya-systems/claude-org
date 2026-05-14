@@ -6,6 +6,15 @@ description: |
   Curator / Worker), in one go.
   Triggers: "set up", "update permissions", "do the setup",
   "permissions config", "org-setup", etc.
+effort: low
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash(python tools/org_setup_prune.py:*)
+  - Bash(py -3 tools/org_setup_prune.py:*)
+  - Bash(python tools/check_role_configs.py:*)
+  - Bash(py -3 tools/check_role_configs.py:*)
 ---
 
 # org-setup: place all the org's permission settings

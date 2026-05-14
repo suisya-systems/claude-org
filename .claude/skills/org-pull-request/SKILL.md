@@ -7,6 +7,28 @@ description: >
   (2) when review feedback or a CI failure arrives on a GitHub PR and the Lead sends a follow-up fix request back to the Worker,
   (3) when the PR is merged and the final close-out condition is satisfied.
   The initial action of simply "asking a Worker to do work" belongs to org-delegate, not this skill.
+effort: medium
+allowed-tools:
+  - Read
+  - Bash(git push:*)
+  - Bash(git -C * worktree remove:*)
+  - Bash(git worktree remove:*)
+  - Bash(gh pr create:*)
+  - Bash(gh pr view:*)
+  - Bash(gh pr checks:*)
+  - Bash(gh issue create:*)
+  - Bash(gh issue edit:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python tools/set_run_pr_open.py:*)
+  - Bash(py -3 tools/set_run_pr_open.py:*)
+  - Bash(python tools/run_complete_on_merge.py:*)
+  - Bash(py -3 tools/run_complete_on_merge.py:*)
+  - Bash(bash tools/pr-watch.sh:*)
+  - Bash(pwsh tools/pr-watch.ps1:*)
+  - Bash(powershell tools/pr-watch.ps1:*)
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
 ---
 
 # org-pull-request: PR Creation, Review, and Post-Merge Close-Out

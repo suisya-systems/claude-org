@@ -4,6 +4,16 @@ description: >
   Resume a suspended org. Use when `.state/org-state.md` exists with
   Status: SUSPENDED and the user says "resume", "continue from where we left off",
   "where did we get to last time?". Also covers the auto-briefing on startup.
+effort: low
+allowed-tools:
+  - Read
+  - Bash(git status)
+  - Bash(git log:*)
+  - Bash(py -3 tools/state_migrate.py)
+  - Bash(python3 tools/state_migrate.py)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(python -m tools.state_db.importer:*)
 ---
 
 # org-resume: resume the org

@@ -7,6 +7,12 @@ description: >
   task's pattern should be promoted to a work-skill.
   Technical retrospectives on the actual work are done by the worker
   automatically and are not handled here.
+effort: medium
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - mcp__renga-peers__send_message
 ---
 
 # org-retro: delegation-process retrospective
