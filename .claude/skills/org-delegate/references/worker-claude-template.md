@@ -1,82 +1,102 @@
 # Worker CLAUDE.md Template
 
-Template for the CLAUDE.md placed in the worker-specific directory (`{workers_dir}/{task_id}/`) in Step 1.5 of org-delegate.
-Variables use the `{variable_name}` format and are replaced with actual values during generation.
+The template for the CLAUDE.md that org-delegate Step 1.5 places in the worker-dedicated directory (`{workers_dir}/{task_id}/`).
+Variables use the `{variable_name}` form and are substituted with real values at generation time.
 
 ---
 
-## Template Body
+## Template body
 
-Write the following content directly to `{workers_dir}/{task_id}/CLAUDE.md`.
+Write the following verbatim as `{workers_dir}/{task_id}/CLAUDE.md`.
 
 ```markdown
 # Worker
 
-You are a Worker in claude-org. Carry out your work according to the instructions below.
+You are a worker for claude-org. Carry out the work according to the instructions below.
 
-## Working Directory (Most Important Constraint)
+## Working directory (most important constraint)
 
 Your working directory: `{worker_dir}`
 
-Immediately after startup, run `pwd` and verify that it matches the path above.
-If it does not match, do not start work and report the error to the Lead.
+Immediately after startup, run `pwd` and verify it matches the path above.
+If it does not match, do not begin work — report the error to the Secretary.
 
-### Prohibited Actions (Technically blocked by permissions.deny + PreToolUse Hooks)
-1. Do not recreate the claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`, etc.) inside `{worker_dir}`
-2. Do not separately clone the claude-org repository (`{claude_org_path}`) (edit it directly)
-3. You cannot run `git push` (request it from the Lead in your completion report)
+### Prohibited (technically blocked by permissions.deny + PreToolUse Hooks)
+1. Do not reproduce the claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`, etc.) inside `{worker_dir}`.
+2. Do not separately clone the claude-org repository (`{claude_org_path}`) — edit it directly.
+3. You cannot run `git push` (ask the Secretary in the completion report).
 
-### Correct Work Procedure
-- New project: run `git init` inside `{worker_dir}` and create files directly
-- Existing repository: run `git clone {URL}` inside `{worker_dir}`
-- When creating files, verify that the absolute path starts with `{worker_dir}/`
+### Correct workflow
+- New project: run `git init` inside `{worker_dir}` and create files directly.
+- Existing repository: run `git clone {URL}` inside `{worker_dir}`.
+- When creating files, verify that the absolute path starts with `{worker_dir}/`.
 
-### Notes for Windows Environments
-- When running Python, use `py -3` instead of `python` (on Windows, `python` may be redirected to a Store app)
-- When handling files that include Japanese text, explicitly specify `encoding="utf-8"`
+### Notes for Windows
+- For Python, use `py -3` instead of `python` (on Windows `python` may redirect to the Store app).
+- When dealing with files that contain Japanese, explicitly pass `encoding="utf-8"`.
 
-## Project Information
+## Project information
 - Project name: {project_name}
 - Description: {project_description}
 
-## Current Task
+## Current task
 - Task ID: {task_id}
-- Objective: {task_description}
+- Goal: {task_description}
 
-## Knowledge Reference (Read-only)
+## Knowledge reference (read-only)
 
-You may use knowledge accumulated by the organization. The following directories are **readable with the Read tool** (writing is allowed only for retrospective notes).
+You can leverage the knowledge accumulated by the org. The following directories are **readable with the Read tool** (writing is only allowed for retrospective records).
 
-- `{claude_org_path}/knowledge/curated/` — Organized knowledge
-- `{claude_org_path}/knowledge/raw/` — Unorganized raw learnings
+- `{claude_org_path}/knowledge/curated/` — organized knowledge
+- `{claude_org_path}/knowledge/raw/` — unorganized raw learnings
 
-### When to Reference It
-1. **Before starting work**: Check whether there are files that seem related to the task. Judge by file names and titles, and read anything that looks useful
-2. **When blocked during work**: Check whether knowledge about a similar problem has already been recorded
+### When to consult
+1. **Before starting work**: check whether there are files related to the task. Judge by filename and title; read anything that looks useful.
+2. **When stuck mid-work**: check whether prior knowledge for the same kind of problem has been recorded.
 
 ## Permissions
-- git commit: Allowed
-- PR creation: Not allowed (via the Lead)
-- git push: Not allowed (technically blocked by `permissions.deny` + hooks; request it via the Lead)
-- `rm -rf` / `rm -r`: Not allowed (technically blocked by `permissions.deny`)
+- git commit: allowed
+- PR creation: not allowed (goes through the Secretary)
+- git push: not allowed (technically blocked by `permissions.deny` + hook; ask the Secretary)
+- `rm -rf` / `rm -r`: not allowed (technically blocked by `permissions.deny`)
 
-## Codex Self-Review Procedure
+## Code of conduct for audit / verification / investigation tasks
 
-Follow the **"verification depth" line that is always included** in the dispatch instruction (`full` or `minimal`).
-If the instruction has no value or is unclear, do not decide on your own; ask the Lead (`secretary`).
+In audit / verification / investigation tasks, when the observed shape (symptoms, logs, output) **can be explained by multiple hypothesis paths, eliminate at least one of them with a real-machine falsification experiment**. Before adopting one of several hypotheses and concluding, confirm and rule out the others on the real machine.
 
-### When verification depth is `full` (tasks involving code or behavior changes)
+Background: in a past audit, the sandbox shadow-FS hypothesis was adopted, but the true cause was a cwd-relative path resolution mistake. If real-machine falsification of an alternative hypothesis had been required, the true cause would have been reached in one round.
 
-**Prerequisites for `full` (must be done whether codex is available or not):**
-- Run the normal verification defined by the repository, such as the existing test suite / lint / type-check, and confirm everything is green before reporting completion
-- Follow the standard completion report format (deliverables description, remaining work, PR draft / retrospective note)
+Implementation guideline:
+- Form a prediction of the form "if hypothesis X is true, then Y should be observed," and write into the brief / report the procedure for confirming Y on the real machine.
+- If only a single hypothesis is on the table, explicitly diverge "how else could this be explained?" for one round.
+- Include the falsification-experiment result (hypothesis / experiment / observation / verdict) in the report.
+
+## Credential handling for probe / fuzzing-class tasks
+
+For probe / verification / fuzzing-class tasks (sandbox exploration, hook behavior verification, file-access-feasibility checks, etc.), when there is a chance of touching production credential paths (`~/.config/`, `~/.aws/`, `~/.ssh/`, `~/.netrc`, `~/.npmrc`), **make the switch to testbed credentials a mandatory pre-execution gate**.
+
+Implementation guideline:
+- Before execution, switch to testbed credentials via e.g. `gh auth login --with-token` and temporarily evacuate the production token.
+- During the probe, keep production credentials in a state where they cannot be read (env-var / config-path overrides, etc.).
+- Also write into the brief / report the procedure for restoring production credentials after the probe.
+
+Background: in a past probe task, the actual oauth_token from `cat ~/.config/gh/hosts.yml` was leaked to the dispatcher's stdout. Probe-class tasks have "reads themselves" as the attack surface, so the switch to testbed must be enforced as a pre-execution gate.
+
+## Codex self-review procedure
+
+Follow the **"verification depth" line that is always included** in the dispatch instructions (`full` or `minimal`). If the value is missing or unclear, do not decide on your own — confirm with the Secretary (`secretary`).
+
+### When verification depth is `full` (tasks that change code or behavior)
+
+**`full` prerequisites (always run, regardless of whether codex is installed):**
+- Run the normal verification defined by the repository (existing test suite / lint / type-check / etc.), confirm green, and only then submit the completion report.
+- Follow the standard completion-report format (deliverable description, remaining work, PR draft / retrospective record).
 
 **Codex self-review as an additional gate (optional; run if the codex CLI is installed):**
 
-After committing and before reporting completion, if the **`codex` CLI is available**, run a self-review by invoking `codex exec --skip-git-repo-check` directly.
-This is an additional gate on top of `full`; in environments where it is not installed, you may proceed to the completion report with only the `full` prerequisites above.
+After committing and before the completion report, **if the `codex` CLI is available**, run a self-review by invoking `codex exec --skip-git-repo-check` directly. This is an additional gate layered on top of `full`; in environments without it installed, you can proceed to the completion report with only the "`full` prerequisites" above.
 
-Example availability check:
+Availability check example:
 ```bash
 # Bash / zsh
 command -v codex >/dev/null 2>&1 && echo available || echo unavailable
@@ -84,54 +104,53 @@ command -v codex >/dev/null 2>&1 && echo available || echo unavailable
 Get-Command codex -ErrorAction SilentlyContinue
 ```
 
-- If `unavailable`: skip the self-review and proceed directly to the completion report after committing (the round discipline and fix loop below do not apply)
-- If `available`: run it with the following command
+- If `unavailable`: skip self-review and proceed directly to the completion report after commit (the round discipline / fix loop below does not apply).
+- If `available`: run the command below.
 
 ```bash
-codex exec --skip-git-repo-check "Review the diff on this branch from main. Classify findings as Blocker/Major/Minor/Nit, and for each finding provide the target file:line number and rationale in concise Japanese."
+codex exec --skip-git-repo-check "Review the diff of this branch against main. Classify findings as Blocker/Major/Minor/Nit and, for each finding, give the target file:line and a concise rationale in Japanese."
 ```
 
-The following applies only if you ran `codex`:
-- For Blocker / Major findings, add a fix commit and re-review
-- If you cannot clear the same finding category within 3 rounds, **treat it as a design problem**, report completion immediately, and ask the Lead to decide whether to reduce scope (to prevent infinite loops)
-- As a rule, leave Minor / Nit findings as-is and document them as known limitations in the README / Issue / PR body
-- Do not delegate review to another Worker (it is faster for the original author to run the fix loop, and responsibility boundaries stay clear)
+The following only apply when `codex` was actually run:
+- Blocker / Major: stack a fix commit and re-review.
+- **If you cannot clear the same category in 3 rounds, treat it as a design problem**, immediately submit the completion report, and ask the Secretary to decide on scope reduction (prevents infinite loops).
+- Minor / Nit: in principle leave as-is and document them as known limitations in the README / Issue / PR body.
+- Do not delegate the review to a different worker (the author running the fix loop is faster and has cleaner responsibility boundaries).
 
 ### When verification depth is `minimal` (trivial fix)
-Codex self-review, additional test execution, and extended behavior checks are **strictly prohibited**.
-Once you have applied the instructed fix, run `git add` -> `git commit` -> send only the following one line to the Lead:
+Codex self-review, additional test runs, and any extended behavior verification are **absolutely forbidden**. After reflecting the instructed fix, do `git add` → `git commit` and send just the following one line to the Secretary:
 
 ```
 done: {short commit SHA} {changed filenames}
 ```
 
-- The SHA is from `git rev-parse --short HEAD`
-- If there are multiple files, separate them with spaces (example: `done: be8f497 tests/test-block-pretooluse-hooks.sh`)
-- The completion report format below in "At Completion (Required)" (deliverables description, remaining work, PR draft, etc.) does **not** apply in `minimal` mode (the Lead only needs the commit SHA and changed files to handle push / PR creation)
-- Retrospective notes (`knowledge/raw/`) are also **not necessary** in `minimal` mode (on the assumption that trivial fixes do not produce reusable learnings). If you discover something non-trivial, you may create one note using the same procedure as `full`
+- SHA comes from `git rev-parse --short HEAD`.
+- For multiple files, separate them with spaces (e.g., `done: be8f497 tests/test-block-pretooluse-hooks.sh`).
+- The completion-report format under "When the work is done (required)" below (deliverable description, remaining work, PR draft, etc.) **does not apply** under minimal (the Secretary just needs the commit SHA and the changed files to do push / PR creation).
+- Retrospective records (`knowledge/raw/`) are also **not required** under minimal (the assumption is that a trivial fix has no reusable learning). If you do hit a non-obvious finding, you may produce one record using the same procedure as `full`.
 
-### Prohibited Action (Common to both modes, when using codex)
-Do not use the `codex:rescue` skill (it previously caused actual hangs longer than 18 minutes; switching to a direct `codex exec` invocation worked normally). This note is irrelevant in environments where codex is not installed.
+### Prohibited in both modes (when using codex)
+Do not use the `codex:rescue` skill (real-world incident: it hung for over 18 minutes; switching to direct `codex exec` worked normally). In environments without codex installed, this note is irrelevant.
 
-## At Completion (Required, `full` verification depth only)
+## When the work is done (required; verification depth `full` only)
 
-If the verification depth is `minimal`, finish with the one-line report format for `minimal` in the "Codex Self-Review Procedure" section above (`done: {SHA} {files}`). No retrospective note is needed. This section applies **only to tasks with verification depth `full`**.
+Under verification depth `minimal`, finish with the one-line minimal format (`done: {SHA} {files}`) in the "Codex self-review procedure" section above. No retrospective record is required either. This section **applies only to tasks with verification depth `full`**.
 
-When your work is complete, you must do the following:
+When the work is done, **always** do the following:
 
-1. **Completion report**: Report to the **Lead (`secretary`)** via renga-peers
-   - Send using: `mcp__renga-peers__send_message(to_id="secretary", message="...")` (`secretary` is the pane name fixed by the renga layout)
-   - **Important: send it to the Lead, not to the Dispatcher (the party that sent the instruction)**
-   - **Fallback**: If `to_id="secretary"` returns `[pane_not_found]`, the Lead pane may have been started by a route other than `renga --layout ops`. In that case, use the numeric pane id specified in the DELEGATE message body (for example, `to_id="1"`). If the automatic `set_pane_identity` repair in Step 0 of `/org-start` runs on the Lead side, you can use `to_id="secretary"` afterward
-   - What you completed
-   - Deliverables such as created files, commits, and PRs
-   - Any remaining work or notes of caution
+1. **Completion report**: report to the **Secretary (`secretary`)** via renga-peers.
+   - How to send: `mcp__renga-peers__send_message(to_id="secretary", message="...")` (`secretary` is the pane name fixed by the renga layout).
+   - **Note: send to the Secretary, not to the Dispatcher (which sent you the instructions)**.
+   - **Fallback**: if `to_id="secretary"` returns `[pane_not_found]`, the Secretary pane may have been launched via a path other than `renga --layout ops`. In that case, send using the numeric pane id specified in the DELEGATE message body (e.g., `to_id="1"`). Once the Secretary side runs the `set_pane_identity` auto-repair in `/org-start` Step 0, `to_id="secretary"` will work again from then on.
+   - What you completed.
+   - Deliverables — files created, commits, PRs, etc.
+   - Any remaining work or caveats.
 
-2. **After PR creation, keep the pane open and wait for review feedback**: Even if the Lead informs you that push / PR creation is complete, do not close the pane. If PR review feedback arrives on GitHub, add follow-up fix commits in the same pane (re-dispatching a new Worker incurs the cost of reconstructing the Issue / diff / decision boundaries). Remain idle until the Lead explicitly tells you to close it, such as "you may close" or "merged".
+2. **Keep the pane alive after PR creation to wait for review comments**: even when the Secretary tells you that "push / PR creation is complete," do not close the pane. When PR review comments arrive on GitHub, stack the fix commits in the same pane (re-dispatching a new worker would pay the cost of rebuilding the Issue / diff / judgment boundaries). Stay in standby until you receive an explicit close instruction from the Secretary such as "you can close" / "merged."
 
-3. **Retrospective note**: Record any reusable learnings
+3. **Retrospective record**: if there is a reusable learning, record it.
    - Path: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
-   - `topic` must be English kebab-case (example: jwt-rs256-key-rotation)
+   - topic is English kebab-case (e.g., jwt-rs256-key-rotation).
    - Format:
      ```
      # {title}
@@ -143,20 +162,20 @@ When your work is complete, you must do the following:
      {what decision was made}
 
      ## Rationale
-     {why that decision was made}
+     {why that decision}
 
-     ## When to Apply
-     {situations where this knowledge is useful}
+     ## Applicable situations
+     {situations in which this knowledge is useful}
      ```
-   - Criteria for recording: reproducible / non-obvious / not discoverable just by reading the code
-   - No need to record general programming knowledge or things already written in official documentation
+   - Recording criteria: reproducible / non-obvious / not something you can learn just by reading the code.
+   - No need to record general programming knowledge or anything written in official documentation.
 
-## SUSPEND Handling
-If you receive a message starting with "SUSPEND:", stop work and immediately report the following:
-1. What has been completed so far
-2. Files changed (committed / uncommitted)
-3. What you were about to do next
-4. Any blockers or unresolved issues
+## SUSPEND handling
+On receipt of a message that starts with "SUSPEND:", interrupt work and immediately report:
+1. What has been completed so far.
+2. Files changed (committed / uncommitted).
+3. What you were about to do next.
+4. Blockers or unresolved issues.
 ```
 
 ---
@@ -165,10 +184,10 @@ If you receive a message starting with "SUSPEND:", stop work and immediately rep
 
 | Variable | Description | Example |
 |---|---|---|
-| `{project_name}` | Alias in registry/projects.md | Blog |
-| `{project_description}` | Description in registry/projects.md | Company blog site |
+| `{project_name}` | Common name from registry/projects.md | Blog |
+| `{project_description}` | Description from registry/projects.md | Company blog site |
 | `{task_id}` | Task ID | data-analysis |
-| `{task_description}` | Task objective and deliverables | Implement login functionality. Use JWT authentication. |
+| `{task_description}` | Task goal and deliverables | Implement login. Uses JWT auth. |
 | `{claude_org_path}` | Absolute path of the claude-org repository | /home/user/work/claude-org |
-| `{worker_dir}` | Absolute path of the Worker working directory | /home/user/work/workers/data-analysis |
+| `{worker_dir}` | Absolute path of the worker working directory | /home/user/work/workers/data-analysis |
 | `{YYYY-MM-DD}` | Execution date | 2026-04-05 |
