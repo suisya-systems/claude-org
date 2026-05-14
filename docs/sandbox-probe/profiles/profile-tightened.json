@@ -1,0 +1,127 @@
+{
+  "$comment": "Issue #376 Pre-Phase 0 spike — handcraft tightened sandbox profile (Pattern A worker). Layered on profile-baseline: (a) adds `git -C` form dangerous-git / forced worktree remove deny entries, (b) extends sandbox denyWrite to ~/.claude / ~/.ssh / ~/.aws, (c) explicitly lists only worker_dir in additionalDirectories, (d) adds ~/.aws / ~/.ssh to sandbox denyRead and doubles up with permissions.deny Read(). As of runtime 0.1.4 (claude-org-runtime#10) + ja PR #397, the equivalent Layer 3 suppression that this handcraft profile documented is now generated automatically by render_role_with_metadata() based on realpath escape detection. This handcraft profile is preserved as the Phase 0 spike reference baseline and as a fall-back for non-WSL deployments or environments where sandbox field-driven generation is disabled.",
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git worktree:*)",
+      "Bash(git stash:*)",
+      "Bash(sleep:*)"
+    ],
+    "deny": [
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(git -C * push *)",
+      "Bash(git -C * push)",
+      "Bash(rm -rf *)",
+      "Bash(rm -r *)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit * --no-verify*)",
+      "Bash(git -C * commit --no-verify*)",
+      "Bash(git -C * commit * --no-verify*)",
+      "Bash(git push --no-verify*)",
+      "Bash(git push * --no-verify*)",
+      "Bash(git -C * push --no-verify*)",
+      "Bash(git -C * push * --no-verify*)",
+      "Bash(git push --force*)",
+      "Bash(git push * --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git -C * push --force*)",
+      "Bash(git -C * push * --force*)",
+      "Bash(git -C * push -f*)",
+      "Bash(git -C * push * -f*)",
+      "Bash(git reset --hard*)",
+      "Bash(git reset * --hard*)",
+      "Bash(git -C * reset --hard*)",
+      "Bash(git -C * reset * --hard*)",
+      "Bash(git branch -D*)",
+      "Bash(git branch * -D*)",
+      "Bash(git -C * branch -D*)",
+      "Bash(git -C * branch * -D*)",
+      "Bash(git worktree remove --force*)",
+      "Bash(git worktree remove * --force*)",
+      "Bash(git -C * worktree remove --force*)",
+      "Bash(git -C * worktree remove * --force*)",
+      "Read(~/.ssh/*)",
+      "Read(~/.aws/*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/credentials*)",
+      "Read(**/*.pem)",
+      "Read(~/.config/gh/hosts.yml)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/check-worker-boundary.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-dangerous-git.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-no-verify.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "WORKER_DIR": "{worker_dir}",
+    "CLAUDE_ORG_PATH": "{claude_org_path}"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "filesystem": {
+      "additionalDirectories": [
+        "{worker_dir}"
+      ],
+      "denyRead": [
+        ".env",
+        ".env.*",
+        "**/credentials*",
+        "**/*.pem",
+        "~/.config/gh/hosts.yml",
+        "~/.aws/**",
+        "~/.ssh/**"
+      ],
+      "denyWrite": [
+        "~/.claude/settings.json",
+        "~/.claude/**",
+        "~/.aws/**",
+        "~/.ssh/**"
+      ]
+    }
+  }
+}
