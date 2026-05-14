@@ -88,6 +88,35 @@ Before task decomposition, search for existing related work-skills. Include matc
 
 Do not copy a work-skill procedure verbatim. Present it as reference material and let the Worker decide.
 
+## Step 0.6: Pre-fetch for release-class tasks (run by the Lead)
+
+Tasks that cut a `release/*` branch assume the Worker branches from the **latest `main` of the target project**. Since the Phase 2 Worker git guardrails, the Worker-side `.claude/settings.json` `permissions.deny` list includes `Bash(git fetch)` / `Bash(git pull)` / `Bash(git remote update)`. Dispatching a Worker while local `origin/main` is stale therefore fires a "git fetch deny" BLOCKER within 5 minutes of start, causing a 10+ minute round-trip with the Lead (claude-org-runtime v0.1.10 incident).
+
+For this reason, **only for release-class tasks**, the Lead performs the fetch on the Worker's behalf before `gen_delegate_payload.py preview` / `apply`:
+
+```bash
+# Local root of the target project (the repo where the release will be cut)
+cd <target project root>
+
+# Pick up the latest origin/main and ff-update local main
+git fetch origin
+git pull --ff-only origin main
+```
+
+### Applicability
+
+Trigger only when one of the following applies:
+
+- The task description / commit-prefix / planned branch contains a release-promotion term such as `release`, `release/`, `vX.Y.Z`
+- The target files include release-promotion work such as a `CHANGELOG.md` promotion or a `version` bump in `__about__.__version__` / `pyproject.toml`
+- The `task_id` contains `release` (example: `runtime-0-1-10-release`)
+
+Do not run this for ordinary feature / fix / docs tasks. Worker permissions deny is an intentional design choice that "the Worker does not pull mainline history and completes work inside the sandbox"; only releases are the exception that requires "branching from the latest main".
+
+### Background
+
+For the detailed background (the measured 5-minute Worker BLOCKER → 10-minute extra round-trip, comparison of four response options, and the permissions-side root cause), see the section "On release-branch creation, the Lead performs `git fetch` on the Worker's behalf" in [`knowledge/curated/release-process.md`](../../../knowledge/curated/release-process.md).
+
 ## Step 0.7 / 1 / 1.5 / 2: Generate the Dispatch Payload with One Command (Issue #283)
 
 Step 0.7 (pre-check for `.gitignore`) / Step 1 (Pattern decision) / Step 1.5 (Worker directory preparation + role decision + settings generation) / Step 2 (`DELEGATE` body assembly) are handled **in one pass by `tools/gen_delegate_payload.py`**. The Lead is only responsible for task identification (Step 0), work-skill search (Step 0.5), target file extraction, and depth selection.
