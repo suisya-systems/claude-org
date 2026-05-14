@@ -2,6 +2,13 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# tools/state_db/discover.py walks up looking for a pyproject.toml that
+# contains the canary string `name = "claude-org-ja"`. This en mirror keeps
+# its own project name ("claude-org") to preserve repo identity, but mirrors
+# `tools/**` byte-for-byte from ja under auto-mirror runtime. The canary
+# comment below satisfies discover.py's substring search so the synced tools
+# resolve this directory as the repo root without an en-only resolver patch.
+# canary: name = "claude-org-ja"
 [project]
 name = "claude-org"
 version = "0.1.0"
