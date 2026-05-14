@@ -10,6 +10,14 @@ description: >
   Normal progress / completion reports are handled by org-delegate
   Step 5 (1) / (2a). This skill owns the canonical "do not approve
   on your own; update the registers" flow.
+effort: medium
+allowed-tools:
+  - Read
+  - Edit
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(python tools/pending_decisions.py:*)
+  - Bash(py -3 tools/pending_decisions.py:*)
+  - mcp__renga-peers__send_message
 ---
 
 # org-escalation: judgment-escalation / scope-expansion / blocker escalation

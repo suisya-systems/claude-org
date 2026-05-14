@@ -5,6 +5,23 @@ description: >
   command node, and hands off hands-on execution to Workers by default.
   Trigger this when a user request requires file edits, implementation, research,
   or other execution work.
+effort: medium
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash(python tools/gen_delegate_payload.py:*)
+  - Bash(py -3 tools/gen_delegate_payload.py:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -m tools.state_db.importer:*)
+  - Bash(git fetch:*)
+  - Bash(git log:*)
+  - Bash(gh issue create:*)
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__inspect_pane
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__list_panes
 ---
 
 # org-delegate: Worker Dispatch

@@ -4,6 +4,15 @@ description: >
   Start the organization. Load the previous state and brief it,
   then start the Dispatcher and Curator panes. Run once immediately after starting ClaudeCode.
   Also triggers on phrases like "start", "boot", or "begin".
+effort: low
+allowed-tools:
+  - Read
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -m tools.state_db.importer:*)
+  - Bash(py -3 dashboard/org_state_converter.py:*)
+  - Bash(python3 dashboard/org_state_converter.py:*)
+  - mcp__renga-peers__*
 ---
 
 # org-start: Start the Organization

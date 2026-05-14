@@ -4,6 +4,14 @@ description: >
   Refresh the org dashboard and open it in a browser.
   Triggers: "show me the dashboard", "visualize the situation",
   "show me the project list", "show me the big picture", etc.
+effort: low
+allowed-tools:
+  - Bash(cat .state/dashboard.pid)
+  - Bash(kill -0 *)
+  - Bash(python3 dashboard/server.py *)
+  - Bash(py -3 dashboard/server.py *)
+  - Bash(open http://localhost:8099)
+  - Bash(start http://localhost:8099)
 ---
 
 # org-dashboard: open the dashboard

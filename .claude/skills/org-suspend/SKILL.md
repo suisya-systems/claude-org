@@ -4,6 +4,13 @@ description: >
   Suspend the org and persist all state to disk. Use when the user says
   "suspend", "save and exit", "I want to close", "let's stop for now",
   "done for today".
+effort: low
+allowed-tools:
+  - Read
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -m tools.state_db.importer:*)
+  - mcp__renga-peers__*
 ---
 
 # org-suspend: suspend the org

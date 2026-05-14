@@ -8,6 +8,11 @@ description: >
   Does not auto-create skills. A "recommend" appends to
   knowledge/skill-candidates.md, and the Lead later batch-asks the
   human once the queue accumulates — a two-stage handoff.
+effort: low
+allowed-tools:
+  - Read
+  - Edit
+  - Write
 ---
 
 # skill-eligibility-check: skill-promotion judgment
