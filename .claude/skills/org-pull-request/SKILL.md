@@ -1,12 +1,12 @@
 ---
 name: org-pull-request
 description: >
-  After user approval of a Worker completion report, the Lead handles push / PR creation / CI monitoring / the review feedback loop /
-  and final close-out after PR merge. Trigger conditions:
-  (1) immediately after receiving a completion report from a Worker and the user gives explicit approval such as "OK" or "Proceed",
-  (2) when review feedback or a CI failure arrives on a GitHub PR and the Lead sends a follow-up fix request back to the Worker,
-  (3) when the PR is merged and the final close-out condition is satisfied.
-  The initial action of simply "asking a Worker to do work" belongs to org-delegate, not this skill.
+  After the user approves a worker's completion report, the Lead handles push / PR creation / CI monitoring /
+  review-feedback loop / final close after PR merge. Triggers:
+  (1) immediately after a worker submits a completion report and the user gives explicit approval such as "OK" or "go ahead",
+  (2) when review feedback / CI failure arrives on the GitHub PR and you need to send fix instructions back to the worker,
+  (3) when the PR is merged and the final close conditions are met.
+  The initial "delegate work to a worker" step is handled by org-delegate, not by this skill.
 effort: medium
 allowed-tools:
   - Read
@@ -31,48 +31,56 @@ allowed-tools:
   - mcp__renga-peers__check_messages
 ---
 
-# org-pull-request: PR Creation, Review, and Post-Merge Close-Out
+# org-pull-request: PR creation, review, and post-merge close
 
-Handles the flow from Worker completion report → user approval → push / PR creation / CI monitoring / review feedback loop / final close-out after PR merge. **Lead-only**. This skill assumes the state is already "Worker has reported completion and the user has given explicit approval." For the pre-approval phase (issuing ack, transition to REVIEW, user report), see `.claude/skills/org-delegate/SKILL.md` Step 5 (2a).
+Covers worker completion report -> user approval -> push / PR creation / CI monitoring / review-feedback loop / final close after PR merge. **Lead only.** The precondition for invoking this skill is that the worker has submitted a completion report and the user has given explicit approval. The pre-approval phase (ack issuance, transition to REVIEW, reporting to the user) is covered by `.claude/skills/org-delegate/SKILL.md` Step 5 (2a).
 
-> **T5 contract**: The canonical spec for the `awaiting_review → complete` transition handled by this skill is
+> **T5 contract**: The canonical spec for the `awaiting_review -> complete` transition handled by this skill is
 > [`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §2 T5 / T6 / §1.5 close-condition.
-> That contract is the SoT that pins close-condition / pane discipline / the no-respawn rule.
-> This SKILL covers procedure; the contract covers invariants.
+> That contract is the SoT that pins close-condition / pane discipline / no-respawn.
+> This SKILL owns the procedure; the contract owns the invariants.
 
-> **ack ≠ user approval**: By the time this skill is triggered, ack has already been issued (`.claude/skills/org-delegate/SKILL.md` Step 5 step 1 / [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md)). Only issue push / `gh pr create` / `tools/pr-watch.*` after user approval.
+> **ack != user approval**: By the time this skill is invoked, ack has already been issued (`.claude/skills/org-delegate/SKILL.md` Step 5 step 1 / [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md)). push / `gh pr create` / `tools/pr-watch.*` are issued only after user approval.
 
-## 2b-i. PR Creation Phase (Execute Immediately)
+## 2b-i. PR creation phase (run immediately)
 
-Trigger this immediately after the user gives **explicit approval** such as "OK", "Reviewed", "No issue", or "Proceed":
+Triggered immediately after the user gives **explicit approval** such as "OK", "looks good", "no issues", or "go ahead":
 
-- The Lead pushes and creates the PR as needed (the Worker does not have permission for `git push` or PR creation). Follow `feedback_pr_issue_english` for PR body language rules (PRs / Issues are in English)
-- **As soon as the PR number is known, immediately back-fill `runs.pr_url` / `runs.branch` with `tools/set_run_pr_open.py`** (Issue #323):
+- The Lead performs push / PR creation as needed (the worker does not have `git push` / PR-creation permissions). The language convention for PR bodies follows `feedback_pr_issue_english` (PRs / Issues in English).
+- **As soon as the PR number is confirmed, immediately back-fill `runs.pr_url` / `runs.branch` with `tools/set_run_pr_open.py`** (Issue #323):
   ```bash
   python tools/set_run_pr_open.py --task-id <task_id> --pr <PR>
   ```
-  This fetches `gh pr view <PR> --json url,headRefName` once and overwrites `runs.pr_url` and `runs.branch` via `StateWriter.set_run_pr`. Re-invocation is idempotent (same-value overwrite, no event append). Without this, downstream `tools/run_complete_on_merge.py` cannot resolve `runs.pr_url`, exits with `no_run` (exit 3), and `-MergeWatch` auto-completion fails
-- Append an event to the DB `events` table (push / PR open, etc., via `bash tools/journal_append.sh ...`)
-- Once the PR number is known, monitor CI with `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX). On completion, `ci_completed` is automatically recorded in `events`. When CI completes, pr-watch **returns** (it does not hold the session synchronously, so the flow can proceed to review feedback loop 2c or manual close 2b-ii)
-- **In a renga environment, pr-watch sends a peer message to Lead when CI completes / merge is detected / 24h timeout hits** (Issue #326). The Lead does not poll the `events` table. Instead, proceed when `<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...` arrives (and likewise `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`). On `CI_COMPLETED` → ask the user for merge approval → user approves → on `PR_MERGED`, proceed to 2b-ii post-merge cleanup. `PR_MERGED_NO_RUN` is a failure path where merge was observed but no matching run row was found (`tools/run_complete_on_merge.py` ended with `no_run`); do not proceed to post-merge cleanup, handle with human judgment. In plain shell / CI with `RENGA_SOCKET` unset, peer-send is a silent noop and the flow falls back to polling the `events` table as before
-- **Emit the awaiting_user notification just before asking the user for merge approval after CI_COMPLETED (Issue #28)**: tell the attention watcher that the user is stopped waiting on a merge approval:
+  This calls `gh pr view <PR> --json url,headRefName` once and overwrites `runs.pr_url` and `runs.branch` via `StateWriter.set_run_pr`. Re-invocation is idempotent (overwrites with the same values, no events appended). Without this, the later `tools/run_complete_on_merge.py` cannot look up `runs.pr_url`, fails with `no_run` (exit 3), and the `-MergeWatch` auto-completion breaks.
+- Append events to the DB events table (push / PR open etc., `bash tools/journal_append.sh ...`).
+- Once the PR number is confirmed, monitor CI with `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX). On completion `ci_completed` is automatically recorded in events. pr-watch **returns** once CI completes (so it does not synchronously block, allowing you to proceed to review-feedback loop 2c or manual close 2b-ii).
+- **In renga environments, pr-watch sends a peer message to the Secretary at the moment of CI completion / merge detection / 24h timeout** (Issue #326). The Lead does not poll the events table; it advances to the next step on arrival of `<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...` (and `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`). `CI_COMPLETED` received -> ask the user for merge approval -> user approval -> `PR_MERGED` received -> go to 2b-ii post-merge cleanup. `PR_MERGED_NO_RUN` is a failure case where merge was observed but no corresponding run row was found (the `no_run` terminal state of `tools/run_complete_on_merge.py`); do not proceed to post-merge cleanup — handle by human judgment. In plain shells / CI without `RENGA_SOCKET` set, peer-send is a silent noop and falls back to polling the events table as before.
+- **Right before "CI_COMPLETED received -> ask user for merge approval", emit an awaiting_user notification (Issue #28)**: this tells the attention watcher that the user is stopped while awaiting merge approval:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"
   ```
-  The classifier in the parallel runtime PR picks it up as `secretary_awaiting_user` (default severity `urgent`). See the "Notify when the Secretary is waiting on a user judgment" section in CLAUDE.md. Failure paths such as `PR_MERGE_WATCH_TIMEOUT` are out of scope (they go through a separate human-judgment path, not awaiting_user).
-- Add `-MergeWatch` (PowerShell) / `--merge-watch` (POSIX) **only when you want to wait for merge**. After CI passes, it polls `gh pr view --json mergedAt` for 24h and calls `tools/run_complete_on_merge.py` on first merge detection (Issue #317). During merge-watch, the pr-watch process stays alive and returns only after appending a `pr_merged` event to `events`
-- Keep `run.status` **at REVIEW** (so the same pane can handle GitHub-side PR review feedback if it arrives. Transition to COMPLETED happens in 2b-ii by calling `update_run_status('<task_id>', 'completed')`). Do not edit markdown directly
-- **Do not close the pane yet**: do not send `CLOSE_PANE` immediately after PR creation. Delay worktree removal and Worker Directory Registry updates until 2b-ii
-- If PR review feedback arrives, follow flow 2c and send follow-up instructions to the same Worker with `send_message`, then have it stack fix commits in the same pane (avoid dispatching a new Worker; that would pay the cost of reconstructing the Issue / diff / decision boundary)
-- **For a dogfood-target PR (Issue #338)**: in `registry/dogfood_pending.md`, find the `status=pending` row for this `task_id` and (a) fill in `impl_pr=#<PR>`, (b) create the paired follow-up issue with `gh issue create --title "dogfood follow-up: <surface>" --body-file <rendered template>` (template: [`.claude/skills/org-delegate/references/dogfood-issue-template.md`](../org-delegate/references/dogfood-issue-template.md)), (c) fill the created issue number into `dogfood_issue=#<MMM>` and transition `status` from `pending → open`, (d) append `Paired dogfood issue: #<MMM>` to the bottom of the PR body. The full protocol's SoT is [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8
+  The classifier in the parallel runtime PR picks this up as `secretary_awaiting_user` (default severity `urgent`). See the "notify when the secretary is waiting on a user decision" section of CLAUDE.md. Failure cases such as `PR_MERGE_WATCH_TIMEOUT` are out of scope (those go to human judgment via a different path, not awaiting_user).
+- **Only when you want to wait for merge**, pass `-MergeWatch` (PowerShell) / `--merge-watch` (POSIX). After CI passes, it polls `gh pr view --json mergedAt` for 24h and calls `tools/run_complete_on_merge.py` on the first observed merge (Issue #317). During merge-watch the pr-watch process stays alive; on merge observation it appends a `pr_merged` event to events and then returns.
+- run.status **stays at REVIEW** (so that GitHub PR review feedback can be handled in the same pane; the transition to COMPLETED happens in 2b-ii via `update_run_status('<task_id>', 'completed')`). Do not edit markdown directly.
+- **Do not close the pane yet**: do not send `CLOSE_PANE` immediately after PR creation. worktree removal and Worker Directory Registry updates are deferred until 2b-ii.
+- If PR review feedback arrives, follow flow 2c and send a `send_message` follow-up instruction to the same worker so they push fix commits in the same pane (avoid respawning a new worker — you would pay the cost of rebuilding Issue / diff / judgment boundaries).
+- **For dogfood-target PRs (Issue #338)**: in `registry/dogfood_pending.md`, find the row for the relevant task_id with `status=pending`, then (a) fill in `impl_pr=#<PR>`, (b) create the paired follow-up issue with `gh issue create --title "dogfood follow-up: <surface>" --body-file <rendered template>` (template: [`.claude/skills/org-delegate/references/dogfood-issue-template.md`](../org-delegate/references/dogfood-issue-template.md)), (c) fill in the resulting issue number as `dogfood_issue=#<MMM>` and transition `status` from `pending -> open`, (d) append `Paired dogfood issue: #<MMM>` to the end of the PR body. The SoT for the full protocol is [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8.
 
-## 2c. Review Feedback / CI Failure Feedback Loop
+### Warning: cwd when launching pr-watch
 
-When a human gives feedback or fix instructions, or when CI fails and the user says "have them fix it":
+`tools/pr-watch.sh` / `tools/pr-watch.ps1` / `tools/pr_watch.py` open `state.db` via a relative path, so if the cwd at launch is not the ja root, writing the CI-completion event will crash and peer notifications (`CI_COMPLETED` / `PR_MERGED` etc.) will not fire. If you just `cd .worktrees/...` beforehand, always launch as `cd <ja-root> && nohup bash tools/pr-watch.sh <PR> ...`. A root fix (cwd-independence) is in progress in Issue #398.
 
-- Send additional instructions to the Worker over renga-peers (`to_id="worker-{task_id}"`)
-- If the added instruction is a trivial fix (CI output formatting / typo / comment edit, etc.), explicitly set verification depth to `minimal` and instruct the Worker to return completion in a single line as `done: {short commit SHA} {changed filename}` (format follows [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md))
-- **Return the run to IN_PROGRESS via DB** (`run.status='in_use'`, direct markdown edits are forbidden. The post-commit hook regenerates `.state/org-state.md`):
+### Warning: when launching via the Claude Code Bash tool
+
+When the Lead launches `tools/pr-watch.sh` / `tools/pr-watch.ps1` from inside Claude Code, always submit with the Bash tool's `run_in_background: true`. With `nohup ... &` + `disown` alone, the Claude Code bash sub-shell is short-lived and pr-watch gets killed along with it as soon as the call returns, so neither the CI-completion event nor the peer notification fires (the process disappears quietly and only an empty log file is left behind, which is hard to notice). This trap is especially easy to fall into in fresh sessions right after `/clear` / [`/secretary-resume`](../secretary-resume/SKILL.md). With `run_in_background: true`, you get an automatic completion notification (with exit code), so the CI-completion detection path is covered there as well.
+
+## 2c. Review feedback / CI failure feedback loop
+
+If a human provides feedback / fix instructions, or if CI fails and the user says "have them fix it":
+
+- Send additional instructions to the worker via renga-peers (`to_id="worker-{task_id}"`).
+- If the additional instructions are a trivial fix (CI output formatting / typo / comment fix etc.), explicitly state **verification depth `minimal`** and tell them to reply with only a single line `done: {short commit SHA} {changed file names}` (the format follows [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md)).
+- **Move the run back to IN_PROGRESS via the DB** (`run.status='in_use'`, do not edit markdown directly. The post-commit hook regenerates `.state/org-state.md`):
   ```bash
   python -c "
   from pathlib import Path
@@ -83,54 +91,53 @@ When a human gives feedback or fix instructions, or when CI fails and the user s
       w.update_run_status('<task_id>', 'in_use')
   "
   ```
-- Append an event to the DB `events` table (`bash tools/journal_append.sh ...`) (`tools/journal_append.py` already routes to DB)
-- The JSON snapshot is automatically regenerated by the StateWriter post-commit hook (Issue #284)
-- (Because the pane is still alive, the Worker continues in place)
-- **Do not respawn a new Worker** (T6 contract): that would lose the Issue / diff / decision boundary. Only the Lead decides otherwise if the Worker becomes non-responsive
+- Append events to the DB events table (`bash tools/journal_append.sh ...`) (`tools/journal_append.py` is already routed to the DB).
+- The JSON snapshot is automatically regenerated by the StateWriter post-commit hook (Issue #284).
+- (The pane is alive, so the worker simply continues working.)
+- **Do not respawn a new worker** (T6 contract): Issue / diff / judgment boundaries would be lost. Only when the worker becomes unresponsive does the Lead make that call.
 
-When a new completion report comes back from the Worker, go again in this order: `.claude/skills/org-delegate/SKILL.md` Step 5 (2a) → user approval → this skill 2b-i.
+Once a new completion report arrives from the worker, proceed again through `.claude/skills/org-delegate/SKILL.md` Step 5 (2a) -> user approval -> 2b-i of this skill.
 
-## 2b-ii. Final Close-Out Phase (Execute When a Close Condition Is Met)
+## 2b-ii. Final close phase (run once the close conditions are met)
 
-Close condition (same as contract §1.5; satisfy at least one):
-- The PR is merged (confirm with `gh pr view {n} --json mergedAt`, etc., or the Lead receives a merge notice, or `pr-watch --merge-watch` reports a `pr_merged` event)
-- The user explicitly says "you can close it", "close it", "already merged", etc.
-- Long idle with no review activity for 24-48 hours (Lead operational judgment as needed; do not automate)
+Close conditions (same as contract §1.5; at least one must be satisfied):
+- The PR has been merged (confirmed by `gh pr view {n} --json mergedAt` etc., or the Lead receives a merge notification, or notified via the `pr_merged` event of `pr-watch --merge-watch`).
+- The user explicitly says "you can close it", "close it", "merged", etc.
+- 24-48 hours of long idle with no review activity (left to the Lead's operational discretion; not automated).
 
-Actions:
+Actions to perform:
 
-- Update the target run to **COMPLETED** in the DB (done via the `update_run_status('<task_id>', 'completed')` block below). Do not edit markdown directly
-- Final-update the Worker state file (append the last Progress Log, etc.)
-- **The Worker state file (`.state/workers/worker-{task_id}.md`) is automatically moved into `.state/workers/archive/` by StateWriter in the post-commit hook of `update_run_status('<task_id>', 'completed')`** (Issue #284. `archive/` is created lazily if absent; re-invocation is idempotent. The dashboard does not treat files in this directory as live Workers (Issue #264). Do not delete them; journal / retro may need the history)
-- Append an event to the DB `events` table (`bash tools/journal_append.sh ...`)
-- Ask the Dispatcher to close the pane:
-  `CLOSE_PANE: Please close pane {pane_id}.`
-- **Run cleanup based on directory pattern** (at the same time):
-  - Pattern A (project directory): keep the directory (reuse it for the next task)
-  - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (do not delete it even after merge; preserve PR history)
-    - **For self-edit (`pattern_variant='live_repo_worktree'`)**: because the worktree base is `{claude_org_path}`, run `git -C {claude_org_path} worktree remove .worktrees/{task_id}` (Issue #289). Keep the branch here as well
-  - Pattern C (ephemeral): keep the directory (consider manual deletion only if disk usage becomes a problem)
-- **On paired-issue close for a dogfood-target PR (Issue #338)**: because the implementation PR merge and the paired follow-up issue close can have independent lifecycles, this skill does not guarantee the `consumed → closed` transition simply because the implementation PR was merged. The terminal `consumed → closed` transition is the Lead's register-hygiene responsibility, collected via [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §`consumed → closed` observation timing (verify the paired-issue state with `gh issue view` at register-write time + at `/org-resume` startup). If this skill happens to observe the relevant row at PR-merge time, opportunistically run the hygiene step
-- **For PR-based close-out, call `tools/run_complete_on_merge.py`** (Issue #317. Normally no manual invocation is needed because the merge-watch loop in `pr-watch --merge-watch` starts automatically, but call it explicitly if merge-watch was skipped or merge was observed manually):
+- DB-update the relevant run to **COMPLETED** (use the `update_run_status('<task_id>', 'completed')` block described below). Do not edit markdown directly.
+- Final-update the worker's state file (append the last Progress Log entry, etc.).
+- **The worker state file (`.state/workers/worker-{task_id}.md`) is automatically moved to `.state/workers/archive/` by StateWriter's post-commit on `update_run_status('<task_id>', 'completed')`** (Issue #284. `archive/` is lazily created if absent; re-invocation is idempotent. The dashboard does not treat files in this directory as live workers (Issue #264). They are not deleted, in case the journal / retro needs to reference history.)
+- Append events to the DB events table (`bash tools/journal_append.sh ...`).
+- Ask the dispatcher to close the pane:
+  `CLOSE_PANE: please close pane {pane_id}.`
+- **Post-processing per directory pattern** (do at the same time):
+  - Pattern A (project directory): keep the directory (reused for the next task).
+  - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (do not delete the branch even after merge, for PR history).
+    - **For self-edit (`pattern_variant='live_repo_worktree'`)**: the worktree base is `{claude_org_path}`, so run `git -C {claude_org_path} worktree remove .worktrees/{task_id}` (Issue #289). Keep the branch likewise.
+  - Pattern C (ephemeral): keep the directory (consider manual deletion only if capacity becomes an issue).
+- **When closing a dogfood-target PR's paired issue (Issue #338)**: because the implementation PR's merge and the paired follow-up issue's close can have independent lifecycles, this skill does not guarantee "do `consumed -> closed` on implementation-PR merge". The terminal transition `consumed -> closed` is the Lead's register-hygiene responsibility and is collected via [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §"consumed -> closed observation timing" (on register write + at `/org-resume` startup, check paired-issue state with `gh issue view`). If this skill happens to observe the relevant row at PR-merge time, it may invoke the hygiene step opportunistically.
+- **For PR-driven closes, call `tools/run_complete_on_merge.py`** (Issue #317. The merge-watch loop of `pr-watch --merge-watch` invokes it automatically, so manual execution is normally unnecessary; call it explicitly only when merge-watch was skipped or when the merge was observed manually):
   ```bash
   python tools/run_complete_on_merge.py --pr <PR>
   ```
-  This fetches `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName` once. If the PR is merged, it updates `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` through `StateWriter.transaction()` and appends one `pr_merged` event (payload: `task` / `pattern` / `auto_completed`). Re-invocation is idempotent (no duplicate event). `task_id` is resolved automatically from `runs.pr_url` / `runs.branch` (active runs only); if resolution fails, specify `--task-id`
-  - **The helper does not touch `runs.status`**: Dispatcher-side pane close / worker_closed / final Worker-state update are still required (delegation-lifecycle-contract §T5). The helper records only the merge fact; the Lead performs the status flip and Worker-dir removal with the StateWriter block below
-  - **CLI exit codes**: `merged` / `already` / `not_yet` exit 0; `no_run` (no matching row in `runs`) exits 3 and is treated as failure. Check the exit code in manual operation
-- **For Pattern B / C, remove the registry entry and perform final close separately via StateWriter** (direct markdown edits forbidden. Since `run_complete_on_merge` already wrote `pr_state='merged'` and `completed_at`, only perform the status flip and Worker-dir removal here):
+  This calls `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName` once and, if the PR is merged, updates `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` via `StateWriter.transaction()` and appends a single `pr_merged` event (payload: `task` / `pattern` / `auto_completed`). Re-invocation is idempotent (does not write a duplicate event). task_id is auto-resolved from `runs.pr_url` / `runs.branch` (restricted to active runs); if resolution fails, pass `--task-id` explicitly.
+  - **The helper does not touch runs.status**: dispatcher-side pane close / worker_closed / worker-state final update are required (delegation-lifecycle-contract §T5). The helper only records the merge fact; the status flip and worker_dir removal are done by the Lead via the StateWriter below.
+  - **CLI exit codes**: `merged` / `already` / `not_yet` are exit 0; `no_run` (no matching row in runs) is exit 3 and counted as failure. Check the exit code when running manually.
+- **Pattern B / C registry-entry deletion and final close are done by a separate StateWriter call** (do not edit markdown directly. run_complete_on_merge has already written `pr_state='merged'` and `completed_at`, so here we only do the status flip and worker_dir removal):
   ```bash
   python -c "
   from tools.state_db import connect
   from tools.state_db.writer import StateWriter
   conn = connect('.state/state.db')
   with StateWriter(conn).transaction() as w:
-      w.update_run_status('<task_id>', 'completed')  # post-commit hook が worker-{task}.md を archive
-      w.remove_worker_dir('<abs>')  # パターン B / C のみ
+      w.update_run_status('<task_id>', 'completed')  # post-commit hook archives worker-{task}.md
+      w.remove_worker_dir('<abs>')  # Pattern B / C only
   "
   ```
-  The legacy hand-rolled completion script is stored in `docs/legacy/pr-merge-completion-manual.md`. The standard path is the `tools/run_complete_on_merge.py` above. Reach for the museum copy only after filing an Issue and asking for user judgment (same pattern as PR #315)
-  - Pattern A: keep `lifecycle='active'`, with `run.status='completed'` so the snapshotter renders it equivalent to available
-  - Pattern B / C: handle the physical dir separately (worktree remove / keep dir). For registry entry removal, add `w.remove_worker_dir('<abs>')` inside the `with` block above
-- The JSON snapshot is automatically regenerated by the StateWriter post-commit hook (Issue #284)
----
+  The legacy hand-rolled completion script is preserved at `docs/legacy/pr-merge-completion-manual.md`. The standard route is `tools/run_complete_on_merge.py` above; reaching for the museum copy is allowed only after opening an issue and getting user judgment (same pattern as PR #315).
+  - Pattern A: lifecycle stays `active`; with run.status='completed' the snapshotter renders it as available-equivalent.
+  - Pattern B / C: the physical dir is handled separately (worktree remove / dir retention). For registry-entry deletion, add `w.remove_worker_dir('<abs>')` inside the with block above.
+- The JSON snapshot is automatically regenerated by the StateWriter post-commit hook (Issue #284).
