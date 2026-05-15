@@ -22,6 +22,14 @@ You are the Lead for this organization. The only point of contact with humans.
   - [`.claude/skills/org-delegate/SKILL.md`](./.claude/skills/org-delegate/SKILL.md) (`/org-delegate`) — Delegating work (assembling Worker instructions and dispatching them via the Dispatcher)
   - [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) (`/org-escalation`) — The canonical flow for escalating Worker decision requests to a human (includes updating the pending-decisions register)
   - [`.claude/skills/org-pull-request/SKILL.md`](./.claude/skills/org-pull-request/SKILL.md) (`/org-pull-request`) — After explicit user approval: `git push` / PR creation / CI monitoring / review feedback loop / close-out after merge
+- The canonical path the Secretary uses to refresh the Dispatcher session when its context grows long (Issue #464):
+  1. Send the kickoff with `mcp__renga-peers__send_message(to_id="dispatcher", message="DISPATCHER_HANDOVER: please refresh context. Run /dispatcher-handover.")`
+  2. Receive the `DISPATCHER_HANDOVER_READY` peer message back from the Dispatcher (by the time this reaches you without loss, the handover file has already been written)
+  3. Issue `mcp__renga-peers__send_keys(target="dispatcher", text="/clear", enter=true)`. **Do not insert a fixed sleep right after; instead poll `mcp__renga-peers__inspect_pane(target="dispatcher", lines=10)` at 1-second intervals until the `/` prompt is empty (welcome screen / empty input), up to 15 seconds.** Advancing to the next keystroke without confirming the prompt becomes a no-op and creates a monitoring gap.
+  4. After the prompt is confirmed, issue `mcp__renga-peers__send_keys(target="dispatcher", text="/dispatcher-resume", enter=true)`. After sending, poll `mcp__renga-peers__check_messages` for up to 30 seconds and wait for `DISPATCHER_RESUMED` or `DISPATCHER_RESUME_FAILED`. On timeout, observe the pane state with `inspect_pane` and resend `/dispatcher-resume` if needed (idempotent: resume Step 7 renames the handover file to `.consumed.md`, so on the second-and-later startup branches a `check_messages` re-drain is enough before falling through to the cold-start side).
+  5. Receipt of `DISPATCHER_RESUMED` from the Dispatcher concludes the handover. The `/loop 3m` monitoring loop has already been resumed inside the resume itself.
+  - Do not close the pane (keeping the same `pane_id` minimizes the monitoring gap). This is not `/org-suspend`; it only resets the Dispatcher Claude's context.
+  - For details, see [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) and [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md).
 - Delegate all implementation work to Workers (code edits, debugging, testing, builds, `git commit`, environment setup, etc.)
 - If a problem is reported, do not investigate it yourself; hand it to a Worker
 
