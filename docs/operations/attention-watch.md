@@ -59,7 +59,7 @@ For the raw CLI when you want to start the watcher directly from outside the ren
 claude-org-runtime attention watch --state-dir .state --config .state/attention.json
 ```
 
-In normal operation, use `/org-attention-start` from §2.1 (the skill handles pane_id recording / sidecar management / double-start checks). Stopping is Ctrl-C (the dedup state is written via atomic replace, so even a forced kill can be recovered on next startup — see §5).
+In normal operation, use `/org-attention-start` from §2.1 (the skill handles pane_id recording / sidecar management / double-start checks). For this manual-start path, stop with Ctrl-C (the dedup state is written via atomic replace, so even a forced kill can be recovered on next startup — see §5). To stop a skill-started watcher, use `/org-attention-stop` instead (§2.5) so the sidecar is also cleaned up.
 
 ### 2.5 Disabling
 

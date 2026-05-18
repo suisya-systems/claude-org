@@ -29,7 +29,7 @@ Start `claude-org-runtime attention watch` resident as a vertical split on the r
 dispatcher pane, and record the pane_id as a sidecar in `.state/attention_pane.json`. Use
 [`/org-attention-stop`](../org-attention-stop/SKILL.md) to stop it.
 
-> **Premise**: this skill is invoked from the Secretary's cwd (= the claude-org-ja repo root).
+> **Premise**: this skill is invoked from the Secretary's cwd (= the repo root).
 > The attention watcher itself is a `claude-org-runtime` console_scripts entrypoint, and the
 > relative paths `--state-dir .state` / `--config .state/attention.json` must resolve from the
 > repo root. The dispatcher pane's cwd is `.dispatcher`, so explicitly set `cwd="."` on
