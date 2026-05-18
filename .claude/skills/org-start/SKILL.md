@@ -139,7 +139,7 @@ In parallel with Block A's spawn firing. The dashboard server is a separate proc
 >
 > You can run a separate resident watcher that actively notifies via OS notifications + sound + terminal bell for things like awaiting approval / awaiting decision / CI failure / silent stop / PR merged. **`/org-start` does not start it automatically** (OS notification backends are highly environment-dependent, and unsolicited sound is easily annoying. Design [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1).
 >
-> For users who want to enable it, alongside the Step 4 startup-complete report, present them with running [`/org-attention-start`](../org-attention-start/SKILL.md). The skill handles the following in one shot:
+> For users who want to enable it, alongside the Step 4 startup-complete report, suggest running [`/org-attention-start`](../org-attention-start/SKILL.md). The skill handles the following in one shot:
 >
 > - If `.state/attention.json` is not in place, auto-copy it from `tools/templates/attention.example.json`.
 > - Vertical-split the right side of the dispatcher pane and start `claude-org-runtime attention watch ...` resident.
