@@ -17,9 +17,22 @@
 
 ## 2. Enable / disable
 
-### 2.1 Placing the config file
+### 2.1 Recommended: start / stop via skills
 
-`tools/templates/attention.example.json` is a tracked example containing the ja default template set. In real use, copy it to `.state/attention.json` (since `.state/` is gitignored, it does not exist in a fresh clone or before `/org-start`):
+From inside the renga tab (the Secretary session), the recommended path is the **two skills** that handle config auto-placement, splitting the dispatcher pane, and pane_id recording in one shot:
+
+| Operation | Skill | Side effects |
+|---|---|---|
+| Start | [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) | If `.state/attention.json` is missing, auto-copy from `tools/templates/attention.example.json` → vertical-split the right side of the dispatcher pane → start `claude-org-runtime attention watch ...` resident → record the pane_id in the `.state/attention_pane.json` sidecar |
+| Stop | [`/org-attention-stop`](../../.claude/skills/org-attention-stop/SKILL.md) | Read the sidecar, discard the pane via `mcp__renga-peers__close_pane` → delete the sidecar |
+
+It does not auto-start from `/org-start` (OS notification backends are strongly environment-dependent, and unsolicited sound is easily annoying. Design [`docs/design/attention-notification.md`](../design/attention-notification.md) §11 Q1). After `/org-start` completes, either fire `/org-attention-start` explicitly, or place it manually only when needed (§2.2).
+
+The sidecar (`.state/attention_pane.json`) follows the same "auxiliary-process tracking" pattern as `.state/dashboard.pid` / `.state/attention_notified.json`, and `.state/state.db` schema is not extended (to avoid ripple effects on importer / writer / snapshotter / converter / drift_check). Since `.state/` is gitignored, the sidecar is not committed either.
+
+### 2.2 Manual placement (outside renga / starting from a separate terminal)
+
+`tools/templates/attention.example.json` is a tracked example containing the ja default template set. If you want to run it resident from a separate terminal without using the renga tab, or to hand-edit the template before placement, do the following:
 
 ```bash
 mkdir -p .state
@@ -28,7 +41,7 @@ cp tools/templates/attention.example.json .state/attention.json
 
 To change OS-notification or sound behavior, edit `.state/attention.json` (override template strings, switch `sound`, adjust `cooldown_sec`, etc.). The template placeholder allowlist is the 6 placeholders `{task_id}` / `{worker}` / `{kind}` / `{status}` / `{pr}` / `{summary}`; unknown placeholders are either left as literals or filled by the runtime's fallback template (see design §6).
 
-### 2.2 One-shot verification (`scan`)
+### 2.3 One-shot verification (`scan`)
 
 Before keeping `watch` resident, confirm that attention events are extracted from the current `.state/` as expected:
 
@@ -38,17 +51,19 @@ claude-org-runtime attention scan --state-dir .state --config .state/attention.j
 
 Always pass `--config .state/attention.json` (without it, the runtime-neutral English defaults appear in title/body, and you cannot tell whether the ja templates are actually taking effect). `--dry-run` does not invoke OS-notification subprocesses, so it is safe in CI environments or during quiet hours. The output is in the form `{ "events": [{ "key": ..., "kind": ..., "severity": ..., "title": ..., "body": ...}, ...] }` (for details, see [the attention scan verification block in `docs/verification.md`](../verification.md)).
 
-### 2.3 Resident mode (`watch`)
+### 2.4 Resident mode (`watch`) — manual start
+
+For the raw CLI when you want to start the watcher directly from outside the renga tab (separate terminal / background):
 
 ```bash
 claude-org-runtime attention watch --state-dir .state --config .state/attention.json
 ```
 
-Start it in another terminal or in the background. It does not auto-start from `/org-start` (since it is strongly environment-dependent, explicit start is recommended; see design §11 Q1 / §7 "org-start guidance"). Stopping is the usual Ctrl-C (the dedup state is written via atomic replace, so even a forced kill can be recovered on next startup — see §5).
+In normal operation, use `/org-attention-start` from §2.1 (the skill handles pane_id recording / sidecar management / double-start checks). For this manual-start path, stop with Ctrl-C (the dedup state is written via atomic replace, so even a forced kill can be recovered on next startup — see §5). To stop a skill-started watcher, use `/org-attention-stop` instead (§2.5) so the sidecar is also cleaned up.
 
-### 2.4 Disabling
+### 2.5 Disabling
 
-To stop it permanently, just terminate the `watch` process. There is no need to delete the config file (`.state/attention.json`). To temporarily suppress notifications, set `"desktop": false` / `"sound": "off"` in `.state/attention.json`, or demote individual-kind severities from `"urgent"` to `"normal"` (the value of `notify.<kind>` only accepts `"urgent"` / `"normal"`; there is no per-kind `off`. To stop completely, use the global `desktop: false`).
+When started from inside the renga tab, use [`/org-attention-stop`](../../.claude/skills/org-attention-stop/SKILL.md) to clean up the sidecar and the pane in one shot. A manually started watcher can just be terminated with Ctrl-C. There is no need to delete the config file (`.state/attention.json`). To temporarily suppress notifications, set `"desktop": false` / `"sound": "off"` in `.state/attention.json`, or demote individual-kind severities from `"urgent"` to `"normal"` (the value of `notify.<kind>` only accepts `"urgent"` / `"normal"`; there is no per-kind `off`. To stop completely, use the global `desktop: false`).
 
 ## 3. OS-specific notification backend behavior
 

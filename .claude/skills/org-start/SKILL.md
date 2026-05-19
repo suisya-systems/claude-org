@@ -139,18 +139,13 @@ In parallel with Block A's spawn firing. The dashboard server is a separate proc
 >
 > You can run a separate resident watcher that actively notifies via OS notifications + sound + terminal bell for things like awaiting approval / awaiting decision / CI failure / silent stop / PR merged. **`/org-start` does not start it automatically** (OS notification backends are highly environment-dependent, and unsolicited sound is easily annoying. Design [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1).
 >
-> For users who want to enable it, present the following alongside the Step 4 startup-complete report:
+> For users who want to enable it, alongside the Step 4 startup-complete report, suggest running [`/org-attention-start`](../org-attention-start/SKILL.md). The skill handles the following in one shot:
 >
-> ```bash
-> # First time only: copy the ja default template into .state/ (.state/ is gitignored and absent on fresh clones)
-> mkdir -p .state
-> cp tools/templates/attention.example.json .state/attention.json
+> - If `.state/attention.json` is not in place, auto-copy it from `tools/templates/attention.example.json`.
+> - Vertical-split the right side of the dispatcher pane and start `claude-org-runtime attention watch ...` resident.
+> - Record the pane_id in the `.state/attention_pane.json` sidecar (referenced from [`/org-attention-stop`](../org-attention-stop/SKILL.md) for stopping).
 >
-> # Run resident in a separate terminal or in the background
-> claude-org-runtime attention watch --state-dir .state --config .state/attention.json
-> ```
->
-> For a one-shot smoke test, use `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json` (omit `--config` and you get the runtime-neutral English default, so always pass it when validating the ja template path). For per-OS backend behavior and troubleshooting, see [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md).
+> For a one-shot smoke test, use `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json` (omit `--config` and you get the runtime-neutral English default, so always pass it when validating the ja template path). For per-OS backend behavior, troubleshooting, and bare-CLI startup from a separate terminal, see [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md).
 
 ### Block D: join both panes (Enter / list_peers poll / greeting / DB write / snapshot)
 
