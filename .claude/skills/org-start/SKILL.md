@@ -11,6 +11,8 @@ allowed-tools:
   - Bash(python -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
+  - Bash(py -3 tools/check_runtime_version.py:*)
+  - Bash(python3 tools/check_runtime_version.py:*)
   - mcp__renga-peers__*
 ---
 
@@ -135,6 +137,27 @@ In parallel with Block A's spawn firing. The dashboard server is a separate proc
 3. Inform the user:
    "Dashboard started -> http://localhost:8099".
 
+### Block C2: claude-org-runtime version drift detection (Issue #472)
+
+In parallel with Block A's spawn firing. Compare the installed version of `claude-org-runtime` to the latest on PyPI, and if there is drift, attach a one-line warning to the Step 4 startup-complete report. No auto-upgrade; notification only. **Do not hard-code version numbers in either this file or the script — use only values dynamically obtained via importlib.metadata and the PyPI JSON API** (to avoid the description going stale every time runtime releases).
+
+1. Run the drift check:
+   ```bash
+   py -3 tools/check_runtime_version.py   # Windows
+   python3 tools/check_runtime_version.py # Mac/Linux
+   ```
+2. Output branches:
+   - stdout is empty (exit 0): one of installed == latest, not installed, offline, PyPI response parse failure, pin parse failure, no release within the pin range. **Do not emit a warning line in the Step 4 report** (silent).
+   - stdout contains one line of `[runtime drift] ...`: drift detected. **Verbatim, transcribe that one line as a warning at the end of the Step 4 startup-complete report**.
+
+> Design notes:
+> - latest acquisition hits the PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) via urllib.request (timeout 3s). `pip index versions` is experimental and emits a warning on stderr, so it is not adopted.
+> - **pin window**: dynamically read the `claude-org-runtime` dependency constraint from ja's `pyproject.toml` via regex, and from the PyPI releases, only the latest satisfying that constraint is used as `latest` for comparison. This means that even if a higher major / higher minor is released to PyPI, an upgrade outside the window is not encouraged (uses `packaging.SpecifierSet`). On environments where `packaging` is not installed, silent skip.
+> - yanked releases are excluded from candidates (so that versions pip would not normally pick are not displayed as `latest`).
+> - Both "drift = older" and "drift = preview pulled in (installed > latest, release-channel skew)" are notified with the same one line. No auto-upgrade; the response is left to the user's judgment.
+> - The warning command embeds the pin constraint read from `pyproject.toml` verbatim, so even if the user pastes the warning command as is, it will not upgrade outside the window.
+> - Script body: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py).
+
 > **Sidebar: attention watcher startup guidance (optional, explicit start recommended)**
 >
 > You can run a separate resident watcher that actively notifies via OS notifications + sound + terminal bell for things like awaiting approval / awaiting decision / CI failure / silent stop / PR merged. **`/org-start` does not start it automatically** (OS notification backends are highly environment-dependent, and unsolicited sound is easily annoying. Design [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1).
@@ -235,6 +258,8 @@ Parallel firing introduces failure patterns that differ from the old serial exec
 
 Report concisely to the human. Depending on what was written in Block D-5's DB write, accurately enumerate the started roles (so as not to falsely report "curator started" when curator failed):
 
+**Handling Block C2's runtime drift output**: if Block C2's `tools/check_runtime_version.py` stdout emitted a single `[runtime drift] ...` line, then for any of the templates below **transcribe that one line verbatim at the end, separated by one blank line**. If stdout was empty, do not attach the warning line (installed == latest / not installed / offline / parse failure / no release within the pin range are all silent).
+
 **With previous state (both roles succeeded)**:
 ```
 Org started.
@@ -256,6 +281,14 @@ Org started (partial).
 Dispatcher is running, but curator startup failed (reason: {[<code>] / peer-registration timeout etc.}).
 Choose between respawning curator to recover, or temporarily continuing without curator.
 (Without curator, worker dispatch / state writes still work, but automatic knowledge curation (/loop 30m /org-curate) is disabled.)
+```
+
+**Example of attached warning on drift detection** (transcribed at the end of any template above; `{installed}` / `{latest_in_window}` / `{pin}` are determined at runtime by the script from PyPI and `pyproject.toml`, and must not be hard-coded into this file):
+```
+...
+What would you like to do?
+
+[runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- update with `python -m pip install --upgrade 'claude-org-runtime{pin}'`
 ```
 
 ## Appendix: Claude Code startup commands (per role)
