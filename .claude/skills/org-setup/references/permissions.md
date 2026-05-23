@@ -303,7 +303,7 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 **hooks の役割分担**:
 - `block-dispatcher-out-of-scope.sh`: ディスパッチャーの Edit/Write 対象パスを `.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
 - `block-git-push.sh`: ディスパッチャーからの直接 push を禁止（push は窓口経由）
-- `block-dangerous-git.sh`: `git push --force` / `git reset --hard` / `git branch -D` をブロック
+- `block-dangerous-git.sh`: blocks bare `git push --force` / `-f` and `git push --force-with-lease` targeting protected branches (main / master / develop / release/* / production). `--force-with-lease` to non-protected branches is allowed (for safe re-push after PR rebase / squash, Issue #470). However, ambiguous destination cases are denied on the safe side: missing refspec / `HEAD` / `@` / wildcard refspec / `--all` / `--mirror` / `--tags` / non-branch namespaces (`refs/tags/*` / `refs/notes/*` / `refs/replace/*` etc.) / `git push origin tag <name>` form. Continues to block destructive operations such as `git reset --hard` / `git branch -D` / `git clean -f` / `git checkout -- .` / `git restore --source` / `git tag -d` / `git update-ref -d` / `git reflog expire --all`
 - `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）
 - `block-no-verify.sh`: `--no-verify` 系の検証バイパスをブロック
 
