@@ -1282,9 +1282,13 @@ This document is doc-only. The intended verification posture for this PR is:
 
 - `pytest tests/` — passes (no code change).
 - [`tools/audit_link_paths.py`](../../tools/audit_link_paths.py) on this
-  file specifically — `python tools/audit_link_paths.py docs/contracts/role-pattern-sandbox-contract.md`
-  reports zero violations originating from this file. The repo-wide
-  `python tools/audit_link_paths.py` invocation may still report a small
+  file — `python tools/audit_link_paths.py` reports one violation
+  originating from this file: the §9.1 reference to
+  `docs/contracts/worker-git-guardrails-design.md`, which has not yet been
+  mirrored to this English upstream (a separate ja-origin translation gap
+  tracked apart from this PR). That link resolves once that file is
+  translated; every other `[`...`](...)` link in this file resolves today.
+  The repo-wide invocation may additionally report a small
   number of pre-existing violations in unrelated files (CLAUDE.md and
   `.claude/skills/org-delegate/SKILL.md`); those predate this PR and are
   not introduced or modified here. Every `[`...`](...)` link in this file

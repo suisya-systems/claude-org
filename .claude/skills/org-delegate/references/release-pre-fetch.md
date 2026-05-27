@@ -25,7 +25,7 @@ Fire only when one of the following applies:
 
 Do not execute for ordinary feature / fix / docs tasks. The worker permissions deny is an intentional design that "the worker does not pull in mainline history and self-contains within its sandbox"; only release is the exception flow that requires "branching from the latest main".
 
-## Relation to Issue #480 (Pattern B does not overlap because apply auto-fetches)
+## Relation to Issue #480 (Pattern B auto-fetches but does not replace Step 0.6)
 
 Since Issue #480, **new worktree creation** for **Pattern B** (the case where a concurrent run occupies the base clone, so a worktree is cut) has `gen_delegate_payload.py apply` (internally `_ensure_worktree`) **automatically run `git fetch origin` immediately before `git worktree add` and branch off the latest `origin/HEAD` (= `origin/main`)**. This fetch is **fail-closed**: if an `origin` remote is configured and the fetch fails, apply aborts with `WorktreeApplyError` (it never cuts a worktree off a stale `origin/main`, and because it aborts before the DB reservation, no queued row is left behind).
 
