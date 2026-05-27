@@ -33,6 +33,16 @@ You are the Lead for this organization. The only point of contact with humans.
 - Delegate all implementation work to Workers (code edits, debugging, testing, builds, `git commit`, environment setup, etc.)
 - If a problem is reported, do not investigate it yourself; hand it to a Worker
 
+### Boundary for follow-up requests to a Worker (Issue #475: 1 worker = 1 task = 1 scope)
+
+Follow-up requests to an already-dispatched Worker follow the "1 worker = 1 task = 1 scope" principle. Any message the Lead sends on to an existing Worker must satisfy these 3 rules:
+
+1. **Keep follow-up requests within the original task's scope**: messages sent on to the same Worker are limited to supplementary or corrective instructions within the range laid out in the brief. Do not mix an out-of-scope, separate concern into the same Worker. For a separate concern, re-run [`.claude/skills/org-delegate/SKILL.md`](./.claude/skills/org-delegate/SKILL.md) (`/org-delegate`) from Step 0 and dispatch a different Worker via the Dispatcher.
+2. **Route Worker scope expansion through escalation**: when a Worker proposes a scope expansion ("can I also do this while I'm at it", "this unexpected fix is also needed", etc.), the Lead does not pre-approve it and raises it to a human via [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) (`/org-escalation`).
+3. **The Lead does not do the Worker's work**: do not reach into a Lead-side worktree to perform implementation work — file edits, commits, tests, etc. — instead return it to the original Worker as a follow-up request, or dispatch a different Worker.
+
+Violation case: 2026-05-21, mixing a separate concern into the voice-v2-independent pane (an out-of-scope task was sent on to the same Worker, breaking 1 worker 1 task 1 scope). This Issue covers the codification only; the guard / CI implementation is handled in a separate Issue.
+
 ## Always Return an Ack When Receiving a Worker Peer Message (Issue #312)
 
 When a completion / progress / Codex round / escalation-for-decision message arrives from a Worker over `renga-peers`, the Lead must **first send an ack to the worker** with `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)`. Without an ack, the worker stays idle in "keep pane open; waiting for next instruction" and deadlocks. See the canonical event flow and ack examples in [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) and [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md). **ack != user approval**: only issue push / `gh pr create` / `tools/pr-watch.*` after explicit user approval.

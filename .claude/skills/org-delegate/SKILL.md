@@ -109,6 +109,8 @@ Before `gen_delegate_payload.py apply`, update the target project's local main w
 
 For detailed conditions, the execution command, and the rationale behind the worker permissions deny (fetch miss → worker BLOCKER within 5 minutes → 10-minute-plus loss background), refer to [`references/release-pre-fetch.md`](references/release-pre-fetch.md) as the primary source. **The 4 conditions retained in this body must not be omitted, because missing the trigger leads directly to a worker BLOCKER.**
 
+> **Distinction from Pattern B (Issue #480)**: For Pattern B, apply itself runs `git fetch origin` and branches off `origin/HEAD` when creating the worktree, so the freshness of the worktree's starting point does not depend on this Step 0.6. What Step 0.6 guarantees is the **freshness of local main** for Pattern A (where the worker cuts `release/*` from local main); the two address different targets. For details, see the "Relation to Issue #480" section of [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md).
+
 ## Step 0.7 / 1 / 1.5 / 2: Generate the dispatch payload in 1 command (Issue #283)
 
 Step 0.7 (gitignore pre-check) / Step 1 (Pattern determination) / Step 1.5 (Worker directory preparation + role decision + settings generation) / Step 2 (DELEGATE body assembly) are **all handled by `tools/gen_delegate_payload.py`**. The Lead's responsibility is only task identification (Step 0), work-skill search (Step 0.5), target-file extraction, and depth judgment.
@@ -192,6 +194,16 @@ The Dispatcher returns `DELEGATE_COMPLETE` to the Lead upon dispatch completion.
 ### ⚠️ cwd caution: state.db touching tools
 
 `tools/journal_append.sh` / `tools/journal_append.py` / `tools/set_run_pr_open.py` / `python -c "... StateWriter ..."` and the like — any tool that opens `state.db` via a relative path — assume ja-root-relative. If you launch them from a worker / worktree cwd, they will fail silently or crash with `no such table: runs` / `no such table: events`, and the downstream post-commit hook and snapshot regeneration will not run either. Always `cd <ja-root>` before executing. Issue #398 is tracking a root fix.
+
+### Lead → Worker messaging rules (Issue #475: 1 worker = 1 task = 1 scope)
+
+Every message the Lead sends to an existing Worker follows the "1 worker = 1 task = 1 scope" principle. For the canonical 3 rules, refer to CLAUDE.md "Role Boundaries > Boundary for follow-up requests to a Worker" as the SoT:
+
+1. **Keep follow-up requests within the original task's scope**: only send on supplementary or corrective instructions within the range laid out in the brief. Do not feed an out-of-scope, separate concern into the same Worker; re-run this SKILL from Step 0 and dispatch a different Worker via the Dispatcher.
+2. **Route Worker scope expansion proposals through escalation**: the Lead does not pre-approve them and triggers [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) (`/org-escalation`).
+3. **The Lead does not do the Worker's work**: do not reach into a Lead-side worktree for file edits, commits, tests, etc.; return the work to the Worker as a follow-up request, or dispatch a different Worker.
+
+Violation case: 2026-05-21, mixing a separate concern into the voice-v2-independent pane (an out-of-scope task was sent on to the same Worker, collapsing into one Worker a separate concern that should have had its own Worker). The guard / CI implementation for this section is a separate Issue.
 
 ### On DELEGATE_COMPLETE receipt
 
