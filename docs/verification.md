@@ -608,7 +608,7 @@ Call each of the following 7 tools in turn and confirm a response is returned wi
    ```
 3. Check the output JSON. Each element of the `events` array should have:
    - `key`: a stable ID for dedup (`event:<events.id>` or `pending:<task_id>:<kind>`)
-   - `kind`: one of the runtime 0.1.x classification kinds (`approval_blocked` / `relay_gap_suspected` / `silent_worker_output` / `ci_failed` / `pending_decision` / `user_reply_not_forwarded` / `pane_silent` / `pane_crashed` / `worker_stalled` / `worker_not_reported` / `worker_error` / `worker_completed` / `pr_merged`)
+   - `kind`: one of the runtime 0.1.x classification kinds (`approval_blocked` / `relay_gap_suspected` / `silent_worker_output` / `ci_failed` / `pending_decision` / `user_reply_not_forwarded` / `pane_silent` / `pane_crashed` / `worker_stalled` / `worker_not_reported` / `worker_error` / `worker_completed` / `pr_merged` / `secretary_awaiting_user`)
    - `severity`: `urgent` or `normal`
    - `title` / `body`: strings with the ja config template applied (Japanese)
    - Optionally `task_id` / `worker` / `created_at`
@@ -619,6 +619,7 @@ Call each of the following 7 tools in turn and confirm a response is returned wi
 - If `ci_completed` has `status` of `failed` / `canceled` / `incomplete`, it appears as `kind: "ci_failed"`, `severity: "urgent"`
 - `worker_completed` / `pr_merged` are `severity: "normal"`; the other classifications above are `urgent` in the ja default
 - If a pending decision exceeds `pending_decision_min` (default 15 min), it appears as `kind: "pending_decision"`, `severity: "urgent"`
+- A `notify_sent kind=awaiting_user` (the 4 gates where the Secretary stops while awaiting the user's decision) appears as `kind: "secretary_awaiting_user"`, `severity: "urgent"`
 - `title` / `body` are Japanese strings from the ja default, with placeholders like `{worker}` / `{task_id}` / `{pr}` / `{status}` resolved
 - Because `--dry-run` is specified, no desktop notification subprocess is invoked (nothing appears in macOS notification center, no `notify-send` on Linux)
 - Removing `--config .state/attention.json` and rerunning yields the neutral English defaults from runtime in title / body (corroborating that the ja override is effective)
