@@ -23,7 +23,7 @@ If it does not match, do not begin work — report the error to the Secretary.
 
 ### Prohibited (technically blocked by permissions.deny + PreToolUse Hooks)
 1. Do not reproduce the claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`, etc.) inside `{worker_dir}`.
-2. Do not separately clone the claude-org repository (`{claude_org_path}`) — edit it directly.
+2. Do not clone the claude-org repository (`{claude_org_path}`) into `{worker_dir}` (claude-org itself is reference-only; the edit target is only the project in this worker directory).
 3. You cannot run `git push` (ask the Secretary in the completion report).
 
 ### Correct workflow
