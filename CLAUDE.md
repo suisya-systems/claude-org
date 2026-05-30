@@ -51,17 +51,18 @@ When a completion / progress / Codex round / escalation-for-decision message arr
 
 At gates where the Secretary stops because "the next move is waiting on a user reply", emit a one-line signal so the attention watcher can alert the user. The Secretary side stops inside this claude-org-ja repo, so when the user is not at the screen the awaiting_user state can sit unattended for a long time. By having the runtime classifier map this emit to `secretary_awaiting_user` (default severity `urgent`), the user is notified by a beep or equivalent.
 
-### Target gates (3 sites)
+### Target gates (4 sites)
 - **`worker_completed`**: after receiving a completion report from a Worker → issuing an ack + appending the review transition to the DB `events` table → just before stopping to wait on the user's approval. [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) Step 5 sub 2a.
 - **`ci_green_merge_gate`**: during post-PR CI monitoring, on receipt of `CI_COMPLETED` (CI green) → just before asking the user for merge approval. [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i.
+- **`escalation_to_user`**: at the moment a Worker's decision request is escalated to a human and the options are presented (the ask moment), just before the wait for the user's reply. [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) Step 3. In interactive use the user replies within tens of seconds to a few minutes, so pending_decision aging (15 min) effectively never fires, which makes this ask-time emit the primary route for the urgent notification.
 - **`escalation_reply_forward`**: after escalating a decision request to a human, receiving the user's reply, and just before forwarding it to the Worker. The `mark-user-replied` → `resolve --kind to_worker` boundary of [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md).
 
 ### Canonical emit form
 ```
 bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=TASK gate=GATE note=SHORT
 ```
-- `task_id`: the task_id corresponding to the target Worker / PR / decision (for `escalation_reply_forward`, the task_id tied to the decision).
-- `gate`: one of `worker_completed` / `ci_green_merge_gate` / `escalation_reply_forward`.
+- `task_id`: the task_id corresponding to the target Worker / PR / decision (for `escalation_to_user` / `escalation_reply_forward`, the task_id tied to the decision).
+- `gate`: one of `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward`.
 - `note`: short context of one line or less (PR number / Issue number / summary, etc.).
 
 ### Notifier behavior

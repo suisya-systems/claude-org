@@ -53,10 +53,12 @@ When the Lead receives a peer message containing "approval request", "judgment e
      ```
      If a pending entry for the same task_id already exists this is idempotent (no-op). The register is the primary lookup source for the Dispatcher's SECRETARY_RELAY_GAP_SUSPECTED detector ([`../../../.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)).
 
-3. **Relay to the human**: organize the content and the options and present them. Right after presenting, update the register to `escalated`:
+3. **Relay to the human**: organize the content and the options and present them. **At the moment you present the options (the ask moment)**, immediately before updating the register to `escalated` via `resolve --kind to_user`, emit an awaiting_user signal to the attention watcher (Issue #28, ask-time gate):
    ```bash
+   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id={task_id} gate=escalation_to_user note="<short summary of the options presented>"
    python tools/pending_decisions.py resolve --task-id {task_id} --kind to_user
    ```
+   The classifier picks it up as `secretary_awaiting_user` (default severity `urgent`) and beeps the instant a decision is requested. In interactive use the user replies within tens of seconds to a few minutes, so pending_decision aging (15 min) effectively never fires, which makes this ask-time emit the primary route for the urgent notification. The Step 4.5 emit (`escalation_reply_forward`) remains a separate forward-time emit (Step 3 = ask time / 4.5 = forward time). This emit only appends a single journal line and does not touch the register or pending_decisions state.
 
 4. **The moment a reply arrives from the user** — **before** forwarding it to the worker — record `user_replied_at` in the register (Issue #301):
    ```bash
