@@ -117,7 +117,8 @@ Actions to perform:
   - Pattern A (project directory): keep the directory (reused for the next task).
   - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}`. Keep the branch (do not delete the branch even after merge, for PR history).
     - **For self-edit (`pattern_variant='live_repo_worktree'`)**: the worktree base is `{claude_org_path}`, so run `git -C {claude_org_path} worktree remove .worktrees/{task_id}` (Issue #289). Keep the branch likewise.
-  - Pattern C (ephemeral): keep the directory (consider manual deletion only if capacity becomes an issue).
+  - Pattern C (ephemeral, `pattern_variant='ephemeral'`): keep the directory (consider manual deletion only if capacity becomes an issue).
+  - **Special cleanup for Pattern C (`gitignored_repo_root`, claude-org self-edit) (Issue #478)**: `worker_dir` is the claude-org repo root itself, so neither worktree remove nor dir removal applies, and `{claude_org_root}/CLAUDE.local.md` (the Worker-instruction brief) lingers. If it remains, on the next `/org-start` the Lead loads a contradictory "Lead and Worker" role identity. **At close, call `cleanup_pattern_c_local_md()` from `tools/run_complete_on_merge.py` to delete the brief** (bundled into the StateWriter block below). Detection is `runs.pattern == 'C'` AND `worker_dirs.abs_path == claude_org_root`, and it is a no-op for ephemeral C / Patterns A and B. One `pattern_c_cleanup` row (payload: `task` / `removed_path` / `mode`) is appended to `events`. Idempotent (`mode=skip` when the file is absent). When a PR-driven close calls `tools/run_complete_on_merge.py --pr <PR>`, the same cleanup runs automatically at merge-record time, but gitignored tasks rarely produce a PR, so the explicit call from the StateWriter block below is the primary route. `.claude/settings.local.json` is out of scope (a separate Issue) because it needs worker-origin vs. Lead-origin discrimination.
 - **When closing a dogfood-target PR's paired issue (Issue #338)**: because the implementation PR's merge and the paired follow-up issue's close can have independent lifecycles, this skill does not guarantee "do `consumed -> closed` on implementation-PR merge". The terminal transition `consumed -> closed` is the Lead's register-hygiene responsibility and is collected via [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §"consumed -> closed observation timing" (on register write + at `/org-resume` startup, check paired-issue state with `gh issue view`). If this skill happens to observe the relevant row at PR-merge time, it may invoke the hygiene step opportunistically.
 - **For PR-driven closes, call `tools/run_complete_on_merge.py`** (Issue #317. The merge-watch loop of `pr-watch --merge-watch` invokes it automatically, so manual execution is normally unnecessary; call it explicitly only when merge-watch was skipped or when the merge was observed manually):
   ```bash
@@ -129,12 +130,17 @@ Actions to perform:
 - **Pattern B / C registry-entry deletion and final close are done by a separate StateWriter call** (do not edit markdown directly. run_complete_on_merge has already written `pr_state='merged'` and `completed_at`, so here we only do the status flip and worker_dir removal):
   ```bash
   python -c "
+  from pathlib import Path
   from tools.state_db import connect
   from tools.state_db.writer import StateWriter
+  from tools.run_complete_on_merge import cleanup_pattern_c_local_md
   conn = connect('.state/state.db')
   with StateWriter(conn).transaction() as w:
       w.update_run_status('<task_id>', 'completed')  # post-commit hook archives worker-{task}.md
       w.remove_worker_dir('<abs>')  # Pattern B / C only
+  # Issue #478: delete the CLAUDE.local.md of a Pattern C gitignored_repo_root run
+  # (actual deletion only when runs.pattern=='C' AND worker_dir==root; no-op otherwise)
+  cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve())
   "
   ```
   The legacy hand-rolled completion script is preserved at `docs/legacy/pr-merge-completion-manual.md`. The standard route is `tools/run_complete_on_merge.py` above; reaching for the museum copy is allowed only after opening an issue and getting user judgment (same pattern as PR #315).

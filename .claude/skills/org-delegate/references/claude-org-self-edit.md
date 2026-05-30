@@ -43,6 +43,21 @@ For `claude-org` self-edit tasks, reinterpret every instruction in SKILL.md Step
 
 Never overwrite the root `CLAUDE.md` (Lead instructions) under any circumstances.
 
+### Lead-side cleanup obligation on Worker completion (Issue #478)
+
+`CLAUDE.local.md` is **not done once generated — the obligation extends to the Lead reclaiming it on Worker completion**. The reclaim path differs by pattern:
+
+- **Pattern B (`live_repo_worktree`)**: the brief sits directly under the worktree (`{claude_org_path}/.worktrees/{task_id}/CLAUDE.local.md`), so the close-time `git -C {claude_org_path} worktree remove .worktrees/{task_id}` reclaims it together with the whole directory. No per-file deletion needed.
+- **Pattern C (`gitignored_repo_root`)**: `worker_dir` is the claude-org repo root itself, so neither worktree remove nor dir removal applies. Unless `{claude_org_root}/CLAUDE.local.md` is **deleted individually it lingers**, and on the next `/org-start` the Lead loads a contradictory role identity ("Lead and Worker" — the brief's opening line "You are not the Lead. You are the Worker.") into context. Being gitignored, CI never flags it and it stratifies (Issue #478 occurrence example: `lt-lapras-392778-01`).
+
+The per-file deletion for Pattern C is built into the close phase as a responsibility in [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) 2b-ii. The mechanism is [`tools/run_complete_on_merge.py`](../../../../tools/run_complete_on_merge.py) `cleanup_pattern_c_local_md(conn, task_id=..., claude_org_root=...)`:
+
+- Detection: `runs.pattern == 'C'` AND `worker_dirs.abs_path == claude_org_root` (no schema change needed; ephemeral C automatically falls through as a no-op because `worker_dir != root`).
+- Action: delete `{claude_org_root}/CLAUDE.local.md` via `Path.unlink(missing_ok=True)` and append one `pattern_c_cleanup` row to `events` (payload: `task` / `removed_path` / `mode`). Idempotent (`mode=skip` when the file is absent; never stops on error).
+- When the PR-merge close path calls `tools/run_complete_on_merge.py --pr <PR>`, the same cleanup runs automatically at merge-record time. But gitignored tasks rarely produce a PR, so the explicit call from the close-phase StateWriter block is the primary path.
+
+> **scope**: this Issue's scope is `CLAUDE.local.md` only. Auto-deleting `.claude/settings.local.json` requires a worker-origin vs. Lead-origin discrimination design (the Lead itself uses it, e.g. for renga-peers MCP allows), so it is a separate Issue.
+
 ## 3. For Pattern B, place the worktree base in the **Lead's live repo** (`live_repo_worktree` variant)
 
 When a `claude-org` self-edit task uses Pattern B (worktree), place the worktree base in **the `.worktrees/` under the Lead's own live repo**, not the normal `{workers_dir}/{project_slug}/.worktrees/{task_id}/` pattern:
