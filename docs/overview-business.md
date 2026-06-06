@@ -62,7 +62,7 @@ You interact only with the Lead. Everything else runs automatically behind the s
 The more you use it, the more the organization learns and improves.
 
 1. Each time work completes, the specialist records what it learned
-2. The Curator periodically organizes and merges those learnings
+2. Once a certain amount of learnings accumulates, the Curator automatically organizes and merges them
 3. The organized knowledge is stored by theme
 4. When process improvements are needed, they are proposed through the Lead
 5. If you approve them, the improved process is used from the next run onward

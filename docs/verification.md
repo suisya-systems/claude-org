@@ -66,9 +66,9 @@ This script does not require a live renga session (it is a static probe that ret
 
 **Expected results**:
 - Because `.state/org-state.md` does not exist, the run is judged to be a first-time startup
-- `mcp__renga-peers__spawn_claude_pane` opens the dispatcher pane below the secretary, and the curator pane to its right
-- Right after Dispatcher / Curator start, the "development channel confirmation prompt" is passed by injecting Enter via `mcp__renga-peers__send_keys(target=<pane>, enter=true)` (per `org-start` SKILL Block D-1)
-- The curator is instructed via `mcp__renga-peers__send_message` to run `/loop 30m /org-curate`
+- `mcp__renga-peers__spawn_claude_pane` opens the dispatcher pane below the secretary (no curator pane opens — it is on-demand now)
+- Right after the Dispatcher starts, the "development channel confirmation prompt" is passed by injecting Enter via `mcp__renga-peers__send_keys(target=<pane>, enter=true)` (per `org-start` SKILL Block D-1)
+- `curator_pane_id` / `curator_peer_id` in state.db are null via `StateWriter.CLEAR` (null is the normal state)
 - A "First-time startup. What would you like to do?" message is reported
 
 **Failure patterns and remedies**:
@@ -76,7 +76,7 @@ This script does not require a live renga session (it is a static probe that ret
 - Skills are not recognized → check the frontmatter format of `.claude/skills/*/SKILL.md`
 - `/org-start` does not fire → check for skill-name conflicts or description issues
 - `mcp__renga-peers__list_panes` errors → rerun `renga mcp install --force`, verify registration with `claude mcp list`
-- `send_keys(enter=true)` fails to inject Enter → check whether the Dispatcher / Curator pane is stuck on the "Load development channel?" prompt; press Enter manually
+- `send_keys(enter=true)` fails to inject Enter → check whether the Dispatcher pane is stuck on the "Load development channel?" prompt; press Enter manually
 
 ---
 
@@ -214,21 +214,21 @@ cat .state/journal.jsonl | tail -1  # Confirm the suspend event
 3. Run `/org-start`
 
 **Expected results**:
-- Block A of `/org-start` fires `spawn_claude_pane` for dispatcher / curator immediately after Step 0 (since the parallelization in Issue #410; does not wait for boot completion, lets Block B / C proceed in parallel)
+- Block A of `/org-start` fires `spawn_claude_pane` for the dispatcher immediately after Step 0 (since the parallelization in Issue #410; does not wait for boot completion, lets Block B / C proceed in parallel; the curator is not spawned — it is on-demand now)
 - Block B queries `.state/state.db` and confirms Status: SUSPENDED
 - `/org-resume` Phase 1–3 (briefing / git state reconciliation / resume plan proposal) proceeds in the background while Claudes are still booting
 - After the resume plan is presented, **Phase 4 worker re-dispatch waits for human approval** (does not dispatch on its own)
-- Before approval, the dispatcher / curator panes have already appeared on `mcp__renga-peers__list_panes` (pre-fired in Block A → peer registration converges in Block D)
+- Before approval, the dispatcher pane has already appeared on `mcp__renga-peers__list_panes` (pre-fired in Block A → peer registration converges in Block D; the absence of a curator pane is normal)
 
 **Checkpoints**:
 - The briefing content matches `.state/org-state.md`
 - git state reconciliation is accurate
-- Dispatcher and curator panes are running (confirm with `mcp__renga-peers__list_panes`)
+- The dispatcher pane is running (confirm with `mcp__renga-peers__list_panes`; no curator pane existing is normal)
 
 **Failure patterns and remedies**:
 - `/org-start` does not read state → revisit org-start skill Block B (loading previous state from DB)
 - State is inaccurate → revisit `org-state.md` format or org-suspend's writes
-- Curator does not start → check org-start Block A (spawn_claude_pane) / Block D (send & peer registration)
+- The dispatcher does not start → check org-start Block A (spawn_claude_pane) / Block D (send & peer registration)
 
 ---
 
@@ -288,19 +288,25 @@ cat knowledge/raw/*.md  # Check format
 
 **Steps**:
 1. Create 5+ dummy knowledge files in `knowledge/raw/` for testing
-2. Run `/org-curate` manually (or wait for the curator's /loop)
+2. Run `py -3 tools/check_curate_threshold.py` and confirm exit 10 with `raw_threshold` set in `reasons`
+3. Run `/org-curate` manually (or close a worker and wait for the dispatcher-driven on-demand launch)
 
 **Expected results**:
 - Raw files are classified by theme
 - Theme files are created in `knowledge/curated/{theme}.md`
-- The processed raw files get `<!-- curated -->` prepended at the top
+- The processed raw files are moved to `knowledge/raw/archive/` and get `<!-- curated -->` prepended at the top
 - If there are improvement proposals, the secretary is notified via `renga-peers`
+- Finally, `CURATE_DONE` is sent via direct send to the dispatcher (when a dispatcher is running)
 
 **Verification commands**:
 ```bash
+# POSIX (bash)
+python3 tools/check_curate_threshold.py; echo "exit=$?"
+# Windows (PowerShell — $? is a boolean, so use $LASTEXITCODE)
+py -3 tools/check_curate_threshold.py; echo "exit=$LASTEXITCODE"
 ls knowledge/curated/
 cat knowledge/curated/*.md
-head -1 knowledge/raw/*.md  # Check <!-- curated --> marker
+head -1 knowledge/raw/archive/*.md  # Check <!-- curated --> marker
 ```
 
 **Self-growth check**:
@@ -309,28 +315,27 @@ head -1 knowledge/raw/*.md  # Check <!-- curated --> marker
 
 ---
 
-## 8. Dispatcher / Curator Pane Test
+## 8. Dispatcher / On-Demand Curator Test
 
-**Purpose**: Confirm that the dispatcher and curator start in their dedicated panes and function correctly.
+**Purpose**: Confirm that the dispatcher starts correctly, and that the curator is launched on demand when the threshold check fires at worker close.
 
 **Steps**:
-1. Run `/org-start` and confirm that dispatcher / curator panes launch
+1. Run `/org-start` and confirm the dispatcher pane launches (the curator is not launched)
 2. Confirm the dispatcher receives a role instruction via `mcp__renga-peers__send_message`
-3. Confirm the curator runs `/loop 30m /org-curate` via `mcp__renga-peers__send_message`
-4. Place fewer files than the threshold in `knowledge/raw/` and confirm the curator skips
-5. Increase past the threshold and confirm execution in the next /loop cycle
+3. With fewer files than the threshold in `knowledge/raw/`, close a worker and confirm the curator is **not** launched (`check_curate_threshold.py` exit 0)
+4. Increase past the threshold, close a worker, and confirm: curator pane launches temporarily → runs `/org-curate` once → pane is closed after `CURATE_DONE` is received
 
 **Expected results**:
-- After `/org-start`, dispatcher and curator open side-by-side below the secretary (confirm with `mcp__renga-peers__list_panes`)
+- After `/org-start`, the dispatcher opens below the secretary (confirm with `mcp__renga-peers__list_panes`; there is no curator pane)
 - The dispatcher waits for DELEGATE messages
-- The curator starts its `/loop`
-- `/org-curate` fires every 30 minutes
-- Below threshold → skip; at/above threshold → run
+- The threshold check runs only at worker close (`.dispatcher/references/pane-close.md` Step 5)
+- Below threshold, the curator is not launched; at/above threshold, it launches temporarily → closes after completion
 
 **Failure patterns and remedies**:
 - Panes open but no instructions arrive → adjust the renga-peers peer-discovery timing (retry `list_peers`, extend the pane_started event wait)
 - Dispatcher does not react to DELEGATE → review the initial message content sent to the dispatcher
-- /loop does not run → review the message content sent to the curator
+- The curator is not launched → run `py -3 tools/check_curate_threshold.py` manually and inspect the exit code / reasons
+- The curator pane lingers → check whether `.state/dispatcher/curate-inflight.json` exists and whether the monitoring loop's Step 5.3 (CURATE_* receipt / 20-min timeout management) is running, and that the CURATE_* direct send arrived
 
 ---
 

@@ -42,6 +42,13 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 Rationale for the numbers: N=5 / M=20 are the defaults. Adjust via PR if operations show drift.
 Why exclude `org-*`: the noise source is `org-delegate`'s work-skill search; the count of `org-*` skills does not directly affect search noise.
 
+> **Count-definition sync (important)**: the two count definitions above (pending = line match
+> on `^- \*\*status\*\*: pending`; work-skill = `find .claude/skills -maxdepth 2 -name SKILL.md
+> | grep -v '/org-'`) must be kept in **exact agreement** with the on-demand curator's
+> activation check [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py).
+> If you change one, update both
+> (the parity test in `tools/test_check_curate_threshold.py` detects drift).
+
 ## Step 2: enumerate deprecation candidates
 
 For each skill, evaluate the items below. Use **only what is observable today** for the mechanical check; defer everything else as "needs review" for human judgment. See `references/audit-checklist.md` for details.
@@ -102,7 +109,10 @@ Even if the candidates are empty (clean state), still report: "ran inventory, no
 
 This skill does not fire autonomously. It runs from one of:
 
-1. `org-curate` Step 6 (skill-inventory trigger check) — invokes when the threshold is met (recommended path).
+1. `org-curate` Step 6 (recommended path). The flow after the on-demand change:
+   the dispatcher runs `tools/check_curate_threshold.py` at worker close, and when
+   `skill_candidates_pending` / `work_skill_count` appear in `reasons[]`, a curator is
+   launched temporarily and org-curate Step 6 fires this skill.
 2. The Lead manually invokes it after looking at `skill-candidates.md`.
 3. The human asks "do an inventory".
 

@@ -27,7 +27,7 @@ Tab 1: ops (0 workers)
 | Target | Operation | Notes |
 |---|---|---|
 | Dispatcher | Horizontal split of the Secretary pane, taking the bottom half | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Block A-1) |
-| Curator | Vertical split of the Dispatcher pane, taking the right half | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="auto")` (org-start Block A-2) |
+| Curator (on-demand only) | Vertical split of the Dispatcher pane, taking the right half | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto")` (pane-close.md Step 5-3; residency is retired, so org-start does not spawn it) |
 | Each Worker | **balanced split**: dynamically pick target and direction from the current rects returned by `list_panes`, and stack into the same tab | See the "Worker balanced split strategy" section below. `mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 
 > **Why use `spawn_claude_pane`**: it is the structured launch tool added in renga 0.18.0+. When you pass `cwd` / `permission_mode` / `model` / `args[]` as structured fields, renga internally synthesizes `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...`. The old approach (feeding a `cd`-prefixed command string into `spawn_pane`) is **forbidden** — a cwd-changing prefix prevents renga's bare-`claude` auto-upgrade from firing, so `send_message` channel pushes never arrive. Instructions from Secretary→Dispatcher and Dispatcher→Worker stop flowing entirely. Only the Secretary is launched as bare `claude` from `ops.toml` and relies on auto-upgrade.
@@ -63,7 +63,7 @@ A hand-traced reference table of `choose_split` behavior for the layout `secreta
 | 2nd | curator | vertical | secretary drops out under the SECRETARY_MIN_WIDTH guard, so the next-priority curator is picked |
 | 3rd | curator | horizontal | because role priority is strict primary, curator is picked repeatedly until it falls below MIN_PANE |
 
-Once curator falls below MIN_PANE and drops out, the flow moves to the priority-2 worker pool. The design intent of putting the dispatcher last (to avoid halving the viewport of an active monitoring pane often, and because the curator is mostly idle under `/loop 30m /org-curate`) is documented in the `_ROLE_PRIORITY` comment in runner.py.
+Once curator falls below MIN_PANE and drops out, the flow moves to the priority-2 worker pool. The design intent of putting the dispatcher last (to avoid halving the viewport of an active monitoring pane often, and because the curator exists only while an on-demand activation is running and is normally absent) is documented in the `_ROLE_PRIORITY` comment in runner.py.
 
 ### Edge cases / operational notes
 

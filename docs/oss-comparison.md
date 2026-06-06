@@ -13,7 +13,7 @@ claude-org has the following characteristics:
 |---|---|
 | **Multi-instance coordination** | Four types of Claude Code instances coordinate: Lead, Dispatcher, Curator, and Worker |
 | **Role separation** | Clear division of labor across Lead (interaction), Dispatcher (pane management), Curator (knowledge organization), and Worker (execution) |
-| **Resident roles** | Lead/Dispatcher/Curator stay resident; Workers launch on demand |
+| **Resident roles** | Lead/Dispatcher stay resident; Curator/Workers launch on demand |
 | **State management** | Three-layer structure: journal (JSONL) + snapshot (Markdown) + suspend |
 | **Self-improvement loop** | Worker → raw findings → Curator organization → improvement proposal → user approval → skill/`CLAUDE.md` update |
 | **Communication model** | `renga-peers` MCP (same-tab P2P push) + `CLAUDE.md` (persistent baseline) |
@@ -79,7 +79,7 @@ claude-org has the following characteristics:
 
 | Project | Role model | Resident roles | Dynamic roles |
 |---|---|---|---|
-| **claude-org** | **Lead / Dispatcher / Curator / Worker** | **3 (Sec/Fore/Cur)** | **Worker (on demand)** |
+| **claude-org** | **Lead / Dispatcher / Curator / Worker** | **2 (Sec/Fore)** | **Curator / Worker (on demand)** |
 | CrewAI | User-defined roles (Manager / Researcher, etc.) | None (run-time only) | All agents |
 | LangGraph | Defined as nodes (no fixed names) | None | All nodes |
 | AutoGen | UserProxy / Assistant / GroupChatManager, etc. | None | All agents |
@@ -92,7 +92,7 @@ claude-org has the following characteristics:
 | Agent Zero | Parent agent + child agents | Parent (1) | Child agents |
 | OpenSpace | Single agent (no role separation) | — | — |
 
-**claude-org differentiation**: The combination of **multiple resident roles** (3 types) and a **clear organizational structure** (Lead-Dispatcher-Curator-Worker) is unique. In particular, Curator as a resident process dedicated to knowledge organization is specific to claude-org.
+**claude-org differentiation**: The combination of **resident roles** (2 types) and a **clear organizational structure** (Lead-Dispatcher-Curator-Worker) is unique. In particular, Curator as an on-demand role dedicated to knowledge organization (launched automatically based on how much knowledge has accumulated) is specific to claude-org.
 
 ### 3.3 State Management
 
@@ -197,7 +197,7 @@ The survey confirms the following differentiators in claude-org:
 
 ### 6.1 Characteristics Not Found in Existing OSS
 
-1. **Resident multi-role organization**: No other example uses an organizational structure with three resident roles: Lead, Dispatcher, and Curator
+1. **Multi-role organization**: No other example uses an organizational structure that combines the resident Lead / Dispatcher roles with an on-demand Curator role
 2. **Self-improvement loop with human approval**: Multiple frameworks support self-improvement, but only claude-org builds in human approval as a safety valve
 3. **Instruction duplication**: The combination of `CLAUDE.md` (persistent baseline) and `renga-peers` messages (real-time supplement) is distinctive
 4. **Progressive disclosure**: A strategy to minimize context consumption through the skill system
@@ -217,7 +217,7 @@ The survey confirms the following differentiators in claude-org:
 
 claude-org occupies a distinct position: persistent organizational operation by multiple AI instances. Most existing OSS focuses on agent coordination during task execution, while claude-org aims at **continuous operation and self-improvement of the organization itself**.
 
-Even Claude Code Agent Teams, the closest project, does not include a resident Curator or a self-growth loop. The claude-org design fills a clear gap in the current OSS landscape.
+Even Claude Code Agent Teams, the closest project, does not include a Curator role or a self-growth loop. The claude-org design fills a clear gap in the current OSS landscape.
 
 ---
 

@@ -40,7 +40,7 @@ As recorded in the plan-110 §8 Wave C Minor retrospective, `docs/getting-starte
 
 ## Cross-Repository Notification CI
 
-When a PR is merged to `main` on the ja side, `.github/workflows/notify-en-changes.yml` (this repository) fires a `repository_dispatch` event `ja_pr_merged` to the en repo. The receiving `.github/workflows/notify-ja-changes.yml` (en repo) opens a `TRANSLATION-PENDING` issue containing the ja PR title and URL. The Lead/Curator triages it, then either closes the issue (out of scope or determined canonical-en) or schedules translation work.
+When a PR is merged to `main` on the ja side, `.github/workflows/notify-en-changes.yml` (this repository) fires a `repository_dispatch` event `ja_pr_merged` to the en repo. The receiving `.github/workflows/notify-ja-changes.yml` (en repo) opens a `TRANSLATION-PENDING` issue containing the ja PR title and URL. The Lead triages it, then either closes the issue (out of scope or determined canonical-en) or schedules translation work.
 
 The reverse direction (en -> ja) is symmetrical: an en-side merge fires `en_pr_merged` to the ja repo and opens a translation-pending issue on the ja side.
 

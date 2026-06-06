@@ -23,8 +23,11 @@ restore the minimum Secretary awareness — your stance as an org member,
 recent exchanges with the human, and in-flight work.
 
 > **Preconditions**:
-> - Dispatcher / Curator / Worker panes are still alive from the previous
+> - Dispatcher / Worker panes are still alive from the previous
 >   session. Do not spawn new ones (this is not /org-start).
+> - The Curator is not resident (on-demand model). Null `curator_pane_id` /
+>   `curator_peer_id`, and the curator not appearing in the pane list, are
+>   the **normal state**.
 > - The state DB (`.state/state.db`) is reused as-is. No need to re-record
 >   pane identities.
 > - If the handover file does not exist or is too stale, guide the user
@@ -69,7 +72,10 @@ print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, defa
 
 Verify:
 - `session.status` matches the handover frontmatter.
-- `dispatcher_pane_id` / `curator_pane_id` match what the handover recorded.
+- `dispatcher_pane_id` matches what the handover recorded.
+- `curator_pane_id` / `curator_peer_id` are null (**null is normal**. If
+  values remain, they may be stale values from the old scheme — report to
+  the human).
 - `active_runs[]` is consistent with the handover's "In-flight work" section.
 
 ## Step 3: confirm panes are alive
@@ -78,7 +84,10 @@ Verify:
 mcp__renga-peers__list_peers
 ```
 
-- Dispatcher / Curator names should be visible.
+- The Dispatcher name should be visible.
+- The curator is **normally not visible, and that is normal** (on-demand
+  model). If it is visible, an on-demand curate is running; leave it alone
+  (the dispatcher will close it).
 - Workers listed in the handover should still exist (see below if missing).
 
 **If anything diverges, report it to the human** (e.g., "the handover says
@@ -99,7 +108,7 @@ The Secretary is resumed.
 
 [Panes]
 - dispatcher (pane=N, peer=M)
-- curator (pane=N, peer=M)
+- curator: not resident (launched on demand)
 - workers: <task_id list>
 
 [Recent agreements / decisions]

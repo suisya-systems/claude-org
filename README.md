@@ -43,7 +43,7 @@ Minimal definitions of frequently used role names and related tools in this repo
 |---|---|---|
 | **Secretary** | The only Claude instance that serves as the human-facing contact point. It is responsible only for task breakdown, delegation decisions, and communicating results; it does not perform implementation work itself. | [`CLAUDE.md`](CLAUDE.md) |
 | **Dispatcher** | A proxy role that receives instructions from the Secretary, launches Worker panes, and hands off work briefs. Minimizes the time the Secretary is blocked. | [`.dispatcher/CLAUDE.md`](.dispatcher/CLAUDE.md) |
-| **Curator** | An automated loop role that turns raw learnings accumulated in `knowledge/raw/` into organized knowledge. Runs every 30 minutes. | [`.curator/CLAUDE.md`](.curator/CLAUDE.md) |
+| **Curator** | An on-demand role that turns raw learnings accumulated in `knowledge/raw/` into organized knowledge. Launched temporarily at a worker close where the learnings exceed a threshold, and automatically closed after curation completes. | [`.curator/CLAUDE.md`](.curator/CLAUDE.md) |
 | **Worker** | The implementation role launched per task. Handles everything from code edits through commit within a dedicated working-directory boundary (`git push` / pull request creation remain the Secretary's responsibility; Workers do not have permission to create PRs). | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
 | **renga** | The Layer 3 terminal multiplexer + `renga-peers` MCP server. Provides pane control and P2P messaging between panes. | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
@@ -55,7 +55,7 @@ Minimal definitions of frequently used role names and related tools in this repo
 
 **Problem**: You want to run Claude Code for long stretches in a "one Secretary + many Workers" setup. Official features such as Agent View solve **visualization** of multiple instances, but the **work humans have to do by hand** — deciding who to launch, where to dispatch what, maintaining permission boundaries, accumulating learnings, restoring state — does not shrink. Naive tmux-style splitting and farm-style fully-automated parallelism likewise leave out operational discipline (permission boundaries, per-task environment setup, organized learnings).
 
-**Solution**: claude-org is an **operational-discipline framework** dedicated to Claude Code. By talking to a single Secretary Claude, Dispatcher, Curator, and Worker roles are derived automatically behind the scenes, and it **enforces from the start** narrow permission entries (narrow allowlist) + per-task working-directory boundaries + automatic knowledge curation every 30 minutes + suspend/resume of state.
+**Solution**: claude-org is an **operational-discipline framework** dedicated to Claude Code. By talking to a single Secretary Claude, Dispatcher, Curator, and Worker roles are derived automatically behind the scenes, and it **enforces from the start** narrow permission entries (narrow allowlist) + per-task working-directory boundaries + automatic knowledge curation once enough learnings accumulate + suspend/resume of state.
 
 **Target users**: Developers and operators who want to run Claude Code in real work over long sessions, especially those who want explicit permission boundaries instead of full automation, want to run 3 to 5 Workers with a quality-first stance, and want to drive a self-improving knowledge loop.
 
@@ -97,7 +97,7 @@ python tools/org_setup_prune.py --user-common-sandbox    # Required once after p
 renga --layout ops                                       # Launch the Secretary pane
 ```
 
-> **⏱ Note on first-launch time**: Right after the initial clone, `renga --layout ops` + running `/org-setup` in the Secretary takes **several to over ten minutes longer** than a normal startup. Behind the scenes, `pip install -e .` (fetching `core-harness` / `claude-org-runtime`), `renga mcp install` (registering the MCP server), and sandbox reinforcement + PreToolUse hook deployment + generation of role-specific `settings.local.json` by `/org-setup` all run. From the second launch onward, expect about **1–2 minutes** as well (because `renga --layout ops` startup + Claude / MCP connection in each pane + `.state/` restore + automatic launch of Dispatcher and Curator runs every time).
+> **⏱ Note on first-launch time**: Right after the initial clone, `renga --layout ops` + running `/org-setup` in the Secretary takes **several to over ten minutes longer** than a normal startup. Behind the scenes, `pip install -e .` (fetching `core-harness` / `claude-org-runtime`), `renga mcp install` (registering the MCP server), and sandbox reinforcement + PreToolUse hook deployment + generation of role-specific `settings.local.json` by `/org-setup` all run. From the second launch onward, expect about **1–2 minutes** as well (because `renga --layout ops` startup + Claude / MCP connection in each pane + `.state/` restore + automatic launch of the Dispatcher runs every time).
 
 For pinning a specific version (`CLAUDE_ORG_REF`), the manual steps, and details on `pip install -e .` / `/org-setup` / `/org-start`, see [`docs/getting-started.md`](docs/getting-started.md).
 
@@ -108,7 +108,7 @@ For pinning a specific version (`CLAUDE_ORG_REF`), the manual steps, and details
 | Compared with | Positioning | How it differs from claude-org |
 |---|---|---|
 | **Claude Code Agent View (official)** | A **visualization feature for surveying multiple Claude Code instances on a single screen**. Choosing where to direct work is still the human's job | claude-org **delegates coordination to the Secretary AI**. Decisions about launching, instructing, and dispatching all move to the AI side. Running `/remote-connect` in the Secretary pane also lets you operate the system from Claude apps on Web / mobile / desktop, so you do not have to stay glued to a black terminal |
-| **Claude Code Subagents / Agent Teams (official)** | Anthropic's official "lead / teammate" hierarchy + automatic memory + hooks | claude-org is an operations layer on top of the official offering. It **coexists rather than competes**. It adds what the official offering does not provide: "enforced per-task working-directory boundaries," "schema-driven config drift detection," "a refinement pipeline from raw learnings to organized knowledge," and "an automatic curation loop every 30 minutes" |
+| **Claude Code Subagents / Agent Teams (official)** | Anthropic's official "lead / teammate" hierarchy + automatic memory + hooks | claude-org is an operations layer on top of the official offering. It **coexists rather than competes**. It adds what the official offering does not provide: "enforced per-task working-directory boundaries," "schema-driven config drift detection," "a refinement pipeline from raw learnings to organized knowledge," and "threshold-driven on-demand automatic curation" |
 | **Claude-based coordination platforms such as ccswarm / Ruflo / oh-my-claudecode** | Fixed role pool + oriented toward large-scale parallelism | claude-org **generates the working directory and `CLAUDE.md` fresh for each task** (it does not keep a prebuilt role pool). It is quality-first with 3 to 5 Workers (the opposite direction from farm-style systems) |
 | **tmux / zellij + manual prompt splitting** | General-purpose terminal multiplexers + human-operated pane management | claude-org provides **P2P messaging between panes + structured pane creation + suspend/resume of state** through a dedicated MCP server (`renga-peers`). Its core value is what manual operation lacks: "role contracts," "automatic knowledge curation," and "role-specific permission distribution" |
 
@@ -122,7 +122,7 @@ For pinning a specific version (`CLAUDE_ORG_REF`), the manual steps, and details
 Human <-> Secretary Claude (command role)
               |
               +-> Dispatcher (launches Workers and relays instructions)
-              +-> Curator (curates knowledge, runs automatically every 30 minutes)
+              +-> Curator (curates knowledge, launched on demand and temporarily once learnings accumulate)
               +-> Worker pool (implementation work, automatically disappears after completion)
 ```
 
@@ -136,25 +136,25 @@ flowchart TB
     subgraph row2[" "]
         direction LR
         D["<b>Dispatcher</b><br/>Bottom-left — relays Worker launch and instruction delivery"]
-        C["<b>Curator</b><br/>Bottom-right — curates knowledge (30-minute auto loop)"]
+        C["<b>Curator</b><br/>Bottom-right — curates knowledge (on-demand, temporary; normally absent)"]
     end
     row1 ~~~ row2
 ```
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="Pane layout right after /org-start: only the three roles Secretary, Dispatcher, and Curator are running, with no Worker derived yet"></td>
-    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="Pane layout in action: in addition to Secretary, Dispatcher, and Curator, parallel Workers derived through task delegation are running in the same tab"></td>
+    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="Pane layout right after /org-start: Secretary and Dispatcher are running, with no Worker derived yet (the screenshot dates from the resident-curator era; the Curator is now launched on demand)"></td>
+    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="Pane layout in action: in addition to Secretary and Dispatcher, parallel Workers derived through task delegation are running in the same tab (the screenshot dates from the resident-curator era)"></td>
   </tr>
   <tr>
-    <td><em>Just started: right after running <code>/org-start</code>. Secretary, Dispatcher, and Curator have come up; no Worker exists yet.</em></td>
+    <td><em>Just started: right after running <code>/org-start</code>. Secretary and Dispatcher have come up; no Worker exists yet (the screenshot dates from the resident-curator era; the Curator is now launched on demand and does not exist at this point).</em></td>
     <td><em>In action with workers: the Dispatcher has derived parallel Workers via task delegation, and the four-role configuration is running.</em></td>
   </tr>
 </table>
 
-- **Secretary**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting. Operational responsibilities are split internally into three skills ([`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)). When the Secretary session's context grows long, dump state with [`/secretary-handover`](.claude/skills/secretary-handover/SKILL.md), then recover with [`/secretary-resume`](.claude/skills/secretary-resume/SKILL.md) after `/clear` (refreshing only the Secretary while leaving the Dispatcher / Curator / Worker panes alive)
+- **Secretary**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting. Operational responsibilities are split internally into three skills ([`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)). When the Secretary session's context grows long, dump state with [`/secretary-handover`](.claude/skills/secretary-handover/SKILL.md), then recover with [`/secretary-resume`](.claude/skills/secretary-resume/SKILL.md) after `/clear` (refreshing only the Secretary while leaving the Dispatcher / Worker panes alive)
 - **Dispatcher**: Relays pane launches and instruction delivery, minimizing the time the Secretary is blocked
-- **Curator**: Refines accumulated raw learnings into organized knowledge and proposes improvements to skills and processes
+- **Curator**: Launched on demand by the Dispatcher at a worker close where accumulated raw learnings exceed a threshold. Runs the refinement into organized knowledge and skill / process improvement proposals once, then is automatically closed
 - **Worker**: Handles implementation work. Within the per-task working-directory boundary, it autonomously works through commit (pull request creation stays on the Secretary side), and records raw learnings after completion
 
 All panes run within the same tab (`new_tab`, which opens a separate tab, is not used in organizational operations).
@@ -193,7 +193,7 @@ Used for day-to-day organizational operations such as startup, dispatch, suspens
 | `/org-suspend` | Suspend work |
 | `/org-resume` | Resume work |
 | `/org-retro` | Retrospective on the delegation process |
-| `/org-curate` | Curate knowledge (runs automatically) |
+| `/org-curate` | Curate knowledge (runs automatically on demand once learnings accumulate) |
 | `/org-dashboard` | Show the dashboard |
 
 ### Secretary session management (`/secretary-*`)
@@ -202,7 +202,7 @@ A paired set of skills used to refresh only the Secretary, without stopping the 
 
 | Skill | Purpose |
 |---|---|
-| `/secretary-handover` | Dump the Secretary's in-flight work and organizational state to `.state/secretary-handover.md` (leaving the Dispatcher / Curator / Worker panes alive) |
+| `/secretary-handover` | Dump the Secretary's in-flight work and organizational state to `.state/secretary-handover.md` (leaving the Dispatcher / Worker panes alive) |
 | `/secretary-resume` | Read the handover right after `/clear` and recover the Secretary (this is not `/org-start`) |
 
 ### Skill-system meta-operations (`/skill-*`)
