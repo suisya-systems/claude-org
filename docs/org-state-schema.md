@@ -35,7 +35,7 @@ The table below describes the pre-M4 "skill edits the markdown → converter pro
 | Pane spawn (T2) | dispatcher delegate-plan helper | `StateWriter.upsert_run` with `runs.status='in_use'` |
 | Status change (T4 review / T5 completed / T6 review→in_use) | org-delegate / org-pull-request | `StateWriter.update_run_status` |
 | Org suspend / resume | org-suspend / org-resume | Updates `org_sessions.status` via `StateWriter` (does not change individual `runs.status`, [contract I4](contracts/state-semantics-contract.md)) |
-| Dispatcher / Curator recording | org-start | Updates `org_sessions` dispatcher / curator pane+peer fields via `StateWriter` |
+| Dispatcher / Curator recording | org-start | Updates the `org_sessions` dispatcher pane+peer fields via `StateWriter`. The curator fields are always explicitly cleared via `StateWriter.CLEAR` (on-demand model; null is the normal state) |
 
 For all these writes, the `StateWriter.transaction()` post-commit hook regenerates derived artifacts separately via the markdown snapshotter (`tools/state_db.snapshotter`) and the JSON converter (`dashboard.org_state_converter.convert()`), so skills do not need to invoke the converter themselves.
 
@@ -71,10 +71,7 @@ For all these writes, the `StateWriter.transaction()` post-commit hook regenerat
     "peerId": "<renga-peers peer ID>",
     "paneId": "<renga pane ID>"
   },
-  "curator": {
-    "peerId": "<renga-peers peer ID>",
-    "paneId": "<renga pane ID>"
-  },
+  "curator": null,
   "resumeInstructions": "<free text | null>"
 }
 ```
@@ -94,7 +91,7 @@ For all these writes, the `StateWriter.transaction()` post-commit hook regenerat
 | `workItems` | `array` | List of work items |
 | `workerDirectoryRegistry` | `array` | Worker directory reuse table |
 | `dispatcher` | `object \| null` | Dispatcher peer / pane information. `null` if not recorded |
-| `curator` | `object \| null` | Curator peer / pane information. `null` if not recorded |
+| `curator` | `object \| null` | Curator peer / pane information. **With the on-demand model this is always `null` in the steady state** (the curator is launched temporarily by the dispatcher at worker close and is not recorded in state.db; null is the normal state, not missing data) |
 | `resumeInstructions` | `string \| null` | Notes for resume time (written by org-suspend). `null` if absent |
 
 ### workItems entry

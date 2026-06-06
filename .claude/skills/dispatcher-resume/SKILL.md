@@ -43,6 +43,7 @@ member, in-flight dispatches, workers under monitoring), then resume the
 > - The internal state files that bridge the monitoring gap
 >   (`.state/dispatcher-event-cursor.txt` /
 >   `.state/dispatcher/worker-idle-state.json` /
+>   `.state/dispatcher/curate-inflight.json` (when present) /
 >   `.state/pending_decisions.json`) survive from the previous session.
 >   Do not re-create or re-initialize (continue from existing values).
 > - If the handover file does not exist or is too old, point at `/org-start`
@@ -142,8 +143,23 @@ time)`. Reconciliation is the Secretary's responsibility.
 
 ## Step 5: resume the monitoring loop
 
-If the handover's `active_worker_count > 0`, or the active worker dirs in
-state.db are non-empty, resume worker monitoring with `/loop 3m`:
+Evaluate the following **in this order**:
+
+1. **Inflight regeneration (do this first)**: if Step 4's `list_peers` /
+   `list_panes` shows a live pane with `name == "curator"` but
+   `.state/dispatcher/curate-inflight.json` is absent (e.g., the previous
+   session was cut off right after spawn, before the inflight write), do
+   not leave the curator untracked: **regenerate** the inflight record with
+   `started_at = now` / `reasons: []` / `extended: false` /
+   `last_inspect_hash: null` / `last_inspect_ts: null`. All subsequent
+   judgments use this post-regeneration state (= this case always satisfies
+   the resume condition in 2).
+2. **`/loop 3m` resume condition**: if the handover's
+   `active_worker_count > 0`, the active worker dirs in state.db are
+   non-empty, **or `curate-inflight.json` exists** (including one
+   regenerated in 1; completion monitoring of an on-demand curate is part
+   of the handover — `.dispatcher/references/worker-monitoring.md`
+   Step 5.3), resume worker monitoring with `/loop 3m`:
 
 ```
 /loop 3m
@@ -159,9 +175,10 @@ state.db are non-empty, resume worker monitoring with `/loop 3m`:
 - `.state/dispatcher/worker-idle-state.json` retains the previous session's
   `idle_streak_cycles`, so stall-detection continuity is preserved as well.
 
-If there is nothing to monitor (active worker dirs is 0 and `active_runs`
-is 0), do not start `/loop`; notify the Secretary that you are idle and
-wait:
+Only if there is nothing to monitor (active worker dirs is 0,
+`active_runs` is 0, no `curate-inflight.json`, and — since this comes
+after evaluating 1 — no curator pane in `list_panes` either), do not start
+`/loop`; notify the Secretary that you are idle and wait:
 
 ```
 DISPATCHER_RESUMED_IDLE: resume complete with no monitoring targets. Awaiting DELEGATE.
@@ -218,8 +235,9 @@ bash ../tools/journal_append.sh dispatcher_resumed \
 - Spawn a new Dispatcher / Curator (they are already alive)
 - Send SUSPEND / SHUTDOWN to Workers on your own
 - Initialize / delete `.state/dispatcher-event-cursor.txt` /
-  `worker-idle-state.json` / `pending_decisions.json` (monitoring continuity
-  from the previous session breaks)
+  `worker-idle-state.json` / `curate-inflight.json` /
+  `pending_decisions.json` (monitoring continuity from the previous
+  session breaks)
 - When the handover content disagrees with the current state.db, take it
   upon yourself to favor one side (always report to the Secretary for a
   decision)

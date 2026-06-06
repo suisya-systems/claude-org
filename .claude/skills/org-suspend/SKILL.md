@@ -17,6 +17,12 @@ allowed-tools:
 
 Collect every worker's state, persist it to disk, and stop every pane.
 
+> **Curator absence is the normal state (on-demand model)**: the curator is not resident.
+> Null `curator_pane_id` / `curator_peer_id` in state.db is normal, and the curator not
+> appearing in `list_panes` / `list_peers` is not an anomaly. A curator pane exists only in
+> the transient case where "an on-demand curate triggered by a worker close was still running
+> when suspend overlapped it"; only then is it included in Phase 4's shutdown targets.
+
 Pane operations go through the `mcp__renga-peers__*` MCP tools (renga 0.18.0+ assumed). Lifecycle events equivalent to pane_exited are long-polled via `mcp__renga-peers__poll_events`; screen scraping via `mcp__renga-peers__inspect_pane`; raw key input via `mcp__renga-peers__send_keys`.
 
 ## Phase 1: collect worker state
@@ -144,13 +150,17 @@ The order matters. Stop in the order Worker → Dispatcher → Curator.
 
 4. **Stop the Dispatcher**: send a shutdown instruction to the Dispatcher via `mcp__renga-peers__send_message`:
    "SHUTDOWN: please end your work."
-5. **Stop the Curator**: send a shutdown instruction to the Curator via `mcp__renga-peers__send_message`:
-   "SHUTDOWN: please end your work."
-6. Confirm Dispatcher and Curator shutdowns with the same 2-pass structure as (3) (put `pending = {"dispatcher", "curator"}` into a set; wait for `pane_exited` events whose `role == "dispatcher"` or `role == "curator"`):
+5. **Stop the Curator (only if present)**: the curator is not resident, so this step is
+   normally a no-op. Only when a pane with `name == "curator"` exists in
+   `mcp__renga-peers__list_panes` (the case where an on-demand curate was running when
+   suspend overlapped it), send a shutdown instruction via `send_message`:
+   "SHUTDOWN: please end your work." (curate uses a move-then-mark design, so stopping
+   mid-cycle leaves no destructive intermediate state)
+6. Confirm the Dispatcher (and, only if it existed, the Curator) with the same 2-pass structure as (3) (`pending = {"dispatcher"}`; if a curator existed, also add `"curator"` to the set; wait for `pane_exited` events whose `role == "dispatcher"` or `role == "curator"`):
    - Pass 1: a `poll_events(types=["pane_exited"], timeout_ms=10000)`-equivalent loop.
-   - Pass 2: send `mcp__renga-peers__close_pane(target="dispatcher")` / `mcp__renga-peers__close_pane(target="curator")` to remaining panes, then re-confirm with a `poll_events` loop (timeout_ms=5000).
+   - Pass 2: send `mcp__renga-peers__close_pane(target="dispatcher")` (and `close_pane(target="curator")` if a curator remains) to remaining panes, then re-confirm with a `poll_events` loop (timeout_ms=5000).
 
-**Handling the last pane (Lead)**: once the Dispatcher and Curator have closed, the only pane left in the tab is the Lead's. If the Lead tries to close itself with `mcp__renga-peers__close_pane(target="secretary")`, `[last_pane]` (sole pane in the only tab) is returned, so the **Lead exits naturally on its own** (the human closes the terminal, or `/exit`s back to a shell). org-suspend is not responsible for closing the Lead pane.
+**Handling the last pane (Lead)**: once the Dispatcher (and the Curator, if one existed) has closed, the only pane left in the tab is the Lead's. If the Lead tries to close itself with `mcp__renga-peers__close_pane(target="secretary")`, `[last_pane]` (sole pane in the only tab) is returned, so the **Lead exits naturally on its own** (the human closes the terminal, or `/exit`s back to a shell). org-suspend is not responsible for closing the Lead pane.
 
 7. Report to the human:
    ```

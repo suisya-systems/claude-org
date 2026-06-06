@@ -74,6 +74,9 @@ Pull the following out of the result:
 - `session.status` / `session.objective`
 - `session.dispatcher_pane_id` / `session.dispatcher_peer_id`
 - `session.curator_pane_id` / `session.curator_peer_id`
+  (**null is the normal state**. The curator is on-demand and not resident;
+  org-start explicitly clears these via `StateWriter.CLEAR`. Do not treat
+  null as "missing data")
 - `active_runs[]` (in-flight tasks)
 - `active_worker_dirs[]` (worker directories still alive)
 - The top 3–5 entries of `recent_events`
@@ -97,7 +100,7 @@ created_at: <UTC ISO8601>
 session_status: <ACTIVE | IDLE | SUSPENDED>
 session_objective: <one-line summary or null>
 dispatcher_pane: <pane_id> / peer=<peer_id>
-curator_pane: <pane_id> / peer=<peer_id>
+curator_pane: null  # residency retired (on-demand model); null is normal
 ---
 
 # Secretary Handover

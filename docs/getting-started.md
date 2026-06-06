@@ -80,7 +80,7 @@ Based on the definition in `renga-layouts/ops.toml`, the Lead (`Secretary`) pane
 Once Claude Code in the Lead pane has started, **run the following in order**:
 
 1. `/org-setup` — places role-specific `settings.local.json` files (Lead, Dispatcher, Curator, Worker) and required hooks. **Required on first run only**. If you skip this, you will get a large number of permission prompts for renga-peers MCP / git / gh.
-2. `/org-start` — starts the organization. Dispatcher and Curator are spawned in the same tab.
+2. `/org-start` — starts the organization. The Dispatcher is spawned in the same tab (the Curator is launched on demand and temporarily once learnings accumulate).
 
 `/org-setup` is **additive-only** (it only adds missing pieces and does not remove existing ones). If you want to return drifted settings to the baseline, manually replace `settings.local.json` using the role-specific sample JSON in [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md).
 
@@ -124,13 +124,13 @@ This script does not require a live renga session (static checks + MCP stdio pro
 After the initial clone, follow the "Installation" section above and run `/org-setup` → `/org-start` once in that order (`/org-setup` prevents a flood of permission prompts).
 
 From the second time onward, just open the Lead pane with `renga --layout ops` and run `/org-start` in Claude Code.
-If there is saved state from the previous session, it will be reported, and Dispatcher (task assignment) and Curator (knowledge organization) will start automatically.
+If there is saved state from the previous session, it will be reported, and the Dispatcher (task assignment) will start automatically. The Curator (knowledge organization) is not resident; it is launched automatically and temporarily once learnings accumulate.
 
 ```
 You:  /org-start
 Lead: The organization has started.
       Previous state: blog article update is complete, e-commerce site fixes are in progress.
-      Dispatcher and Curator have started.
+      Dispatcher has started (the Curator will be launched automatically and temporarily once enough learnings accumulate).
       What would you like to do?
 ```
 
@@ -287,7 +287,7 @@ The dashboard updates automatically via SSE. You do not need to reload the brows
 | `/org-suspend` | Suspend work | Triggered automatically when you say "done" or "pause" |
 | `/org-resume` | Resume work | Automatically called from org-start if work was suspended previously |
 | `/org-retro` | Record learnings | After work is completed (often triggered automatically) |
-| `/org-curate` | Organize knowledge | Runs automatically. Can also be run manually |
+| `/org-curate` | Organize knowledge | Runs automatically and temporarily once learnings accumulate. Can also be run manually |
 | `/org-dashboard` | Show the dashboard | Triggered when you say "Show me the dashboard" |
 
 In general, you do not need to consciously call skills yourself.
@@ -328,7 +328,7 @@ claude-org/
 The more you use the organization, the smarter it gets.
 
 1. Each time work is completed, the learning is recorded
-2. Every 30 minutes, it is automatically organized (when 5 or more items have accumulated)
+2. At a natural break point (when a worker finishes), it is automatically organized (when 5 or more items have accumulated)
 3. Organized knowledge is saved by theme
 4. If improvements to skills or processes are needed, suggestions are made
 5. Once approved, the improvements are applied, and from the next run onward the entire organization operates in the improved state

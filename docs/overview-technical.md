@@ -23,7 +23,7 @@ Humans only interact with the Lead, while Workers are automatically dispatched a
 |---|---|---|---|
 | **Lead** | Yes | User interaction, task breakdown, state management | All tools (but actual work is delegated) |
 | **Dispatcher** | Yes | Handles pane startup, instruction delivery, and state logging on behalf of others | Bash, Read, Write, Edit, Glob, Grep, Skill, renga-peers |
-| **Curator** | Yes | Organizes knowledge with `/loop 30m /org-curate` | Read, Write, Edit, Glob, Grep, Skill, renga-peers |
+| **Curator** | No (on demand) | Launched temporarily when the threshold check fires at worker close; runs `/org-curate` once | Read, Write, Edit, Glob, Grep, Skill, renga-peers |
 | **Worker** | No | Execution work (code edits, research, testing, etc.) | Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, renga-peers |
 
 ### Communication
@@ -133,7 +133,7 @@ Keep CLAUDE.md minimal (behavior guidelines only) and defer concrete procedures 
 | `org-suspend` | "Pause," "done for today," etc. | Lead |
 | `org-resume` | On startup from a suspended state | Lead |
 | `org-retro` | After work is completed | Lead |
-| `org-curate` | Run periodically with `/loop 30m` | Curator |
+| `org-curate` | Run on demand when the threshold check fires at worker close | Curator |
 | `org-dashboard` | "Show me the dashboard," etc. | Lead |
 
 ### Delegation flow (org-delegate)
@@ -172,7 +172,7 @@ Improvement proposal → Lead → User approval → Update skill / CLAUDE.md
 ```
 
 - Workers automatically record technical learnings into `knowledge/raw/` (per the CLAUDE.md instructions)
-- The Curator checks the threshold every 30 minutes → runs curation when 5+ entries are present
+- The Dispatcher checks the threshold at worker close (`tools/check_curate_threshold.py`) → only when exceeded, launches a temporary Curator to run curation
 - 3+ similar learnings trigger a process-improvement proposal
 - Proposals are applied only after user approval (safety valve)
 

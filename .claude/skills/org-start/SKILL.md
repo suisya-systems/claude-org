@@ -1,8 +1,10 @@
 ---
 name: org-start
 description: >
-  Start up the org. Load the previous state and brief, then launch the dispatcher and curator panes.
+  Start up the org. Load the previous state and brief, then launch the dispatcher pane.
   Run this once right after starting Claude Code. Also triggered by "start", "boot", "begin", etc.
+  The curator is not launched (it has moved to on-demand launch by the dispatcher
+  when the threshold check at worker close fires).
 effort: low
 allowed-tools:
   - Read
@@ -18,7 +20,17 @@ allowed-tools:
 
 # org-start: starting the org
 
-The first skill to run after Claude Code launches. Performs previous-state restoration, dispatcher startup, and curator startup.
+The first skill to run after Claude Code launches. Performs previous-state restoration and dispatcher startup.
+
+> **The curator is not launched (on-demand model)**: the resident curator (spawn +
+> `/loop 30m /org-curate`) is retired. The curator is launched temporarily only when the
+> dispatcher detects, at worker pane close, that `tools/check_curate_threshold.py` exceeded
+> a threshold ([`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 5).
+> org-start explicitly clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR`
+> (Block D-5). **Curator absence (null) is the normal state.**
+> An auxiliary trigger for the threshold-check starvation case where no worker close happens
+> for a while (an org-start backstop) is backlogged as
+> [Issue #502](https://github.com/suisya-systems/claude-org-ja/issues/502).
 
 > **Premise**: this Claude is running inside the Lead pane started via `renga --layout ops`.
 > The `RENGA_SOCKET` / `RENGA_PANE_ID` environment variables are inherited, so the 14 `mcp__renga-peers__*` MCP
@@ -64,13 +76,13 @@ The first skill to run after Claude Code launches. Performs previous-state resto
 
 ## Steps 1-3: parallel startup phase
 
-> **Issue #410 / Stage B**: As soon as Step 0 (all four sub-steps: set_summary / MCP connectivity / identity verification / workers_dir verification) is complete, fire the `spawn_claude_pane` for dispatcher / curator, and in parallel with waiting for Claude to boot (~30-60s), run Block B (DB read of previous state) / Block C (dashboard server startup). The goal is to compress wall-clock time from ~3 minutes (when run serially) down to ~35s.
+> **Issue #410 / Stage B**: As soon as Step 0 (all four sub-steps: set_summary / MCP connectivity / identity verification / workers_dir verification) is complete, fire the `spawn_claude_pane` for the dispatcher, and in parallel with waiting for Claude to boot (~30-60s), run Block B (DB read of previous state) / Block C (dashboard server startup). The goal is to compress wall-clock time from ~3 minutes (when run serially) down to ~35s.
 >
 > **Execution model**: the Secretary fires the following three blocks (A/B/C) and finally joins at block D. Block A is I/O bound (renga MCP responses take a few hundred ms; after that we are just waiting on Claude's boot, which is a separate process), so wall-clock fully overlaps with B/C.
 
-### Block A: spawn dispatcher / curator panes (fire only; do not wait for boot to finish)
+### Block A: spawn the dispatcher pane (fire only; do not wait for boot to finish)
 
-Pane layout follows org-delegate/references/pane-layout.md (renga edition). The spawn itself completes with a few-hundred-ms MCP response, so it is sufficient to fire them sequentially (no need for parallel firing; curator needs to resolve dispatcher's name with target="dispatcher").
+Pane layout follows org-delegate/references/pane-layout.md (renga edition). The curator is not spawned here (on-demand model; see the note at the top of this file).
 
 1. `spawn_claude_pane` for dispatcher:
    ```
@@ -85,20 +97,7 @@ Pane layout follows org-delegate/references/pane-layout.md (renga edition). The 
    )
    ```
    Capture the dispatcher's `pane_id` from the returned `"Spawned pane id=N."`. For the meaning of arguments and pitfalls, see "### Appendix: details of spawn_claude_pane arguments" at the end of this file.
-2. Immediately after that returns, `spawn_claude_pane` for curator:
-   ```
-   mcp__renga-peers__spawn_claude_pane(
-     target="dispatcher",
-     direction="vertical",
-     role="curator",
-     name="curator",
-     cwd=".curator",
-     permission_mode="auto",
-     model="opus"
-   )
-   ```
-   target="dispatcher" resolves the stable name established in (1). Capture the curator's `pane_id` too.
-3. **Block here only on the spawn result** (do not wait for Claude's boot to complete). If both spawns failed with `[<code>] <msg>`, jump to "### Failure modes" at the end of this file. If both spawns succeeded (pane_id obtained), proceed in parallel with Blocks B / C.
+2. **Block here only on the spawn result** (do not wait for Claude's boot to complete). If the spawn failed with `[<code>] <msg>`, jump to "### Failure modes" at the end of this file. If the spawn succeeded (pane_id obtained), proceed in parallel with Blocks B / C.
 
 ### Block B: check previous state
 
@@ -117,7 +116,7 @@ The read path is **DB only** (Issue #267 / M4). Run in parallel with Block A's s
 2. Check session.status:
    - If `SUSPENDED`, run /org-resume Phases 1-3 (briefing / reconciliation / resume plan).
      Block A's spawn has already been fired, so Claude boots in the background while you brief.
-     After briefing finishes, wait at Block D's join for dispatcher / curator to be ready, then run org-resume Phase 4 (worker re-dispatch) based on human approval.
+     After briefing finishes, wait at Block D's join for the dispatcher to be ready, then run org-resume Phase 4 (worker re-dispatch) based on human approval.
    - If `ACTIVE`, the previous session may have terminated abruptly.
      Check the git state of each worker directory and report the current situation.
 
@@ -170,31 +169,29 @@ In parallel with Block A's spawn firing. Compare the installed version of `claud
 >
 > For a one-shot smoke test, use `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json` (omit `--config` and you get the runtime-neutral English default, so always pass it when validating the ja template path). For per-OS backend behavior, troubleshooting, and bare-CLI startup from a separate terminal, see [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md).
 
-### Block D: join both panes (Enter / list_peers poll / greeting / DB write / snapshot)
+### Block D: dispatcher join (Enter / list_peers poll / greeting / DB write / snapshot)
 
-After both Block A spawns succeed, Claude is booting in parallel on both panes. **Wait for boot completion just once, then fire Enter / list_peers poll / greeting / DB write together for both panes** to realize the Stage A wall-clock reduction (180s -> 90s).
+After Block A's spawn succeeds, Claude is booting in the dispatcher pane.
 
-1. **Send Enter to both panes** — accept the "Load development channel? (Y/n)" prompt on Claude Code's first launch. Issue them in parallel (renga MCP is serial, but with few-hundred-ms responses it feels simultaneous):
+1. **Send Enter** — accept the "Load development channel? (Y/n)" prompt on Claude Code's first launch:
    ```
    mcp__renga-peers__send_keys(target="dispatcher", enter=true)
-   mcp__renga-peers__send_keys(target="curator", enter=true)
    ```
    - Enter is written to the PTY as CR (0x0D).
    - Without approval, the `server:renga-peers` channel is not enabled and `send_message` channel pushes do not arrive.
-   - Because Claude boots at slightly different speeds, sending Enter before the prompt is displayed may become a no-op. If the next list_peers poll does not confirm peer registration, resend Enter.
-2. **Poll list_peers and confirm both dispatcher / curator peer registrations in one go** — since both panes boot in parallel, you do not need separate polls per role; a single poll loop can wait for both registrations simultaneously:
+   - Depending on boot speed, sending Enter before the prompt is displayed may become a no-op. If the next list_peers poll does not confirm peer registration, resend Enter.
+2. **Poll list_peers and confirm the dispatcher's peer registration**:
    ```
    mcp__renga-peers__list_peers
-   # Poll until both name="dispatcher" / "curator" appear in the result
+   # Poll until name="dispatcher" appears in the result
    ```
-   - If both do not appear, (a) resend Enter to the pane that did not receive it, (b) if it is fatal such as `[pane_not_found]`, jump to the "Failure modes" section.
-3. **Send greeting messages to both in parallel**:
+   - If it does not appear, (a) resend Enter, (b) if it is fatal such as `[pane_not_found]`, jump to the "Failure modes" section.
+3. **Send the greeting message**:
    - dispatcher:
      "You are the dispatcher. Receive DELEGATE messages from the Lead, and on its behalf launch worker panes, send instructions, and record state. When you receive a CLOSE_PANE message, close that pane."
-   - curator:
-     "You are the curator. Please run /loop 30m /org-curate. You will perform knowledge curation every 30 minutes."
+   - There is no greeting to the curator (it is not resident; the instruction message at on-demand launch is sent by the dispatcher).
 4. **Wait for Block B's DB initialization to complete** — the join point for parallel execution. If in Block B-1 `.state/state.db` was absent and `importer --rebuild` ran, `StateWriter.update_session()` will fail until schema construction is complete, so Block B must finish before Block D-5's DB write. If Block B is incomplete (waiting on SUSPENDED briefing), wait for briefing to finish -> confirm DB schema health -> then proceed here.
-5. **Record identities by batching DB transactions into one** (via `StateWriter.transaction()`; do not edit markdown directly. The post-commit hook regenerates `.state/org-state.md`). **If both roles succeeded, write all four**. **If one role failed at D-2 / D-3 (boot impossible, already `close_pane`'d, etc.), write only the successful role; for the failed role, explicitly clear the stale `*_pane_id` / `*_peer_id` carried over from the previous SUSPENDED with `StateWriter.CLEAR`** (`StateWriter.update_session()` is contracted to interpret `None` as "unspecified = preserve", so explicit clear is mandatory):
+5. **Record identities by batching DB transactions into one** (via `StateWriter.transaction()`; do not edit markdown directly. The post-commit hook regenerates `.state/org-state.md`). Write the dispatcher's identity, and **always explicitly clear the curator's identity with `StateWriter.CLEAR`** (with the on-demand model there is no resident curator. If stale `curator_pane_id` / `curator_peer_id` carried over from an old-scheme SUSPENDED state remain, the dashboard and balanced-split target selection misjudge based on the premise that a live curator exists. `StateWriter.update_session()` is contracted to interpret `None` as "unspecified = preserve", so explicit clear is mandatory):
    ```bash
    python -c "
    from pathlib import Path
@@ -202,24 +199,24 @@ After both Block A spawns succeed, Claude is booting in parallel on both panes. 
    from tools.state_db.writer import StateWriter
    conn = connect('.state/state.db')
    with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
-       # Example for the both-success case (for a failed role, pass StateWriter.CLEAR instead of a value)
        w.update_session(
            dispatcher_pane_id='<d_pane>', dispatcher_peer_id='<d_peer>',
-           curator_pane_id='<c_pane>', curator_peer_id='<c_peer>',
+           curator_pane_id=StateWriter.CLEAR, curator_peer_id=StateWriter.CLEAR,
        )
    "
    ```
-6. Regenerate the JSON snapshot just once (for the dashboard; separate path from the state-db cutover. Since both identities can be reflected together, there is no need to call it twice):
+   Null curator fields are the **normal state**; suspend / handover / resume / dashboard all operate on that premise.
+6. Regenerate the JSON snapshot just once (for the dashboard; separate path from the state-db cutover):
    `py -3 dashboard/org_state_converter.py`.
 
 ### Appendix: details of spawn_claude_pane arguments
 
-Meanings and pitfalls of the arguments shared by both spawns:
+Meanings and pitfalls of the spawn arguments:
 
-- `target`: the pane to split. dispatcher uses `target="focused"` (splits the Lead pane). curator uses `target="dispatcher"` (resolves the stable name established at Block A-1 and takes the right half of the dispatcher pane).
+- `target`: the pane to split. dispatcher uses `target="focused"` (splits the Lead pane).
 - `direction`: `"horizontal"` = top/bottom split (existing = top / new = bottom); `"vertical"` = left/right split (existing = left / new = right).
 - `role`: a label that lets `mcp__renga-peers__list_panes` identify the role.
-- `name`: a stable name referenced by later `send_message(to_id="dispatcher", ...)` / `close_pane(target="curator")` etc. **renga-peers interprets all-numeric names as ids, so always include letters in the name**.
+- `name`: a stable name referenced by later `send_message(to_id="dispatcher", ...)` etc. **renga-peers interprets all-numeric names as ids, so always include letters in the name**.
 - `cwd`: resolved relative to the caller pane's (= Lead's) cwd. The old approach of embedding `cd X && claude ...` in `command` is forbidden (the auto-upgrade does not fire and channel push is lost — a known pitfall).
 - `permission_mode` / `model`: renga composes and runs `claude --permission-mode {mode} --model {model} --dangerously-load-development-channels server:renga-peers`.
 - Return value: the text `"Spawned pane id=N."`. Errors are in the form `[<code>] <msg>` (e.g., `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`). For the code list and branches, see `.claude/skills/org-delegate/references/renga-error-codes.md`.
@@ -227,24 +224,13 @@ Meanings and pitfalls of the arguments shared by both spawns:
 
 ### Failure modes
 
-Parallel firing introduces failure patterns that differ from the old serial execution. Classify at Block A's spawn stage:
+Classify at Block A's spawn stage:
 
-- **dispatcher spawn failure (`[split_refused]` / `[cwd_invalid]` / other `[<code>]`)** — curator spawn will fail to resolve the name in `target="dispatcher"` and fail in succession with `[pane_not_found]`. **Report both failures to the user; after fixing the cause, re-run /org-start**. The half-done state (curator alone running) cannot occur.
-- **curator spawn failure / dispatcher spawn success** — keep dispatcher and report to the user. The core of org functionality (worker dispatch / state writes) is maintained by dispatcher alone, so **present the user with the options "dispatcher is up; respawn curator, or temporarily continue without curator"**. Drive Blocks B / C / D dispatcher-related steps to completion independent of curator failure. **The DB write should write only the dispatcher portion; explicitly clear the curator portion with `StateWriter.CLEAR`** (if stale `curator_pane_id` / `curator_peer_id` from the previous SUSPENDED remain, the dashboard and balanced-split target selection misjudge based on the premise that a live curator exists. `StateWriter.update_session()` is contracted to interpret `None` as "unspecified = preserve", so explicit clear is mandatory):
-  ```python
-  from tools.state_db.writer import StateWriter
-  ...
-  with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
-      w.update_session(
-          dispatcher_pane_id='<d_pane>', dispatcher_peer_id='<d_peer>',
-          curator_pane_id=StateWriter.CLEAR, curator_peer_id=StateWriter.CLEAR,
-      )
-  ```
-- **Both spawns succeed, but one fails to register as a peer during boot** — the Block D-2 poll times out on one side. Resend Enter to that pane -> re-poll. After 3 retries, discard the pane with `close_pane` and branch as follows:
-  - **Curator-only peer registration failure**: allow the same temporary continuation as "curator spawn failure / dispatcher spawn success" above (dispatcher alone maintains the core org functionality). Block D-5's DB write writes only dispatcher; curator gets `StateWriter.CLEAR`.
-  - **Dispatcher-only peer registration failure**: temporary continuation not allowed (fatal). Without dispatcher, org-delegate / SECRETARY_RELAY do not function, and keeping curator alone is useless, so also `close_pane` the curator, **clear both identities with `StateWriter.CLEAR`, report to the user**, and prompt for /org-start re-execution.
-  - **Both time out**: `close_pane` both panes, `StateWriter.CLEAR` both identities, report to the user + re-execute.
-- **Enter-timing skew** — if you send Enter before the "Load development channel?" prompt is displayed, it becomes a no-op. Block D-1 sends both in parallel so one side may be too early, but the Block D-2 peer-registration poll is ground truth. If a peer is not registered, return to Block D-1 and resend.
+- **dispatcher spawn failure (`[split_refused]` / `[cwd_invalid]` / other `[<code>]`)** — **Report the failure to the user; after fixing the cause, re-run /org-start**.
+- **Spawn succeeds, but no peer registration during boot** — the Block D-2 poll times out. Resend Enter -> re-poll. After 3 retries, it is fatal: without the dispatcher, org-delegate / SECRETARY_RELAY do not function, so discard the pane with `close_pane`, **clear both dispatcher / curator identities with `StateWriter.CLEAR`, report to the user**, and prompt for /org-start re-execution.
+- **Enter-timing skew** — if you send Enter before the "Load development channel?" prompt is displayed, it becomes a no-op. The Block D-2 peer-registration poll is ground truth. If the peer is not registered, return to Block D-1 and resend.
+
+Curator spawn / boot failure modes do not exist in org-start (it does not spawn one). For failure handling at on-demand launch, see [`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Steps 5-3 / 5-4.
 
 ### Wall-clock impact of Stage A / Stage B
 
@@ -253,34 +239,27 @@ Parallel firing introduces failure patterns that differ from the old serial exec
 | before | state restore -> dashboard start -> dispatcher start (spawn+Enter+poll+greet+DB+snapshot) -> curator start (same) in serial | ~180s |
 | after Stage A | dispatcher / curator startup batched into one parallel block; both spawn / Enter / poll / greet / DB write / snapshot bundled together | ~90s |
 | after Stage A+B | on top of the above, fire Block A's spawn right after Step 0 completes, overlapping Claude's boot wait with Block B (state restore) / Block C (dashboard startup) | ~35s |
+| after curator on-demand | only the dispatcher is launched (curator's spawn / Enter / poll / greet are gone) | further reduced |
 
 ## Step 4: report ready
 
-Report concisely to the human. Depending on what was written in Block D-5's DB write, accurately enumerate the started roles (so as not to falsely report "curator started" when curator failed):
+Report concisely to the human. Only the dispatcher is launched (the curator is on-demand).
 
 **Handling Block C2's runtime drift output**: if Block C2's `tools/check_runtime_version.py` stdout emitted a single `[runtime drift] ...` line, then for any of the templates below **transcribe that one line verbatim at the end, separated by one blank line**. If stdout was empty, do not attach the warning line (installed == latest / not installed / offline / parse failure / no release within the pin range are all silent).
 
-**With previous state (both roles succeeded)**:
+**With previous state**:
 ```
 Org started.
 Previous state: {summary}
-Dispatcher and curator are running.
+Dispatcher is running (the curator will be launched automatically and temporarily once enough learnings accumulate).
 What would you like to do?
 ```
 
-**First launch (both roles succeeded)**:
+**First launch**:
 ```
 Org started.
-Dispatcher and curator are running.
+Dispatcher is running (the curator will be launched automatically and temporarily once enough learnings accumulate).
 No projects are registered yet. What would you like to do?
-```
-
-**curator spawn / boot failure, dispatcher only running**:
-```
-Org started (partial).
-Dispatcher is running, but curator startup failed (reason: {[<code>] / peer-registration timeout etc.}).
-Choose between respawning curator to recover, or temporarily continuing without curator.
-(Without curator, worker dispatch / state writes still work, but automatic knowledge curation (/loop 30m /org-curate) is disabled.)
 ```
 
 **Example of attached warning on drift detection** (transcribed at the end of any template above; `{installed}` / `{latest_in_window}` / `{pin}` are determined at runtime by the script from PyPI and `pyproject.toml`, and must not be hard-coded into this file):
@@ -310,9 +289,11 @@ Common arguments:
 
 Rationale: when launching workers, the dispatcher issues `mcp__renga-peers__spawn_claude_pane`. The safety classifier of auto mode judges this "child agent launch" as "Create Unsafe Agents" and blocks it, so worker dispatch does not succeed under auto.
 
-### Curator
+### Curator (on-demand launch only — org-start does not spawn it)
 
-- `cwd=".curator"`
+Spawned by the dispatcher when a threshold fires at worker close ([`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 5-3):
+
+- `cwd="../.curator"` (the caller is the dispatcher; relative resolution against cwd=`.dispatcher/`)
 - `permission_mode=auto`
 - `model="opus"`
 

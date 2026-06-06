@@ -2,7 +2,9 @@
 name: org-curate
 description: >
   Consolidate and reorganize accumulated raw learnings (knowledge/raw/).
-  Periodically called from the Curator Claude's /loop.
+  Called exactly once by a curator that the dispatcher spawned on demand
+  when the threshold check at worker close
+  (tools/check_curate_threshold.py) fired (the resident /loop is retired).
   Also fires manually when asked to "organize the knowledge".
 effort: medium
 allowed-tools:
@@ -10,9 +12,16 @@ allowed-tools:
   - Write
   - Edit
   - Bash(mkdir -p knowledge/raw/archive/)
+  - Bash(mkdir -p ../knowledge/raw/archive/)
   - Bash(mv knowledge/raw/*)
+  - Bash(mv ../knowledge/raw/*)
   - Bash(grep:*)
   - Bash(find knowledge/*)
+  - Bash(find ../knowledge/*)
+  - Bash(py -3 tools/check_curate_threshold.py:*)
+  - Bash(python3 tools/check_curate_threshold.py:*)
+  - Bash(py -3 ../tools/check_curate_threshold.py:*)
+  - Bash(python3 ../tools/check_curate_threshold.py:*)
   - mcp__renga-peers__send_message
 ---
 
@@ -20,33 +29,69 @@ allowed-tools:
 
 Read the raw learnings accumulated under `knowledge/raw/`, classify and consolidate them, and write them to `knowledge/curated/`.
 
-## Step 0: migration sweep (clean up old data)
+**Launch model (on-demand)**: this skill executes exactly one cycle per activation (`/loop` is forbidden).
+Threshold judgment is consolidated into the external script [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py);
+there is **no** internal gate like "exit immediately if fewer than 5 raw entries" inside this skill.
+You receive the activation reasons `reasons[]` and execute only the matching steps.
 
-Run **before** the threshold check, unconditionally. This is a migration cleanup that runs every time, to drain `active raw` files left over from the previous in-place marking scheme:
+**Path resolution (important)**: the `knowledge/...` / `tools/...` notation in this skill denotes **repo-root-relative
+logical paths**. An on-demand-spawned curator pane has cwd `.curator/`, so when running via Bash,
+reinterpret them as `../knowledge/...` / `../tools/...` (or absolute paths obtained via `cd .. && pwd`) —
+the same convention as the "Paths" section of `.curator/CLAUDE.md` (both forms are allowed in
+allowed-tools). When running manually from the repo root, use them as-is.
+
+## Step 0: determine the activation reasons (`reasons`)
+
+`reasons[]` takes the following 4 values:
+
+| reason | meaning | steps to execute |
+|---|---|---|
+| `raw_threshold` | 5 or more active raw entries | Steps 2–5 (classify, consolidate, archive, improvement proposals) |
+| `skill_candidates_pending` | 5 or more pending skill-candidates | Step 6 (fire skill-audit) |
+| `work_skill_count` | 20 or more work-skills (excluding org-*) | Step 6 (fire skill-audit) |
+| `legacy_marker_sweep` | `<!-- curated -->` remnants directly under raw/ | Step 1 (migration sweep; *always runs anyway*) |
+
+1. **On-demand activation via the dispatcher**: the activation instruction message contains
+   the JSON from `tools/check_curate_threshold.py` (`reasons[]` / `counts`).
+   Adopt it as-is (do not recompute).
+2. **Manual activation (no reasons provided)**: run the script yourself to determine them.
+   From the curator pane (cwd=`.curator/`): `py -3 ../tools/check_curate_threshold.py`;
+   from the repo root: `py -3 tools/check_curate_threshold.py` (POSIX: `python3`):
+   - exit 0 (below_threshold) → no work to execute. Run only the Step 1 sweep, then notify
+     `CURATE_SKIPPED` in Step 7 and finish
+   - exit 10 (curate_needed) → adopt `reasons[]` from the stdout JSON and continue
+   - exit 2 (error) → notify `CURATE_ERROR` in Step 7 and finish
+
+## Step 1: migration sweep (clean up old data) — always runs
+
+Run **unconditionally** every time, regardless of what `reasons[]` contains (an idempotent
+cleanup; a no-op when there are no remnants). The `legacy_marker_sweep` reason exists to
+guarantee that "the curator gets spawned even if only for this sweep"; the sweep itself runs
+no matter what the activation reason was:
 
 1. `mkdir -p knowledge/raw/archive/` (idempotent).
-2. For each file directly under `knowledge/raw/` that contains `<!-- curated -->` near the top, `move` it to `knowledge/raw/archive/`. No need to add a marker (it is already present).
+2. For each file directly under `knowledge/raw/` that contains `<!-- curated -->` near the
+   top, `move` it to `knowledge/raw/archive/`. No need to add a marker (it is already present).
 3. Run this step even when there are 0 raw files.
 
-This way, even on environments where the new raw count is below the threshold (less than 5), files with the old marker are still swept out and do not linger on the active-raw side. After the new scheme stabilizes, this step becomes a no-op as such files reach a steady-state of zero.
+> Per Set A § Role: curator, the Curator's write surface is limited to `knowledge/curated/` and
+> `knowledge/raw/archive/` (move permission). Active entries directly under `knowledge/raw/` are
+> immutable. Step 1's migration sweep is a `move`, not a rewrite, so it does not violate this constraint.
 
-## Step 1: threshold check
+**Branching from here**: if `reasons[]` contains `raw_threshold`, go to Step 2. Otherwise skip
+Steps 2–5 and proceed to the Step 6 check.
 
-1. Enumerate files directly under `knowledge/raw/` (**excluding** `knowledge/raw/archive/`); after Step 0's sweep, no marker-bearing files remain in active raw.
-2. Count them all as "unsorted".
-3. If unsorted files are fewer than 5, do nothing and exit.
-4. If 5 or more, proceed to the next step.
+## Step 2: read and classify (reason: raw_threshold)
 
-> Per Set A § Role: curator, the Curator's write surface is limited to `knowledge/curated/` and `knowledge/raw/archive/` (move permission). Active entries directly under `knowledge/raw/` are immutable. Step 0's migration sweep is a `move`, not a rewrite, so it does not violate this constraint.
-
-## Step 2: read and classify
-
-1. Read every unsorted file.
-2. Classify by theme. Use the following granularity as a guide:
+1. Enumerate files directly under `knowledge/raw/` (**excluding** `knowledge/raw/archive/`).
+   Exclude sentinels like `.gitkeep` (entries starting with `.`) (after Step 1's sweep, no
+   marker-bearing files remain in active raw).
+2. Read them all as "unsorted".
+3. Classify by theme. Use the following granularity as a guide:
    - Technical area (e.g., authentication, database, frontend).
    - Tool / service (e.g., renga, github-api, aws).
    - Process (e.g., code-review, testing, deployment).
-3. Read the existing `knowledge/curated/` files too, and check for duplicates.
+4. Read the existing `knowledge/curated/` files too, and check for duplicates.
 
 ## Step 2.5: extract skill-promotion candidates
 
@@ -80,7 +125,7 @@ The decision determines what to do next. **Regardless of the decision, the Step-
 
 Asking the human is the Lead Claude's job; org-curate does not do it.
 
-## Step 3: consolidate and write
+## Step 3: consolidate and write (reason: raw_threshold)
 
 For each theme:
 
@@ -100,7 +145,7 @@ For each theme:
 5. Merge duplicate learnings (keep the more concrete / accurate description).
 6. When learnings contradict, prefer the more recent date and explicitly note the contradiction.
 
-## Step 4: move to archive and add the processed marker
+## Step 4: move to archive and add the processed marker (reason: raw_threshold)
 
 Consolidated raw files are not written back to active raw; they are moved into `knowledge/raw/archive/` (move-then-mark).
 
@@ -118,11 +163,11 @@ Consolidated raw files are not written back to active raw; they are moved into `
    ```
    The marker is added **to the file after it has been moved to archive**. Files under active `knowledge/raw/` are never rewritten.
 
-The fact that a file lives under archive/ is itself the "curated" signal, but the marker is also added for visual continuity. The Step 1 threshold check excludes archive/, so even just moving alone removes a file from the count for next time.
+The fact that a file lives under archive/ is itself the "curated" signal, but the marker is also added for visual continuity. The `raw_active` count in `tools/check_curate_threshold.py` excludes archive/, so even just moving alone removes a file from the count for next time.
 
 > Rationale: per the Set E §1.1 (Q1) ratification and Set A § Role: curator, the Curator must not mutate active entries directly under `knowledge/raw/`. Write surface is limited to creating / appending under `knowledge/curated/`, and moving (and editing the moved file) under `knowledge/raw/archive/`.
 
-## Step 5: consider improvement proposals
+## Step 5: consider improvement proposals (reason: raw_threshold)
 
 Take a step back across the curated learnings and consider:
 
@@ -133,16 +178,43 @@ Take a step back across the curated learnings and consider:
 
 When you have an improvement proposal:
 - Apply the criteria from references/knowledge-standards.md.
-- Send the proposal to the Lead Claude via renga-peers.
+- Send the proposal to the Lead Claude via renga-peers (`to_id="secretary"`).
 - Proposal format: "[improvement proposal] {target}: {change}. Reason: {why}".
 - **Do not change anything yourself until the Lead obtains approval from the human.**
 
-## Step 6: skill-inventory trigger check
+## Step 6: fire the skill inventory (reason: skill_candidates_pending / work_skill_count)
 
-If either of the following holds, launch `.claude/skills/skill-audit/SKILL.md`:
+If `reasons[]` contains `skill_candidates_pending` or `work_skill_count`, launch
+`.claude/skills/skill-audit/SKILL.md`. If neither is present, do nothing.
 
-- 5 or more (N=5) entries with `status: pending` exist in `knowledge/skill-candidates.md`.
-- 20 or more (M=20) skill directories exist under `.claude/skills/`.
+The threshold definitions (5+ pending / 20+ work-skills, excluding org-*) are kept in
+exact agreement between `tools/check_curate_threshold.py` and skill-audit Step 1.
+`skill-audit` itself re-checks the thresholds when fired, so no recomputation is needed here.
 
-Do nothing if both are below threshold. No time-based periodic trigger.
-The thresholds are re-checked by `skill-audit` itself when triggered, so a coarse check here is fine.
+## Step 7: completion notification (always run last)
+
+Report the cycle's outcome via **direct send to the dispatcher**. This is the trigger for
+the on-demand curator's pane close, so **the destination must be `to_id="dispatcher"`**
+(a channel broadcast or a secretary-addressed message would let the dispatcher's
+`check_messages` wait time out, causing pane leaks / premature closes):
+
+```
+mcp__renga-peers__send_message(to_id="dispatcher", message="CURATE_DONE: ...")
+```
+
+**Ordering rule**: send this only **after** every Step 5 improvement proposal
+(secretary-bound) has been sent. The contract allows the dispatcher to close the pane upon
+receiving `CURATE_*`, so sending it first risks the pane being destroyed before the
+improvement proposals go out.
+
+The message is one of the following 3 kinds:
+
+- `CURATE_DONE: reasons={reasons[]} raw {n} entries → {m} themes consolidated into curated / {k} archived / {s} swept / skill-audit {fired or none}`
+  — when one or more steps executed and completed normally
+- `CURATE_SKIPPED: below_threshold (counts: raw_active={n}, pending={p}, work_skill={w}, legacy_marker={l})`
+  — when (e.g., on manual activation) the thresholds turned out unmet and nothing beyond the sweep was done
+- `CURATE_ERROR: {one-line summary}` — when an unrecoverable error occurred mid-cycle (include any partial completion in the one line)
+
+On manual activation (a context such as the secretary pane, where the dispatcher has no
+pane-close responsibility), still send it if a dispatcher exists among the peers (harmless
+as information sharing); if `[pane_not_found]`, it may be omitted.

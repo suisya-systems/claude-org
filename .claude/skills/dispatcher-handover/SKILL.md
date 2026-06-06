@@ -48,6 +48,7 @@ to "once you ack, send_keys `/clear` → `/dispatcher-resume`".
 >   **never be deleted or edited**:
 >   - `.state/dispatcher-event-cursor.txt` (next cycle's `poll_events` cursor)
 >   - `.state/dispatcher/worker-idle-state.json` (idle streak for stall detection)
+>   - `.state/dispatcher/curate-inflight.json` (start record of an on-demand curate; only if present)
 >   - `.state/pending_decisions.json` (pending-decisions register)
 >   - `.state/workers/worker-*.md` (per-worker run state)
 >   The handover file is restricted to the **additional** context above
@@ -163,6 +164,7 @@ pending_decisions_count: <int>
 ## Files to bridge the monitoring gap (read-only; this skill must not touch)
 - `.state/dispatcher-event-cursor.txt`: next `poll_events` cursor (use as-is on resume)
 - `.state/dispatcher/worker-idle-state.json`: idle streak for stall detection
+- `.state/dispatcher/curate-inflight.json`: start record of an on-demand curate (only if present; after resume, Step 5.3 timeout management continues from its `started_at`)
 - `.state/pending_decisions.json`: pending-decisions register
 - `.state/workers/worker-*.md`: per-worker run state
 
@@ -208,6 +210,7 @@ that `/clear` will reset your context).
 - Issue `/clear` itself (it is the recipient of an external `send_keys`)
 - Send SHUTDOWN to Workers or the Curator (keep panes alive)
 - Edit / delete `.state/dispatcher-event-cursor.txt` /
-  `worker-idle-state.json` / `pending_decisions.json` (resume continuity breaks)
+  `worker-idle-state.json` / `curate-inflight.json` / `pending_decisions.json`
+  (resume continuity breaks)
 - Stop `/loop 3m` itself (the design resumes it after resume; the current
   cycle continues)
