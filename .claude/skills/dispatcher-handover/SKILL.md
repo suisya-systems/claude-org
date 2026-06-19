@@ -29,6 +29,8 @@ carries the current monitoring state and the Dispatcher's standing as an
 org member into the next session. After writing, notify the Secretary
 to "once you ack, send_keys `/clear` → `/dispatcher-resume`".
 
+> **Transport layer — both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this skill's `mcp__renga-peers__*` calls (the handover notification `send_message` etc.) are written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`**, the ack receive from secretary is not an in-band push but a **pane-local nudge + `check_messages` pull**, the secretary's `/clear` → `/dispatcher-resume` keystrokes use `mcp__org-broker__send_keys` in the same shape, and errors gain the broker-specific codes (see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). See the "Transport layer (transport) both systems" section of [`.dispatcher/CLAUDE.md`](../../../.dispatcher/CLAUDE.md) and [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) for details. The default-renga procedure is unchanged (broker is additive).
+
 > **Key preconditions**:
 > - This skill is run by the **Dispatcher itself** (cwd `.dispatcher/`).
 >   It is not invoked directly from the Secretary.
