@@ -115,6 +115,15 @@ For detailed conditions, the execution command, and the rationale behind the wor
 
 Step 0.7 (gitignore pre-check) / Step 1 (Pattern determination) / Step 1.5 (Worker directory preparation + role decision + settings generation) / Step 2 (DELEGATE body assembly) are **all handled by `tools/gen_delegate_payload.py`**. The Lead's responsibility is only task identification (Step 0), work-skill search (Step 0.5), target-file extraction, and depth judgment.
 
+### Pre-dispatch verification checks (auxiliary to Step 0.7 — Secretary runs them by hand)
+
+The following 2 items are **not** verified by `gen_delegate_payload.py`; the Secretary confirms them by hand before `preview`. **If they cannot be satisfied, the dispatch is not viable and you must not proceed to `apply`** (resolve the cause on the Secretary side or escalate to the user, then restart from Step 0):
+
+1. **Committed-base existence check**: for `--target`, **file existence is always verified**. **Line existence is verified only for delegations whose input carries line-numbered review findings or patches**. A delegation whose edit base is uncommitted live-tree state is not viable (the worker's worktree / clone is cut from the committed base and cannot see the target) — commit first and re-delegate.
+2. **Contracts grep for org-behavior changes**: for delegations that change org behavior (cadence / lifecycle / responsibility boundaries), grep `docs/contracts/` with behavior keywords (loop / cadence / curator / close, etc.) and follow the cited sources of every contract that hits (`.dispatcher/CLAUDE.md`, `.dispatcher/references/worker-monitoring.md`, etc.). **Do not place hits into `--target`** (it contaminates the edit scope); carry them in the brief via `--knowledge` / `--impl-guidance`.
+
+For the determination criteria, command examples, and the grep keyword list, see [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) §1.5 as the primary source.
+
 ### Standard flow (recommended)
 
 ```bash
@@ -214,6 +223,8 @@ mcp__renga-peers__send_message(
   message="This is the Lead. You are assigned to {task_id}. Send all reports — completion, progress, and blockers — to `to_id=\"secretary\"` over renga-peers."
 )
 ```
+
+**Pre-approval via send_keys for `.claude/` edit tasks (root `.claude/**` self-edits only)**: when the delegation scope includes claude-org root `.claude/**` (excluding `.dispatcher/` / `.curator/`, and the worker-dir generated `.claude/settings.local.json`), the Secretary **follows up** the greeting above by typing an approval message into the worker pane via `mcp__renga-peers__send_keys` (enumerating the target files, the task_id, and explicit "user approval via the Lead" wording). The worker confirms the approval input exists before editing; if absent, it must not edit and must request the approval input from the Secretary (a fixed handshake that prevents deadlock / empty-press accidents). For the scope boundary, background (the 2-layer guard), approval-text template, and the mandatory wording for the worker brief, see [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 as the primary source.
 
 ### On message receipt from a Worker
 

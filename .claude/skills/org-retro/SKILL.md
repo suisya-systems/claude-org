@@ -93,16 +93,12 @@ For `skill_recommend`, the skill itself appends to `knowledge/skill-candidates.m
 
 #### decision == skill_recommend
 
-1. Propose to the human:
-   ```
-   [work-skill proposal] This task's working pattern looks reusable as a work-skill.
-   - Proposed skill name: {proposed_skill_name}
-   - Reason: {matched_signals} (total {score}/5)
-   - Summary: {what is reusable}
+Stop at the queue append (already done by the skill side via `knowledge/skill-candidates.md`); do not propose to the human immediately — **move on silently**. Asking the human happens only at a Lead-driven batch ask once the candidate queue has accumulated pending ≥ 5 entries (N=5), or when `/skill-audit` fires.
+The primary reference is the operating rule at the top of [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) (Issue #68 policy).
 
-   Record it?
-   ```
-2. If the human approves:
+Steps 1–3 below are **not** executed immediately. They are preserved here as the processing flow **the Lead executes** at the moment the human judges each candidate at the batch ask (or `/skill-audit`):
+
+1. If the human approves:
    - **The Lead does NOT directly create / edit the skill file.** Per the ratification of Set E §2.4 (Q7), skill-promotion goes through `org-delegate` as a delegated task to a worker.
    - The Lead launches `org-delegate` and produces a worker task with role `claude-org-self-edit`. The instructions must include:
      - The target skill name `{skill-name}` and write target `.claude/skills/{skill-name}/SKILL.md`.
@@ -110,10 +106,10 @@ For `skill_recommend`, the skill itself appends to `knowledge/skill-candidates.m
      - The source (worker artifacts / raw learning files) and the policy of substituting task-specific values for placeholders.
      - That this is a skill-promotion delegation (one of the carve-outs of the Set A worker write-surface).
    - The Dispatcher / Lead does **not** write directly to `.claude/skills/{skill-name}/` or `knowledge/skill-candidates.md`. Per Set E §1.4 / §2.4, the status transition in `skill-candidates.md` (move to `approved`, fill `decision date`) is also the same delegated worker's responsibility; include it in the instructions.
-3. If the human rejects:
+2. If the human rejects:
    - Record the reason in `knowledge/raw/` for future use in similar judgments.
    - Updating the `knowledge/skill-candidates.md` entry (status → `rejected`, append the rejection reason) also goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
-4. If the human picks "merge into an existing skill" (terminal status `merged-into-{existing-skill}`):
+3. If the human picks "merge into an existing skill" (terminal status `merged-into-{existing-skill}`):
    - Identify the merge target and delegate to a skill-promotion worker via `org-delegate`: edit `.claude/skills/{existing-skill}/SKILL.md` to incorporate, and update the `knowledge/skill-candidates.md` entry's status to `merged-into-{existing-skill}` (fill the `merge target` field with the existing skill name).
    - Do not create a new skill file. The Lead / Dispatcher does not edit directly.
 
@@ -130,5 +126,7 @@ No report required.
 
 Briefly report to the human:
 - If a learning was recorded: "Recorded a learning about the delegation process — {topic}".
-- If proposing a work-skill: present the `skill_recommend` format from Step 4.2.
-- For `candidate_queue` / `curated_only`: no report (move on silently).
+- For any of `skill_recommend` / `candidate_queue` / `curated_only`: no report needed (move on silently).
+  `skill_recommend` completes with just the queue append; asking the human follows the operating rule at the top of
+  [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) and happens at the Lead-driven batch ask
+  when pending ≥ 5, or when `/skill-audit` fires.
