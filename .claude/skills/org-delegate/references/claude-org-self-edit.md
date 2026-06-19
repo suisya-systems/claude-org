@@ -92,39 +92,38 @@ At the beginning of `CLAUDE.local.md`, always include text to this effect:
 
 Without this explicit note, the Worker reads the root `CLAUDE.md` first and starts acting as the Lead (for example, prompting execution of `/org-start`).
 
-## 5. send_keys pre-approval handshake for root `.claude/**` edit tasks
+## 5. Pre-approval send_keys handshake for root `.claude/**` edit tasks
 
 ### Scope boundary
 
-This section covers **only claude-org root `.claude/**` (self-edits)**:
+This section applies **only to claude-org root `.claude/**` (self-edit)**:
 
-- **In scope**: delegations whose Edit / Write touches `.claude/skills/`, `.claude/settings.json`, etc. directly under the claude-org repo root `.claude/**`
-- **Out of scope**: `.dispatcher/` / `.curator/` (runtime directories of different roles, not `.claude/`), and worker-dir generated `.claude/settings.local.json` (placed by `claude-org-runtime settings generate`; the worker never edits it)
+- **In scope**: delegations including Edit / Write to `.claude/**` directly under the claude-org repo root, such as `.claude/skills/` or `.claude/settings.json`.
+- **Out of scope**: `.dispatcher/` / `.curator/` (runtime directories for other roles, not `.claude/`), and the worker-dir generated `.claude/settings.local.json` (a generated artifact placed by `claude-org-runtime settings generate` that the Worker itself never edits).
 
-### Background (2-layer guard)
+### Background (two-layer guard)
 
-Writes under `.claude/` are guarded by 2 layers: the `block-org-structure.sh` hook permits Edit / Write, but the auto-mode classifier blocks `.claude/` edits that have no user approval. The classifier's approval **only goes through via terminal input from send_keys (delivered into the worker's conversation as a user message)**. Peer messages (`send_message`) do not become user input and therefore do not function as approval.
+Writes under `.claude/` are guarded by two layers: the `block-org-structure.sh` hook only allows Edit / Write through, but the auto-mode classifier blocks "`.claude/` edits without user approval". Classifier approval **only passes via send_keys terminal input (a form that reaches the Worker conversation as a user message)**. A peer message (`send_message`) does not constitute user input and does not function as approval.
+
+> **Transport — both rails (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this handshake's `send_keys` is `mcp__renga-peers__send_keys` under **default `renga`** (`ORG_TRANSPORT` unset). With `ORG_TRANSPORT=broker` (opt-in, revertible), it is mechanically replaced from **`mcp__renga-peers__send_keys` -> `mcp__org-broker__send_keys`** (the property of raw key input = approval text typed into the terminal, and the argument shape, are identical, so the logic that the approval text reaches as a user message and passes the classifier is unchanged on both rails). The initial approval prompt at spawn time itself, under broker, becomes a **two-step sequence: Claude Code's folder-trust prompt + the channel sidecar's dev-channel approval ("Load development channel?", reintroduced as spawn-flow 3-3b)** (renga only has the dev-channel step; this is additive due to adopting push first, not a replacement. Design: transport-lab `docs/design/broker-native-roles.md` §9.5). However, that is a different layer from this section's "pre-approval for `.claude/` edits" (it is the spawn-ritual difference, on the pane-layout / spawn-flow side). For details, see [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (ratified 2026-06-14. The additive S3 revision to push first is ratified (2026-06-15); the existing ratified body is unchanged) and the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md). The default-renga procedure is unchanged (broker is additive). (**Two-frame note on "default" (Refs #604)**: "default `renga`" here means the **operational default** (broker live-run dogfood is not yet active until Epic #6 Issue G). Separately, the **code default** `tools/transport.py: DEFAULT_TRANSPORT` was flipped to `broker` in runtime 0.1.28 (Epic #586) — the ja generators and `transport.resolve()` render in this code frame, so the generated side displays "default `broker`". The two frames refer to different things (operational path vs. code constant) and do not contradict. The overview is in the "Transport (both rails)" section of the root `CLAUDE.md`.)
 
 ### Handshake (fixed procedure)
 
-To prevent deadlock (the worker waiting forever for an approval that never arrives) and empty Enter presses (sends without an approval text), the procedure is fixed as follows:
+To prevent deadlock (the Worker waiting forever for an approval that never arrives) and empty Enter presses (a send with no approval text), fix the procedure as follows:
 
-1. **Secretary**: upon receiving `DELEGATE_COMPLETE` from the Dispatcher, **follow up** the SKILL.md Step 5 greeting by typing the approval text into the worker pane via send_keys:
+1. **Lead**: when `DELEGATE_COMPLETE` is received from the Dispatcher, **in addition to** SKILL.md Step 5's greeting send, type the approval text into the Worker pane via send_keys in advance:
    ```
    mcp__renga-peers__send_keys(
      target="worker-{task_id}",
-     text="Approved: for this task ({task_id}), edits of {enumerate target files} are approved. This is user approval via the Lead.",
+     text="Approved: I approve editing {enumerate target files} in this task ({task_id}). This is a user approval relayed via the Lead.",
      enter=true
    )
    ```
-   The approval text has 3 mandatory elements: **enumeration of the target files** / **task_id** / **explicit "user approval via the Lead" wording**.
-2. **Worker brief**: the brief (`CLAUDE.local.md` / instruction message) of any delegation that includes `.claude/**` in its scope must always carry the following gist:
-   > This task includes `.claude/` edits. **Before editing, confirm that the approval input (enumeration of target files + task_id + "user approval via the Lead") exists as a user message in the conversation.** If absent, do not begin editing; request the approval input from the Secretary via `send_message(to_id="secretary")` and wait.
-3. **Worker**: begin editing only after the above confirmation. If a `.claude/` edit becomes necessary for a file not enumerated in the approval text, treat it as scope expansion and escalate via [`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md).
+   The three required elements of the approval text: **enumeration of target files** / **task_id** / **explicit "user approval relayed via the Lead"**.
+2. **Worker brief**: the brief (`CLAUDE.local.md` / instruction message) for a delegation that includes `.claude/**` as its target must always state to this effect:
+   > This task includes `.claude/` edits. **Before starting any edit, confirm that an approval input (enumeration of target files + task_id + "user approval relayed via the Lead") exists in the conversation as a user message**. If it does not exist, do not start editing; request the approval input from the Lead via `send_message(to_id="secretary")` and wait.
+3. **Worker**: only start editing after that confirmation passes. If editing a `.claude/` file not enumerated in the approval text becomes necessary, treat it as a scope expansion and escalate via [`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md).
 
 ## Rationale
 
 See the "Workers that edit `claude-org` itself pre-adjust settings inside the worktree" section in `knowledge/curated/delegation.md`.
-
-> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the `send_keys`-based handshake that approves the auto-mode classifier for `.claude/**` edits is **default `renga`** (`ORG_TRANSPORT` unset) and uses `mcp__renga-peers__send_keys`. Under `ORG_TRANSPORT=broker` (opt-in, revertible), it gets machine-substituted to **`mcp__renga-peers__send_keys` → `mcp__org-broker__send_keys`** (raw key input = approval-text input to the terminal; the nature and argument shape are identical, so the logic of the approval text arriving as a user message and clearing the classifier is invariant across systems). Note that the spawn-time initial approval prompt itself shifts from renga's dev-channel to the Claude Code **folder-trust prompt** under broker, but that is a separate layer from the pre-approval for `.claude/` edits in this section (the spawn-rite difference, on the pane-layout / spawn-flow side). See [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) and the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) for details. The default-renga procedure is unchanged (broker is additive).
----
