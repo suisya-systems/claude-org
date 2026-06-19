@@ -124,6 +124,15 @@ Example Worker instructions:
 
 If the old name / new name has not yet been finalized at the time of delegation, have the Worker operate in two stages: "detect and list target patterns → confirm with the Lead → replace".
 
+## Mandatory brief wording for delegations involving monitoring-role wait design
+
+For delegations that change waits / spawn coordination / lifecycle of a monitoring role (`/loop`-resident, periodically-polling roles such as dispatcher / curator), include the following mandatory wording **verbatim** in the "Constraints" section of the worker instructions (**do not omit it even when only 1 file changes**. For the design-review-side trigger and 3-question prompt, see [`.claude/skills/org-delegate/references/codex-design-review.md`](codex-design-review.md)):
+
+> - **Do not add a blocking wait** to a monitoring role (no sleep / busy-wait / synchronous join for completion waits)
+> - **Return immediately** after spawn and hand control back to the monitoring loop
+> - Completion-notice detection happens on the **loop's regular cycle** (the next polling pass)
+> - **The loop side manages the timeout** (the spawn caller must not wait)
+
 ## doc-audit role only: chunked transfer method for write artifacts
 
 In the doc-audit role, Edit / Write / MultiEdit / NotebookEdit are denied, and Bash heredoc is also blocked by the deny-circumvention safeguard. In tasks that require writing out artifacts such as `AUDIT.md`, incidents reproducibly occur where the Worker gets stuck holding the body text (example: 2026-05-03 readme-drift-audit, 26 findings × 7 repos).

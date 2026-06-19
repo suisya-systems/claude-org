@@ -180,6 +180,18 @@ On receipt of a message that starts with "SUSPEND:", interrupt work and immediat
 
 ---
 
+## Conditional addendum: tasks involving monitoring-role wait design
+
+When the delegation task changes waits / spawn coordination / lifecycle of a monitoring role (`/loop`-resident, periodically-polling roles such as dispatcher / curator), append the following section **verbatim** to the generated CLAUDE.md (CLAUDE.local.md for claude-org self-edit tasks) immediately after the "Current task" section (**do not omit it even when only 1 file changes**. Same content as the mandatory brief wording in [`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md)):
+
+> ## Mandatory constraints for monitoring-role wait design
+> - Do not add a blocking wait to a monitoring role (no sleep / busy-wait / synchronous join for completion waits)
+> - Return immediately after spawn and hand control back to the monitoring loop
+> - Completion-notice detection happens on the loop's regular cycle (the next polling pass)
+> - The loop side manages the timeout (the spawn caller must not wait)
+
+---
+
 ## Variables
 
 | Variable | Description | Example |
