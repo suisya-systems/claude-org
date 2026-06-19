@@ -53,6 +53,49 @@ allowed-tools). When running manually from the repo root, use them as-is.
 | `work_skill_count` | 20 or more work-skills (excluding org-*) | Step 6 (fire skill-audit) |
 | `legacy_marker_sweep` | `<!-- curated -->` remnants directly under raw/ | Step 1 (migration sweep; *always runs anyway*) |
 
+### 0-A: determine the activation context (on-demand vs explicit manual) — decides Step 7's send obligation
+
+**This determination is the sole basis for whether Step 7 (completion notification) is mandatory or
+optional**. Do not loosen it with self-inferred reasoning like "it's probably manual so I can skip"
+(that is the root cause of curator orphaning = pane leaks). The judgment is grounded in **"was this
+curator instance itself spawned / driven by the dispatcher"** — do not decide by the mere existence
+of an external file (the reason is noted under (i) below).
+
+**Primary signals (instance-specific, deterministic; on-demand is confirmed if even one matches)** —
+in this case **always send** Step 7's `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` **to the
+dispatcher** (regardless of outcome, no exceptions; never re-classify as manual):
+
+- **(ii)** an activation instruction message was received from the dispatcher (peer name `dispatcher`).
+  This only happens during on-demand activation and never with a human-typed `/org-curate` (= a
+  deterministic discriminator vs manual).
+- **(iii)** the activation instruction message includes the JSON from
+  `tools/check_curate_threshold.py` (`reasons[]` / `counts`).
+
+**Auxiliary signal (a dispatcher-side marker; not sufficient alone to declare on-demand)**:
+
+- **(i)** `.state/dispatcher/curate-inflight.json` exists (from a curator pane with CWD=`.curator/`,
+  that is `../.state/dispatcher/curate-inflight.json`). This is the on-demand activation marker the
+  dispatcher writes immediately after spawn at CLOSE_PANE Step 5-3; the dispatcher waits for the
+  curator's `CURATE_*` via `check_messages` before closing the pane
+  ([`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) 5-3 /
+  [`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md#step-5-3)).
+  **This signal corroborates on-demand only when this instance is a curator pane spawned by the
+  dispatcher** (CWD=`.curator/`, pane name `curator`; = primary signals (ii)/(iii) are also present).
+  The inflight file is a global file not tied to a specific instance, so **a curator that a human
+  manually launched in another pane (secretary / repo root, CWD≠`.curator/`, no dispatcher activation
+  instruction) must not use a co-existing other on-demand curator's inflight as its own send trigger**
+  (an erroneous send risks the dispatcher closing the real, in-flight on-demand curator early —
+  addressed for a Codex Major).
+
+**Explicit manual activation** can be assumed only when **none of the primary signals (ii)/(iii)
+apply** (= no activation instruction from the dispatcher was received) AND this instance is not a
+dispatcher-spawned curator pane either, but a human directly typed `/org-curate` in a secretary-side
+pane. Only in this case may Step 7 be omitted (the dispatcher carries no pane-close responsibility).
+**If primary signals (ii)/(iii) were received, on-demand is confirmed regardless of inflight presence
+and Step 7 send is mandatory**. When in doubt (e.g., a dispatcher-spawned curator pane suspected of
+dropping a message), **err on the on-demand side and always send** (sending is harmless as information
+sharing; only not sending creates a pane leak).
+
 1. **On-demand activation via the dispatcher**: the activation instruction message contains
    the JSON from `tools/check_curate_threshold.py` (`reasons[]` / `counts`).
    Adopt it as-is (do not recompute).
@@ -63,6 +106,13 @@ allowed-tools). When running manually from the repo root, use them as-is.
      `CURATE_SKIPPED` in Step 7 and finish
    - exit 10 (curate_needed) → adopt `reasons[]` from the stdout JSON and continue
    - exit 2 (error) → notify `CURATE_ERROR` in Step 7 and finish
+
+> **Note**: items 1 (receipt of reasons) and 0-A(iii) above only state the *source* of `reasons`;
+> they are independent of the Step 7 send-obligation decision. The send obligation is determined by
+> 0-A's **primary signals (ii)/(iii)** (= receipt of a dispatcher activation instruction). A curator
+> spawned by the dispatcher remains **on-demand** even if it falls into item 2 above (script self-runs
+> without reasons being passed in), and Step 7's send is still mandatory. Do not short-circuit to
+> "reasons not passed = manual = optional".
 
 ## Step 1: migration sweep (clean up old data) — always runs
 
@@ -195,6 +245,16 @@ exact agreement between `tools/check_curate_threshold.py` and skill-audit Step 1
 
 ## Step 7: completion notification (always run last)
 
+**Send obligation (check this first)**: if the Step 0-A determination puts you in an **on-demand
+context (either primary signal (ii) dispatcher activation instruction / (iii) reasons JSON included,
+or, in a dispatcher-spawned curator pane, the (i) inflight corroboration), you must send one of
+`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` regardless of outcome**. Even when below_threshold
+left nothing done beyond the sweep, send `CURATE_SKIPPED` ("we did nothing, so notification is
+unnecessary" is wrong: the dispatcher is waiting on `CURATE_*` via `check_messages`; a missing send
+leaves the pane orphaned until timeout). **Omission is allowed only when Step 0-A has confirmed
+explicit manual activation**. Self-inferred shortcuts like "this is probably manual so skip" are
+forbidden.
+
 Report the cycle's outcome via **direct send to the dispatcher**. This is the trigger for
 the on-demand curator's pane close, so **the destination must be `to_id="dispatcher"`**
 (a channel broadcast or a secretary-addressed message would let the dispatcher's
@@ -214,9 +274,19 @@ The message is one of the following 3 kinds:
 - `CURATE_DONE: reasons={reasons[]} raw {n} entries → {m} themes consolidated into curated / {k} archived / {s} swept / skill-audit {fired or none}`
   — when one or more steps executed and completed normally
 - `CURATE_SKIPPED: below_threshold (counts: raw_active={n}, pending={p}, work_skill={w}, legacy_marker={l})`
-  — when (e.g., on manual activation) the thresholds turned out unmet and nothing beyond the sweep was done
+  — when below_threshold turned out true and nothing beyond the sweep was done. **In an on-demand
+  context, sending is mandatory even for this below_threshold edge per Step 0-A**. Under explicit
+  manual activation, sending is allowed but may be omitted (see below).
 - `CURATE_ERROR: {one-line summary}` — when an unrecoverable error occurred mid-cycle (include any partial completion in the one line)
 
-On manual activation (a context such as the secretary pane, where the dispatcher has no
-pane-close responsibility), still send it if a dispatcher exists among the peers (harmless
-as information sharing); if `[pane_not_found]`, it may be omitted.
+**Send may be omitted only under explicit manual activation (only when confirmed by Step 0-A)**: in
+a launch where a human directly typed `/org-curate` in a secretary-side pane (= **none of the primary
+signals (ii)/(iii) of Step 0-A were received**, AND **this instance is not a dispatcher-spawned
+curator pane (CWD=`.curator/`, pane name `curator`) either**), sending is optional because the
+dispatcher carries no pane-close responsibility. **The mere presence of a co-existing other on-demand
+curator's `curate-inflight.json` (i) does not make this on-demand** — that inflight is not addressed
+to this instance, so if the manual-side sends `CURATE_*` it could close the real on-demand curator
+early (do not send). It is fine to send only if the dispatcher exists among the peers and this
+instance wants to share information (harmless). Omit only when `[pane_not_found]` is returned.
+**The "omission allowed" of this paragraph does not apply in an on-demand context (primary signal
+matched or dispatcher-spawned curator pane)** — always send.
