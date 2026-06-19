@@ -20,6 +20,8 @@ allowed-tools:
 Close the watcher pane started by [`/org-attention-start`](../org-attention-start/SKILL.md) and
 clear the sidecar (`.state/attention_pane.json`).
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this skill's `mcp__renga-peers__*` calls (`list_panes` / `close_pane`) are written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical). Since this is the pane-closing side, the spawn-approval difference is irrelevant. Errors gain the broker-specific codes (`[no_backend]` / `[token_invalid]` etc.; see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). The contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). The default-renga procedure is unchanged (broker is additive).
+
 ## Step 1: check sidecar and live-pane state
 
 1. Call `mcp__renga-peers__list_panes`. If a live pane with `name="attention"` or
