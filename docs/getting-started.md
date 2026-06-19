@@ -14,29 +14,32 @@ Whether you use the one-liner or the manual steps, you need to install the follo
 |---|---|---|---|
 | **`git`** | Any stable 2.x release | Repository checkout (`git clone`), commits, Worker working-directory management | [git-scm.com/downloads](https://git-scm.com/downloads) |
 | **GitHub CLI (`gh`)** | Any stable 2.x release | Pull request creation, Issue operations, CI monitoring (`gh pr checks --watch`) | [cli.github.com](https://cli.github.com/) |
-| **Node.js** | v18+ | Runtime for installing `renga` via npm | [nodejs.org](https://nodejs.org/) |
-| **Python** | 3.10+ | Running `pip install -e .` for `core-harness` / `claude-org-runtime` (aligned with `requires-python` in `pyproject.toml`) | [python.org/downloads](https://www.python.org/downloads/) |
+| **Node.js** | v18+ | Runtime for installing the fallback transport `renga` via npm | [nodejs.org](https://nodejs.org/) |
+| **Python** | 3.10+ | Running `pip install -e .` for `core-harness` / `claude-org-runtime` (the body of the default broker startup `claude-org-runtime org up`; aligned with `requires-python` in `pyproject.toml`) | [python.org/downloads](https://www.python.org/downloads/) |
 | **`jq`** | 1.6+ | Formatting and extracting `.state/` JSON / `gh api` output (used in hooks and tools) | [jqlang.org/download](https://jqlang.org/download/) |
 | **Claude Code CLI (`claude`)** | Latest stable release | Main executable for each role pane. Initial login is also done when launching `claude` | [claude.ai/code](https://claude.ai/code) |
-| **`renga`** | 0.18.0+ | The Layer 3 terminal multiplexer + `renga-peers` MCP server (`npm install -g @suisya-systems/renga@0.18.0`) | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
+| **`renga`** | 0.18.0+ | **Fallback transport.** The Layer 3 terminal multiplexer + `renga-peers` MCP server (`npm install -g @suisya-systems/renga@0.18.0`). Used when falling back from the default broker | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
 In addition, the following Claude Code configuration is required:
 
-- **renga-peers MCP** — inter-instance communication and pane operations within the same tab (register with `renga mcp install`)
+- **renga-peers MCP (for fallback)** — inter-instance communication and pane operations within the same tab during the renga fallback (register with `renga mcp install`). On the default broker, `claude-org-runtime org up` auto-distributes the secretary's MCP config (`org-broker`)
 - **GitHub CLI authentication** — `gh auth status` must report "Logged in"
+
+> **Startup transport — default broker / fallback renga**: The startup main path in this guide is `claude-org-runtime org up` (acquire the broker daemon and launch the secretary TUI). Broker is the default transport in runtime 0.1.28 (Epic #586 Phase 2) and later, and `renga` is **not removed; it remains as an opt-in fallback (revert path) that is always usable** (set `ORG_TRANSPORT=renga` and run `renga --layout ops`). For this reason, the installer keeps `renga` / Node.js in the prerequisite check. For the concrete revert procedure, see the "Reverting the startup transport (renga fallback)" section below.
 
 ### Installation
 
-If the required tools (`git` / `claude` / `renga` / `gh` / `jq`) are installed, you can run a one-liner to clone the repo and run `renga mcp install` in one shot.
+If the required tools (`git` / `claude` / `renga` / `gh` / `jq`) are installed, you can run a one-liner that clones the repo, installs Python dependencies (`claude-org-runtime` / `core-harness`), and runs the fallback `renga mcp install` in one shot.
 
 **macOS / Linux (bash)**:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org/main/scripts/install.sh | bash
 cd claude-org
+source .venv/bin/activate                               # Use claude-org-runtime from the venv
 bash scripts/install-hooks.sh
 python tools/org_setup_prune.py --user-common-sandbox   # Required once after pulling main (Issue #429 Task B/C + Issue #433 denyWrite)
-renga --layout ops
+claude-org-runtime org up                               # Acquire the broker daemon and launch the secretary (Lead) pane
 ```
 
 **Windows (PowerShell 7+)**:
@@ -46,7 +49,7 @@ iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org/main/scrip
 cd claude-org
 bash scripts/install-hooks.sh                            # Run on Git Bash / WSL
 py -3 tools/org_setup_prune.py --user-common-sandbox     # Required once after pulling main (Issue #429 Task B/C + Issue #433 denyWrite)
-renga --layout ops
+py -3 -m claude_org_runtime.cli org up                   # Acquire the broker daemon and launch the secretary (Lead) pane
 ```
 
 The scripts check whether the prerequisite commands are installed. If any are missing, they exit after showing setup instructions (they do not install anything automatically).
@@ -70,17 +73,19 @@ If you do not use the one-liner, run the following manually:
 ```bash
 git clone https://github.com/suisya-systems/claude-org.git
 cd claude-org
-renga mcp install                                            # First time only. Registers renga-peers MCP at user scope
+python -m venv .venv && source .venv/bin/activate            # Create and activate a Python venv
+pip install -e .                                             # Install claude-org-runtime (org up) + core-harness
+renga mcp install                                            # Register the fallback renga-peers MCP at user scope (used in the renga fallback)
 bash scripts/install-hooks.sh                                # Enables the pre-commit secret scanner
 python tools/org_setup_prune.py --user-common-sandbox        # Required once after pulling main (Issue #429 Task B/C + Issue #433 denyWrite)
-renga --layout ops
+claude-org-runtime org up                                    # Acquire the broker daemon and launch the secretary (Lead) pane
 ```
 
-Based on the definition in `renga-layouts/ops.toml`, the Lead (`Secretary`) pane starts up.
+`claude-org-runtime org up` acquires the broker daemon (reuses if healthy, otherwise launches) and starts the secretary (Lead) pane (default `--state-dir` is `.state/broker`, default `--root-cwd` is the execution directory, default `--name` is `secretary`). On Windows, if the console script is not on `PATH`, use the equivalent `py -3 -m claude_org_runtime.cli org up`. To stop, run `claude-org-runtime org down`.
 Once Claude Code in the Lead pane has started, **run the following in order**:
 
-1. `/org-setup` — places role-specific `settings.local.json` files (Lead, Dispatcher, Curator, Worker) and required hooks. **Required on first run only**. If you skip this, you will get a large number of permission prompts for renga-peers MCP / git / gh.
-2. `/org-start` — starts the organization. The Dispatcher is spawned in the same tab (the Curator is launched on demand and temporarily once learnings accumulate).
+1. `/org-setup` — places role-specific `settings.local.json` files (Lead, Dispatcher, Curator, Worker) and required hooks. **Required on first run only**. If you skip this, you will get a large number of permission prompts for broker MCP (or renga-peers MCP in the renga fallback) / git / gh.
+2. `/org-start` — starts the organization. The Dispatcher is spawned (on the default broker, as an independent detached pane; in the renga fallback, as a split inside the same tab. For the read-only attach path to peek at running panes, see [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §8). The Curator is launched on demand and temporarily once learnings accumulate.
 
 `/org-setup` is **additive-only** (it only adds missing pieces and does not remove existing ones). If you want to return drifted settings to the baseline, manually replace `settings.local.json` using the role-specific sample JSON in [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md).
 
@@ -94,9 +99,9 @@ Once Claude Code in the Lead pane has started, **run the following in order**:
 > python tools/org_setup_prune.py --user-common-sandbox
 > ```
 
-### Compatibility Preflight (Optional, Recommended)
+### Compatibility Preflight (Renga fallback only, optional)
 
-Before running `/org-start`, you can verify that your renga version and MCP tool surface meet claude-org's requirements:
+Only when reverting to the `renga` path, you can verify before running `/org-start` that your renga version and MCP tool surface meet claude-org's requirements (not needed on the default broker path):
 
 ```bash
 py -3 tools/check_renga_compat.py            # Windows
@@ -113,7 +118,19 @@ If you want machine-readable JSON, use `--json`. Scripts that want to handle fai
 py -3 tools/check_renga_compat.py --json
 ```
 
-This script does not require a live renga session (static checks + MCP stdio probe only), so you can run it either before or after `renga --layout ops`.
+This script does not require a live renga session (static checks + MCP stdio probe only), so you can run it either before or after the renga fallback startup (`renga --layout ops`).
+
+### Reverting the startup transport (renga fallback)
+
+To revert from the default broker path to the `renga` path, switch the transport flag and then launch via the renga launcher. `renga` is not removed; it remains available at all times as an opt-in fallback (a safety net for reverting).
+
+```bash
+export ORG_TRANSPORT=renga                  # Point subsequently spawned panes at renga
+python tools/org_setup_prune.py --all       # Regenerate per-role settings.local.json against the renga allowlist (preview diffs first with --dry-run)
+renga --layout ops                          # Launch the renga secretary (Lead) pane (in place of org up)
+```
+
+After startup, just as on the broker path, run `/org-setup` (first time only) → `/org-start` in the secretary's Claude Code. For the full revert procedure with five conditions including respawning running broker panes, stopping the broker daemon, and discarding old tokens / queues, see [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §5. For the secretary-side operational differences between the two transports, see the "Transport (transport) dual-path" section of [`CLAUDE.md`](../CLAUDE.md).
 
 ---
 
@@ -121,9 +138,9 @@ This script does not require a live renga session (static checks + MCP stdio pro
 
 ### Start It Up
 
-After the initial clone, follow the "Installation" section above and run `/org-setup` → `/org-start` once in that order (`/org-setup` prevents a flood of permission prompts).
+After the initial clone, follow the "Installation" section above to launch the secretary pane with `claude-org-runtime org up`, and run `/org-setup` → `/org-start` once in that order in Claude Code (`/org-setup` prevents a flood of permission prompts).
 
-From the second time onward, just open the Lead pane with `renga --layout ops` and run `/org-start` in Claude Code.
+From the second time onward, just open the Lead pane with `claude-org-runtime org up` and run `/org-start` in Claude Code (`org up` reuses a healthy broker daemon if present, otherwise launches one).
 If there is saved state from the previous session, it will be reported, and the Dispatcher (task assignment) will start automatically. The Curator (knowledge organization) is not resident; it is launched automatically and temporarily once learnings accumulate.
 
 ```
@@ -184,11 +201,11 @@ You:  That's it for today
 Lead: The organization has been suspended. The state has been saved.
 ```
 
-You can safely close the terminal.
+You can safely close the terminal. The broker daemon keeps running so you can resume immediately. If you want to stop the daemon entirely, run `claude-org-runtime org down` (not needed in the renga fallback).
 
 ### Resume
 
-Next time, start `renga --layout ops` in this repository directory and enter Claude Code in the Lead pane. It will automatically report the previous state.
+Next time, start `claude-org-runtime org up` (in the renga fallback, `renga --layout ops`) in this repository directory and enter Claude Code in the Lead pane. It will automatically report the previous state.
 
 ```
 Lead: Previous state (suspended at 4/5 18:30):
@@ -206,7 +223,7 @@ Lead: Understood. I will resume the e-commerce site work.
 
 ### A Large Number of Permission Prompts Appear at Startup
 
-**Symptoms**: A permission dialog appears every time `mcp__renga-peers__*`, `git`, or `gh` tools are called in the Lead, Dispatcher, or Worker roles.
+**Symptoms**: A permission dialog appears every time `mcp__org-broker__*` (in the renga fallback, `mcp__renga-peers__*`), `git`, or `gh` tools are called in the Lead, Dispatcher, or Worker roles.
 
 **Diagnosis**: First, check the state of `settings.local.json` for the affected role.
 
