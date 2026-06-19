@@ -12,6 +12,7 @@ Looking at the `preview` output's `description` / `--target` count / referenced 
 | Introduction of a new module / new tool | Description contains "新規" / "new tool" / "新ツール" / "新規導入" etc., or the files to be created in the preview are all on new paths |
 | File changes ≥ 3 | Count of `--target` + edit targets listed in the preview brief |
 | Reference to contract documents under `docs/contracts/` | Description / brief / `--knowledge` references `docs/contracts/` |
+| Delegation that adds a blocking wait / lifecycle change to a monitoring role | The description / brief adds a blocking wait (waiting on completion / synchronous join) to a monitoring role (`/loop`-resident, periodically-polling roles such as dispatcher / curator), or changes the org's lifecycle (spawn / close / cadence / resident ⇄ on-demand switch). **Fires even if only 1 file changes** (independent of the file-count condition) |
 
 ## Execution procedure
 
@@ -24,6 +25,16 @@ codex exec --skip-git-repo-check "Design review for <task-id>.\
 ```
 
 Do not use the `codex:rescue` skill (prohibited per CLAUDE.local.md). Only direct `codex exec` invocation.
+
+### 3 additional questions for monitoring-role wait-design changes
+
+When the trigger "Delegation that adds a blocking wait / lifecycle change to a monitoring role" applies, always append the following 3 questions to the prompt above and require the review to answer them:
+
+1. **Who blocks** — which role's which loop / cycle stops
+2. **What is the upper bound, in minutes** — the timeout value of the wait, and which side (the spawn caller / the loop) manages it
+3. **What becomes undetectable in the meantime** — events missed because polling stops (worker completion reports, escalations, SECRETARY_RELAY_GAP detection, etc.)
+
+For the mandatory brief wording (no blocking wait, immediate return after spawn, completion detection on the loop's regular cycle, timeout managed on the loop side), see the "Mandatory brief wording for delegations involving monitoring-role wait design" section of [`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md).
 
 ## Incorporating the review summary
 
