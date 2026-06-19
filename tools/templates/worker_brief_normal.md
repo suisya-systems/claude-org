@@ -68,6 +68,11 @@ codex exec --skip-git-repo-check "このブランチの main からの差分を�
 - Minor / Nit は原則残置し PR 本文に既知制限として明記
 - `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec` 直打ちのみ）
 
+**完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
+1. **最重要の変更点（N 個）**: このタスクで実際に変えたことを効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
+2. **要確認ファイル / hunk**: 人間が承認前に必ず目を通すべきファイル（と該当する関数 / hunk）。「全部見て」ではなく要点に絞る
+3. **設計判断と理由**: 採用した設計上の選択と、なぜそれを選んだか（却下した代替案があれば 1 行）
+
 <!--END:codex_full-->
 <!--BEGIN:codex_minimal-->
 ## Codex セルフレビュー手順（検証深度 minimal）
@@ -86,7 +91,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 <!--END:codex_minimal-->
 ## 作業完了時
 
-1. **完了報告**: `mcp__renga-peers__send_message(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。`to_id="secretary"` が `[pane_not_found]` で返る場合は DELEGATE メッセージ本文の numeric pane id を使用する。
+1. **完了報告**: `${transport_send_message}(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。`to_id="secretary"` が `[pane_not_found]` で返る場合は DELEGATE メッセージ本文の numeric pane id を使用する。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
 3. **振り返り記録**: 再利用可能な学びがあれば `${claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md` に記録する（topic は英語 kebab-case）。記録基準: 再現性がある / 非自明 / コードを読むだけではわからない。
 
