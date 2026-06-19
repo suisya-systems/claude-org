@@ -21,6 +21,8 @@ allowed-tools:
 
 Place the per-role `permissions.allow` entries and environment variables that each role of the org needs into the right settings file at the right scope.
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the messaging MCP allows that this skill places are **default `renga`** (`ORG_TRANSPORT` unset) at the `mcp__renga-peers__*` tier. **`references/permissions.md` stays unchanged as a renga anchor (byte-comparison target)**, and broker substitution happens on the generation/verification tool side rather than in the prose: `tools/org_setup_prune.py` (per-role allow / `--user-common-allowlist`) and `tools/check_role_configs.py` project the `mcp__renga-peers__*` block to the broker messaging tier (`mcp__org-broker__*`) when `ORG_TRANSPORT=broker` (driven by the runtime `transport_allowlist` descriptor, Epic #6 E). **Default-renga is identity** (generated artifacts are byte-equivalent / file no-op), so this skill's procedure and report text can be used as-is. The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.3; the contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification).
+
 ## Settings files and their scopes
 
 Claude Code reads settings from `**.claude/`** under the directory it was started in.
