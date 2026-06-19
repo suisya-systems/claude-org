@@ -19,6 +19,8 @@ allowed-tools:
   - Bash(git log:*)
   - Bash(gh issue create:*)
   - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
+  - mcp__renga-peers__send_keys
   - mcp__renga-peers__inspect_pane
   - mcp__renga-peers__list_peers
   - mcp__renga-peers__list_panes
@@ -28,21 +30,15 @@ allowed-tools:
 
 Delegate work to a Worker Claude. The Lead performs only task decomposition and dispatch-payload generation; pane spawning and instruction delivery are delegated to the Dispatcher. This minimizes the time the Lead is locked.
 
-> **Scope of this SKILL**: Only the "initial leg" of dispatch (task identification → dispatch-payload generation → handoff of DELEGATE to the Dispatcher → greeting after the Worker is started → ack and REVIEW transition when progress / completion reports come in). The following are separated into other skills / references:
-> - **Worker spawning, instruction sending, and state recording procedures** → [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) (Dispatcher-exclusive)
-> - **Post-user-approval push / PR / CI watch / review-comment loop / post-merge close** → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
-> - **Escalation of judgment requests / scope expansion / blockers from Workers** → [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md)
-> - **Minimum 3 elements of an ack message and per-kind example texts** → [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) (single SoT)
+> **Scope of this SKILL**: Only the "initial leg" of dispatch (task identification -> dispatch-payload generation -> handoff of DELEGATE to the Dispatcher -> greeting after the Worker is started -> ack and REVIEW transition when progress / completion reports come in). The following are separated into other skills / references:
+> - **Worker spawning, instruction sending, and state recording procedures** -> [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) (Dispatcher-exclusive)
+> - **Post-user-approval push / PR / CI watch / review-comment loop / post-merge close** -> [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
+> - **Escalation of judgment requests / scope expansion / blockers from Workers** -> [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md)
+> - **Minimum 3 elements of an ack message and per-kind example texts** -> [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) (single SoT)
 
 > **state-db cutover (M4, Issue #267 / #284)**: All writes to structured sections **must go through `StateWriter.transaction()`**. A post-commit hook auto-regenerates `.state/org-state.md` / `.state/org-state.json` from the DB, and calling `update_run_status('<task_id>', 'completed')` automatically moves `.state/workers/worker-<task_id>.md` to `.state/workers/archive/`. Direct markdown edits are detected by drift_check. The SoT for events is the DB `events` table (`tools/journal_append.sh` / `.py` already route to the DB). When the DB is missing, build it with `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`.
 
-> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical, so the procedure logic is unchanged). Only the transport-dependent points are noted in broker form:
->
-> - **Receive model (push-primary = `claude/channel` / pull fallback)**: under renga, progress / completion / judgment requests from workers are pushed in-band as `<channel source="renga-peers" …>`. Broker has been **redesigned to push-primary** (runtime push-first 0.1.24+, transport-lab `docs/design/broker-native-roles.md` §9): the per-pane **channel sidecar** (`server:org-broker-channel`) claim→pushes the broker queue at ~1 s intervals and injects the body into the idle session via `notifications/claude/channel` (giving the same "received → respond immediately" trigger as renga's in-band push). **Pull is the fallback layer**: when the sidecar is absent / unhealthy (`delivery_mode=PULL` on heartbeat timeout) / channel-incapable pane / claude.ai login is absent, each role actively `check_messages` (broker: `mcp__org-broker__check_messages`) at its own cadence (the per-role cadence in the §9.6 reading-substitution table. A nudge can be a trigger, but it does not wake an idle session, so an active poll is the canonical reception path. **The existing "see the nudge → `check_messages`" prose is not retracted** and is read as this fallback cadence). Step 5's "when a message arrives from the worker" happens via channel injection under push-primary, and on fallback it is received by the Lead's active `check_messages` at the start of each turn (the ack `send_message` etc. keeps the same shape). Contract: Surface 8 has push-primary **ratified** (2026-06-15, S3; supersedes the broker pull-only and pull is retained as fallback; existing ratified text unchanged; renga unchanged).
-> - **Spawn rite (folder-trust approval + dev-channel sidecar approval re-introduced)**: worker spawn is dispatcher-exclusive ([`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)), but under broker the `--mcp-config <broker>` injection (daemon, all tools + agent token) and Claude Code's **folder-trust prompt** machine-approval (`send_keys(enter=true)`) **also** include loading the channel sidecar with `--dangerously-load-development-channels server:org-broker-channel` for push-primary, and the dev-channel approval prompt (spawn-flow 3-3b) is **re-introduced** and machine-approved with `send_keys(enter=true)` (broker-native-roles.md §9.5). This is an **addition, not a replacement**, of the ratified §5/§8.5 folder-trust flow (* the "dev-channel prompt does not exist" wording in `docs/design/renga-decoupling.md` §4.6 / the dev-channel→`--mcp-config` substitution in contract §5.1 / §8.5 is, with push-primary adoption, additively reinstated for the channel sidecar's dev-channel load = ratified 2026-06-15 as S3 and amended into the contract). The `send_keys` pre-approval for root `.claude/**` self-edits (Step 5 below) also uses `mcp__org-broker__send_keys` under broker in the same procedure.
-> - **Error branching (broker additional codes)**: on top of the renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch to escalate). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md).
->
-> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion; this flow does not use them anyway). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, ratified 2026-06-14; the push-primary additive amendment S3 is ratified 2026-06-15, "Ratified amendment" section; existing ratified text unchanged); the design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary redesign) / `docs/design/ja-migration-plan.md` §5.2(ii) / §8. Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+{{> org-delegate-transport }}
 
 ## Lead / Dispatcher division of roles
 
@@ -57,17 +53,47 @@ Delegate work to a Worker Claude. The Lead performs only task decomposition and 
 | Receiving progress / completion / escalation reports from Workers | **Lead** |
 | Pane close on Worker completion | **Dispatcher** (on `CLOSE_PANE` request from the Lead) |
 
+## Lane selection judgment (executed by the Lead, Refs #515)
+
+Before entering the pre-delegation checklist, first decide **which lane to run this task in**. Task routing is a 2-lane system, keeping the principle (CLAUDE.md "All actual work is delegated to Workers") intact while adding a lightweight lane exception limited to extremely small tasks (for background and evidence, refer to CLAUDE.md "Task routing 2-lane system" as the SoT).
+
+| Lane | Trigger conditions | Processing path |
+|---|---|---|
+| **Lightweight lane** (subagent direct processing) | Satisfies **all** of: estimated effort S or less / single-file scale / no judgment request expected / does not cross days | The Lead **in its own session** calls the `Agent` tool (`isolation="worktree"`, **`run_in_background=true` required**) for direct processing. **Does not proceed to the subsequent steps of this SKILL (org-delegate)** (this section is routing judgment only. The subagent launch happens in the Lead's own context, so `Agent` is not needed in this skill's `allowed-tools`) |
+| **Heavyweight lane** (Worker dispatch) | Fails to meet even one of the lightweight conditions, or falls into one of the cases below | Run this SKILL from Step 0 and dispatch a Worker via the Dispatcher |
+
+**Cases that must always go to the heavyweight lane (override even when some lightweight conditions are satisfied):**
+- Has a judgment boundary / escalation is expected
+- Crosses days / does not complete on the spot
+- Requires resident monitoring (long-running progress tracking / intervention judgment is needed)
+
+When in doubt, fall to the heavyweight lane (the lightweight lane is only when it is "clearly extremely small").
+
+**Required conditions when the lightweight lane is chosen (not omissible):**
+- Launch the `Agent` tool with `run_in_background=true`. **Synchronous execution is prohibited** (it blocks the immediacy of the Lead's human-facing channel and worker ack)
+- Inside the subagent, run Codex review in-loop and fix to zero Blocker/Major (gate equivalent to verification depth full)
+- Maintain the human gates for push / PR / merge as before (the subagent must not auto push / PR / merge)
+
+This section only handles routing judgment. If you chose the lightweight lane, do not proceed to the pre-delegation checklist through Step 5; move to `Agent` direct processing in the Lead's own context. Continue below only when you chose the heavyweight lane.
+
+**Heavyweight lane brief reinforcement (ultracode):** Among heavyweight-lane tasks, **M-class or larger / containing design judgment / multi-file changes** may permit (recommended) the worker to use ultracode (multi-agent workflow). The Lead explicitly states the permission in the brief via `gen_delegate_payload.py`'s `--impl-guidance "<text>"` (e.g., `--impl-guidance "This task is multi-file with design judgment, so ultracode usage is permitted. Use ultracode for implementation and pre-Codex self-review convergence; keep the final Codex gate as before"`). This wording is rendered into the worker brief (default `CLAUDE.md`, `CLAUDE.local.md` for claude-org self-edit tasks) "Implementation guidance" section, and **the dispatcher reads this to decide whether arming is needed** ([`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a).
+
+**However, the brief wording is "declaration of permission" and not "opt-in arming" (Issue #554).** ultracode is only armed once the `ultracode` token appears in the **user turn input** of the worker session. It has been empirically confirmed that arming does not happen even if the keyword appears in the brief file (worker code of conduct = default `CLAUDE.md` / context loaded as `CLAUDE.local.md` for self-edit), `send_message` body, or instruction body via `check_messages`. **The arming trigger is the dispatcher typing the kickoff as a user turn via `send_keys` on the transport in use, with a standalone `ultracode` token in the body** (SoT: [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a). In other words, **Lead's brief permission is a necessary condition, dispatcher's send_keys kickoff is the trigger condition**.
+
+A dedicated flag in `gen_delegate_payload.py` is out of scope (permission via `--impl-guidance` brief wording and arming via dispatcher's send_keys suffices for the division of labor). **Positioning**: ultracode is the **front stage** used for implementation and pre-Codex self-review convergence, not a replacement for the final Codex gate (independent review by a separate model, zero Blocker / Major). Do not permit ultracode for the lightweight lane or single-file small tasks.
+
 ## Pre-delegation checklist (executed by the Lead)
 
 Before entering task decomposition, check the request from the following angles. If any apply, ask the user back.
 
 | Check item | Situations to confirm | Example |
 |---|---|---|
-| **Ambiguous terms / abbreviations** | When a tool name, service name, or abbreviation could mean multiple things | "gog" → Google OAuth? gog CLI? |
+| **Ambiguous terms / abbreviations** | When a tool name, service name, or abbreviation could mean multiple things | "gog" -> Google OAuth? gog CLI? |
 | **OS-specific preconditions** | When producing OS-specific deliverables, default settings must be made explicit | Mac=zsh, Windows=py -3, path separator |
 
 - When there is an ambiguous term: ask the user "Do you mean XX by YY?" before proceeding
 - For OS-specific tasks: include OS-specific preconditions in the Worker instructions when generating the payload
+  - **For Windows worker + CLI / tool implementations with standard output**: include two points in the brief via `--impl-guidance` etc.: strings output to the CLI (argparse `help=` / `print()`) must use ASCII `-` and avoid cp932-unfriendly characters like em-dash, and `--help` should be smoke-tested once on a real terminal (the Windows notes in the rendered brief always carry this, but the Lead should consciously enforce it when delegating CLI tool work). Background: a pattern where the cp932 console cannot encode em-dash (U+2014) and `--help` crashes has fired twice (ja#537 / runtime#63). pytest passes because `redirect_stdout` captures as UTF-8; only the real terminal fails.
 
 ### Initial-step checklist for incorporation / sync tasks
 
@@ -101,7 +127,7 @@ Before task decomposition, search for any related existing work-skills. Matched 
 3. Include any relevant candidates (exact match not required; for multiple matches, include all in relevance order)
 
 **When matches are found:**
-- Notify the human: "Found a related work-skill: `{skill-name}` — including as reference information"
+- Notify the human: "Found a related work-skill: `{skill-name}` -- including as reference information"
 - Pass the work-skill's SKILL.md path to `gen_delegate_payload.py` via the `--knowledge` flag. The Stage 2 brief renderer embeds that path into CLAUDE.md / CLAUDE.local.md as `[references].knowledge`. For multiple matches, repeat: `--knowledge <path1> --knowledge <path2>`
 - Also note the presence of the reference skill in the Worker instructions (instruction-template)
 
@@ -115,13 +141,22 @@ Before `gen_delegate_payload.py apply`, update the target project's local main w
 - The target files include `CHANGELOG.md` promotion / `__about__.__version__` / `pyproject.toml` `version` bumps, etc.
 - The task_id contains `release` (e.g., `runtime-0-1-10-release`)
 
-For detailed conditions, the execution command, and the rationale behind the worker permissions deny (fetch miss → worker BLOCKER within 5 minutes → 10-minute-plus loss background), refer to [`references/release-pre-fetch.md`](references/release-pre-fetch.md) as the primary source. **The 4 conditions retained in this body must not be omitted, because missing the trigger leads directly to a worker BLOCKER.**
+For detailed conditions, the execution command, and the rationale behind the worker permissions deny (fetch miss -> worker BLOCKER within 5 minutes -> 10-minute-plus loss background), refer to [`references/release-pre-fetch.md`](references/release-pre-fetch.md) as the primary source. **The 4 conditions retained in this body must not be omitted, because missing the trigger leads directly to a worker BLOCKER.**
 
 > **Distinction from Pattern B (Issue #480)**: For Pattern B, apply itself runs `git fetch origin` and branches off `origin/HEAD` when creating the worktree, so the freshness of the worktree's starting point does not depend on this Step 0.6. What Step 0.6 guarantees is the **freshness of local main** for Pattern A (where the worker cuts `release/*` from local main); the two address different targets. For details, see the "Relation to Issue #480" section of [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md).
 
 ## Step 0.7 / 1 / 1.5 / 2: Generate the dispatch payload in 1 command (Issue #283)
 
 Step 0.7 (gitignore pre-check) / Step 1 (Pattern determination) / Step 1.5 (Worker directory preparation + role decision + settings generation) / Step 2 (DELEGATE body assembly) are **all handled by `tools/gen_delegate_payload.py`**. The Lead's responsibility is only task identification (Step 0), work-skill search (Step 0.5), target-file extraction, and depth judgment.
+
+### Pre-dispatch verification check (incidental to Step 0.7, executed manually by the Lead)
+
+The following 2 points are **not** verified by `gen_delegate_payload.py`, so the Lead must check them manually before `preview`. **If they cannot be satisfied, the delegation is treated as not established and `apply` is not run** (resolve the cause on the Lead side or escalate to the user, then re-run from Step 0):
+
+1. **Existence of a committed base**: `--target` **file existence is always checked**. **line existence is verified only for delegations that take line-numbered review comments / patches as input**. Delegations that use uncommitted changes in the live tree as the edit base are not established (the worker's worktree / clone is cut from a committed base and cannot see the target) -- commit and re-delegate.
+2. **Contract grep when changing org behavior**: For delegations that change org behavior (cadence / lifecycle / responsibility boundaries), grep `docs/contracts/` for behavior keywords (loop / cadence / curator / close, etc.) and trace any hit to the cited source of the contract (`.dispatcher/CLAUDE.md`, `.dispatcher/references/worker-monitoring.md`, etc.). Hits are **not put into `--target`** (edit scope contamination); carry them into the brief via `--knowledge` / `--impl-guidance`.
+
+For judgment criteria, command examples, and grep keyword details, refer to [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) §1.5 as the primary source.
 
 ### Standard flow (recommended)
 
@@ -145,7 +180,7 @@ python tools/gen_delegate_payload.py apply \
 
 # 3. Copy-paste the send_plan.json from the apply output into the MCP call
 #    cat <worker_dir>/send_plan.json
-#    → mcp__renga-peers__send_message(to_id="dispatcher", message=<message>)
+#    -> {{FQ}}send_message(to_id="dispatcher", message=<message>)
 ```
 
 `apply` performs **only T1 reservation** (`runs.status='queued'`). Activation into Active Work Items is the Dispatcher's T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)), so this skill does not touch it. On failure, leave the queue as is and escalate to the Secretary for judgment.
@@ -153,8 +188,8 @@ python tools/gen_delegate_payload.py apply \
 ### Frequently used flags
 
 - `--mode edit|audit` (default `edit`): For **read-only** audit tasks on claude-org, explicitly specify `--mode audit`
-- `--branch <name>`: Override planned_branch. Default is `feat/<task-id>` (becomes `fix/<task-id>` if the description contains "fix" / "bug" / "修正")
-- `--commit-prefix "<prefix>"`: When omitted, inferred from the head of project_slug (e.g., `claude-org-ja` → `feat(claude):`)
+- `--branch <name>`: Override planned_branch. Default is `feat/<task-id>` (becomes `fix/<task-id>` if the description contains "fix" / "bug" / "fix")
+- `--commit-prefix "<prefix>"`: When omitted, inferred from the head of project_slug (e.g., `claude-org-ja` -> `feat(claude):`)
 - `--closes-issue N` / `--refs-issues N1 N2`: Embeds "Closes #N" / "Refs #N1 #N2" into the brief
 - `--impl-target <path>` / `--impl-guidance "<text>"` / `--knowledge <path>`: optional `[implementation]` / `[references]` sections
 - `--skip-settings`: Skip `claude-org-runtime settings generate` (for environments without the CLI)
@@ -172,21 +207,13 @@ For the determination logic (Pattern A vs B vs C / gitignored sub-mode / role ta
 
 When the standard route (`gen_delegate_payload.py apply`) returns unexpected output (Pattern misjudgment / resolver error / brief inconsistency, etc.), the Secretary **must not manually reproduce the same work**. File an Issue as a resolver bug, and pause delegation of that task until the resolver is fixed. Manual fallback is out of scope for this skill. In environments without the CLI, limit yourself to the `--skip-settings` flag. A museum copy of the historic hand-typed route exists at `docs/legacy/hand-typed-delegate-path.md`, but it is prohibited from reference in standard operations.
 
-### Heavy-lane brief enhancement (ultracode)
-
-For heavy-lane tasks at **M-class or above / involving design judgment / spanning multiple files**, you may permit the Worker to use ultracode (multi-agent workflow) (recommended). The Lead states the permission in the brief via `gen_delegate_payload.py`'s `--impl-guidance "<text>"` (example: `--impl-guidance "This task involves multiple files and design judgment, so ultracode use is permitted. Use ultracode for implementation and pre-Codex self-review convergence; the final Codex gate is maintained as before"`). This text is rendered into the "Implementation guidance" section of the worker brief (default `CLAUDE.md`; for claude-org self-edit tasks, `CLAUDE.local.md`), and **the Dispatcher reads it there to decide whether arming is needed** ([`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a).
-
-**However, the brief text is a "permission declaration", not an "opt-in arming" (Issue #554).** ultracode is armed only when an `ultracode` token appears in a **user turn input** of the worker session. Live runs have confirmed that even if the keyword appears in the brief file (the worker behavioral rules file — default `CLAUDE.md`, `CLAUDE.local.md` for self-edit tasks — loaded as context), in `send_message` bodies, or in the body delivered via `check_messages`, no arming occurs. **The arming trigger is for the Dispatcher to issue the kickoff as a user turn via `send_keys` on the in-use transport, with a standalone `ultracode` token in that body** (SoT: [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a). In other words, **the Lead's brief permission is a necessary condition; the Dispatcher's send_keys kickoff is the arming condition**.
-
-Adding a dedicated flag to `gen_delegate_payload.py` is out of scope (the division of labor — permission via the `--impl-guidance` brief text, arming via the Dispatcher's send_keys — is sufficient). **Positioning**: ultracode is the **front stage** used for implementation and pre-Codex self-review convergence, not a replacement for the final Codex gate (independent review by a separate model, Blocker / Major zero). Do not permit ultracode for light-lane tasks or small single-file tasks.
-
 ## Step 1.7: Codex design review trigger (executed by the Lead, Issue #337)
 
 Decide whether to perform a Codex design review before `apply`. Run it only when one of the following applies:
 
-- Estimated effort ≥ 3h
+- Estimated effort >= 3h
 - Introduction of a new module / new tool
-- File changes ≥ 3
+- File changes >= 3
 - Reference to contract documents under `docs/contracts/`
 
 For the detailed trigger-determination table, the `codex exec` command, and the procedure for incorporating the review summary via `--impl-guidance` / `--knowledge`, refer to [`references/codex-design-review.md`](references/codex-design-review.md) as the primary source.
@@ -195,9 +222,9 @@ For the detailed trigger-determination table, the `codex exec` command, and the 
 
 A task that introduces a new CLI tool / new runtime / new workflow / new protocol, or that redesigns an existing tool with a breaking change, is a **dogfood target**. Paired with the implementation delegation, create a follow-up issue and earmark the subsequent real-use delegation as a dogfood pass.
 
-For the dogfood-target determination, the Lead's responsibilities — (A) appending to `registry/dogfood_pending.md` at implementation filing and (B) the dogfood pass earmark procedure — the org-pull-request coordination, the register format, and the hygiene check (consumed → closed), refer to [`references/dogfood-protocol.md`](references/dogfood-protocol.md) as the primary source.
+For the dogfood-target determination, the Lead's responsibilities -- (A) appending to `registry/dogfood_pending.md` at implementation filing and (B) the dogfood pass earmark procedure -- the org-pull-request coordination, the register format, and the hygiene check (consumed -> closed), refer to [`references/dogfood-protocol.md`](references/dogfood-protocol.md) as the primary source.
 
-State transitions: `pending → open → consumed → closed`.
+State transitions: `pending -> open -> consumed -> closed`.
 
 ## Step 3 / 4: Worker spawn / instruction send / state recording (executed by the Dispatcher)
 
@@ -207,11 +234,11 @@ The Dispatcher returns `DELEGATE_COMPLETE` to the Lead upon dispatch completion.
 
 ## Step 5: Progress management (executed by the Lead)
 
-### ⚠️ cwd caution: state.db touching tools
+### Warning: cwd caution for state.db touching tools
 
-`tools/journal_append.sh` / `tools/journal_append.py` / `tools/set_run_pr_open.py` / `python -c "... StateWriter ..."` and the like — any tool that opens `state.db` via a relative path — assume ja-root-relative. If you launch them from a worker / worktree cwd, they will fail silently or crash with `no such table: runs` / `no such table: events`, and the downstream post-commit hook and snapshot regeneration will not run either. Always `cd <ja-root>` before executing. Issue #398 is tracking a root fix.
+`tools/journal_append.sh` / `tools/journal_append.py` / `tools/set_run_pr_open.py` / `python -c "... StateWriter ..."` and the like -- any tool that opens `state.db` via a relative path -- assume ja-root-relative. If you launch them from a worker / worktree cwd, they will fail silently or crash with `no such table: runs` / `no such table: events`, and the downstream post-commit hook and snapshot regeneration will not run either. Always `cd <ja-root>` before executing. Issue #398 is tracking a root fix.
 
-### Lead → Worker messaging rules (Issue #475: 1 worker = 1 task = 1 scope)
+### Lead -> Worker messaging rules (Issue #475: 1 worker = 1 task = 1 scope)
 
 Every message the Lead sends to an existing Worker follows the "1 worker = 1 task = 1 scope" principle. For the canonical 3 rules, refer to CLAUDE.md "Role Boundaries > Boundary for follow-up requests to a Worker" as the SoT:
 
@@ -225,31 +252,33 @@ Violation case: 2026-05-21, mixing a separate concern into the voice-v2-independ
 
 When you receive a dispatch-complete report from the Dispatcher, send a greeting message to each Worker:
 ```
-mcp__renga-peers__send_message(
+{{FQ}}send_message(
   to_id="worker-{task_id}",
-  message="This is the Lead. You are assigned to {task_id}. Send all reports — completion, progress, and blockers — to `to_id=\"secretary\"` over renga-peers."
+  message="This is the Lead. You are assigned to {task_id}. Send all reports -- completion, progress, and blockers -- to `to_id=\"secretary\"` via {{SERVER}}."
 )
 ```
+
+**`.claude/` edit task send_keys pre-approval (root `.claude/**` self-edit only)**: When the delegation target includes claude-org root's `.claude/**` (`.dispatcher/` / `.curator/`, worker dir generated `.claude/settings.local.json` are out of scope), the Lead **also** inputs the approval text (target file enumeration + task_id + the explicit statement "user-approved via the Lead") into the worker pane via `{{FQ}}send_keys`, following the greeting send. The worker verifies the presence of this approval input before editing, and if it is absent, refuses to edit and requests it from the Lead (fixed handshake to prevent deadlock / empty type). For scope boundaries, background (2-layer guard), approval text template, and required worker brief wording, refer to [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 as the primary source.
 
 ### On message receipt from a Worker
 
 **Canonical event flow** (intermediate steps must not be skipped):
 
 ```
-worker → Secretary peer message
+worker -> Secretary peer message
   1. ack to worker (required for all messages; deadlock prevention)
   2. update Progress Log + DB (run.status / events / pending-decisions register)
   3. report to user           (only for completion / escalation / blocker; progress reports not needed)
   4. wait for user approval before push/PR
-  5. CI watch / next instruction → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
+  5. CI watch / next instruction -> [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
 ```
 
-- For the minimum ack contents and per-kind example texts, see [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md). **ack ≠ user approval**: `git push` / `gh pr create` / `tools/pr-watch.*` are issued only after the user's explicit OK
-- The 2 → 3 ordering follows the principle "reconcile internal state first, then report to the user"
+- For the minimum ack contents and per-kind example texts, see [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md). **ack != user approval**: `git push` / `gh pr create` / `tools/pr-watch.*` are issued only after the user's explicit OK
+- The 2 -> 3 ordering follows the principle "reconcile internal state first, then report to the user"
 
 #### 0. Judgment request / scope expansion / blocker (identify with top priority)
 
-→ Trigger [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md). The Secretary does not pre-approve.
+-> Trigger [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md). The Secretary does not pre-approve.
 
 #### 1. Progress report
 
@@ -259,7 +288,7 @@ worker → Secretary peer message
 
 #### 2a. Completion report
 
-- Return ack to the worker (see the "completion report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md))
+- Return ack to the worker (see the "completion report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md); immediately on receipt, before other state updates, for deadlock prevention)
 - **Transition the run to REVIEW via the DB** (direct markdown edits prohibited):
   ```bash
   python -c "
@@ -272,8 +301,9 @@ worker → Secretary peer message
   "
   ```
 - Append an event to the DB events table (`bash tools/journal_append.sh ...`)
-- **Register update on dogfood pass completion (Issue #338)**: If the completed task was earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition that row's `status` from `open → consumed`. Defects are assumed to already be aggregated in the paired follow-up issue (the `dogfood_issue` column) — the format is specified in the dogfood pass worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
-- **Emit awaiting_user notification (Issue #28)**: Just before reporting to the human → entering an approval-wait stop, inform the attention watcher that "the Secretary is stopping while awaiting the user's judgment":
+- **Register update on dogfood pass completion (Issue #338)**: If the completed task was earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition that row's `status` from `open -> consumed`. Defects are assumed to already be aggregated in the paired follow-up issue (the `dogfood_issue` column) -- the format is specified in the dogfood pass worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
+- **Use the human-understanding summary as the basis for the approval presentation and persist it (verification depth `full` only)**: full-mode completion reports include a "human-understanding summary" from the worker ((1) top-N most important changes, (2) files / hunks to review, (3) design judgment and reasoning) (schema SoT: [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)). The Lead does not read the code itself but uses this summary as the basis for the approval presentation to the user (rewrite in business language if needed). Append the received summary to the Progress Log of `.state/workers/worker-{task_id}.md` as a `Human Understanding Summary:` heading + fenced code block immediately below, as-is (this is the source to re-cite at merge approval. If there are multiple full completion reports, the latest block is canonical). When creating the PR, the summary may also be included in the PR body. **If the summary is missing in a full report, treat it as a normal review feedback and ask the same-pane worker to supplement it** (handled by the review-feedback procedure in [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c). This is a procedure-layer completion-report format extension and does not change the contract (T4 `worker_completed`) transition condition. The 1-line `done:` minimal report does not carry a summary.
+- **Emit awaiting_user notification (Issue #28)**: Just before reporting to the human -> entering an approval-wait stop, inform the attention watcher that "the Secretary is stopping while awaiting the user's judgment":
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<short context such as PR/Issue>"
   ```
@@ -282,16 +312,16 @@ worker → Secretary peer message
 
 #### 2b / 2c. After user approval / review comments / post-merge close
 
-→ Trigger [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md).
+-> Trigger [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md).
 
 ### Worker monitoring and intervention judgment (executed by the Lead)
 
-After dispatch, periodically check that the Worker has not entered a deep-dive or excessive-verification loop. **Intervention triggers** (if any one or more applies, check the situation with `mcp__renga-peers__inspect_pane`):
+After dispatch, periodically check that the Worker has not entered a deep-dive or excessive-verification loop. **Intervention triggers** (if any one or more applies, check the situation with `{{FQ}}inspect_pane`):
 
 - More than 30 minutes elapsed on the same task, and entering the same phase (implementation / review / verification) for the 3rd time or later
 - Silent for more than 1 hour with no progress report (not waiting for input either, and no progress log being emitted)
 - (When using codex) Codex self-review is on its 4th or later round
 
-**Intervention procedure**: Check the screen with `inspect_pane` → if judged to be deep-diving, interrupt with `send_keys(target="worker-{task_id}", keys=["Escape"])` → send a tight correction instruction via `send_message` (e.g., "Switch verification depth to minimal. Codex review and additional tests prohibited. Return only the single line `done: {commit SHA} {filename}`").
+**Intervention procedure**: Check the screen with `inspect_pane` -> if judged to be deep-diving, interrupt with `send_keys(target="worker-{task_id}", keys=["Escape"])` -> send a tight correction instruction via `send_message` (e.g., "Switch verification depth to minimal. Codex review and additional tests prohibited. Return only the single line `done: {commit SHA} {filename}`").
 
 The Lead substituting in a commit on its own at the Worker's worktree is blocked by the auto-mode classifier (scope deviation). Intervention should be done strictly by "re-sending instructions".
