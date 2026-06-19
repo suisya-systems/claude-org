@@ -60,6 +60,7 @@ Before entering task decomposition, check the request from the following angles.
 
 - When there is an ambiguous term: ask the user "Do you mean XX by YY?" before proceeding
 - For OS-specific tasks: include OS-specific preconditions in the Worker instructions when generating the payload
+  - **Windows worker + CLI / stdout-producing tool implementation**: include in the brief via `--impl-guidance` etc. the two reminders that (1) strings emitted to the CLI (argparse `help=` / `print()`) must use ASCII `-` and avoid em-dash and other characters that cp932 cannot encode, and (2) `--help` must be smoke-tested once in a real terminal (these are also permanently noted in the Windows section of the rendered brief, but at CLI-tool delegation time the Lead must explicitly hold this in mind). Background: a pattern in which the cp932 console cannot encode em-dash (U+2014) and crashes `--help` has fired twice (ja#537 / runtime#63). pytest captures via `redirect_stdout` in UTF-8 and passes, so the failure only manifests in a real terminal.
 
 ### Initial-step checklist for incorporation / sync tasks
 
