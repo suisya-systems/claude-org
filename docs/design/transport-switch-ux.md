@@ -1,251 +1,251 @@
-# Transport switch conversational interface — UX design
+# Conversational interface for transport switching — UX design
 
-> Status: **design only / not implemented**. This document is a "future design (proposal / plan) that has not been implemented", and all statements below are **proposals**. No implementation of this design exists in this repository, and the normative documents ([`CLAUDE.md`](../../CLAUDE.md) / `.claude/skills/**/SKILL.md` / `docs/contracts/**`), operations runbooks, and generator code are **not changed** by this design. References are **one-way only** from this design document to existing documents (we do not add references back to this design from existing documents). Do not write in the present tense as if it were already implemented.
+> Status: **design only / no implementation**. This document is a "future, unimplemented design (proposal / plan)"; the descriptions below are all **proposals**. No implementation of this design exists in this repository, and the normative documents ([`CLAUDE.md`](../../CLAUDE.md) / `.claude/skills/**/SKILL.md` / `docs/contracts/**`), operations runbooks, and generator code are all **not changed** by this design. References go in **one direction only** from this design document to existing documents (do not add references to this design document on the existing-document side). Do not write in the present tense as if already implemented.
 >
-> **Scope (Issue #535)**: This is limited to the **design of a conversational interface for transport switching**. Concretely, three mechanisms are designed:
-> 1. A mechanism that hides the raw env `ORG_TRANSPORT` from the user, where the Secretary / `org-start` substitutes for env configuration and child-pane inheritance via a conversational interface ("start with broker", "switch back to renga") ([§5](#5-mechanism-1-conversational-interface-as-substitute-for-env-configuration-and-child-pane-inheritance)).
-> 2. Always-on one-line visibility of the current transport in the `org-start` launch report ([§6](#6-mechanism-2-always-on-one-line-visibility-of-the-current-transport-in-the-org-start-launch-report)).
-> 3. A **policy** of demoting the raw env steps in broker-dogfood-runbook to an appendix and adding PowerShell alongside ([§7](#7-mechanism-3-policy-of-demoting-raw-env-steps-in-broker-dogfood-runbook-to-an-appendix--adding-powershell)). The runbook body itself is not changed.
+> **Scope (Issue #535)**: Limited to **the design of making transport switching conversational**. Specifically, the following 3 mechanisms are designed:
+> 1. A mechanism by which the Secretary / `org-start` hides the raw env `ORG_TRANSPORT` from the user and proxies env setup and child-pane inheritance via a conversational interface ("start with broker" / "go back to renga") ([§5](#5-mechanism-1-proxying-env-setup-and-child-pane-inheritance-via-the-conversational-interface)).
+> 2. Always-on 1-line visualization of the current transport in the `org-start` startup report ([§6](#6-mechanism-2-always-on-1-line-visualization-of-the-current-transport-in-the-org-start-startup-report)).
+> 3. A **policy** for relegating the raw-env steps of the broker-dogfood-runbook to the appendix + adding PowerShell equivalents ([§7](#7-mechanism-3-policy-for-relegating-raw-env-steps-of-the-broker-dogfood-runbook-to-the-appendix--adding-powershell-equivalents); the runbook body itself is not modified).
 >
-> **Inviolable premises (fixed constraints this design does not overturn, [§2](#2-inviolable-premises-explicit-constraints))**: (a) **The default `renga` (no `ORG_TRANSPORT`) = bit-equivalent non-destructive invariant is inviolable**, (b) The **resolution order (explicit argument > `ORG_TRANSPORT` env > default `renga`) and the SoT (runtime transport descriptor) are not changed**, (c) This design is **independent of Epic #6 Issue G track 3 (production ja broker live run / dogfood execution)** ([§8](#8-independence-from-issue-g-track-3)).
+> **Untouchable premises (the confirmed constraints this design does not overturn, [§2](#2-explicit-statement-of-untouchable-premises-constraints))**: (a) **Default `renga` (`ORG_TRANSPORT` unset) = bit-equivalent non-destructive invariant** is untouchable; (b) The **resolution order (explicit argument > `ORG_TRANSPORT` env > default `renga`) and SoT (runtime transport descriptor) are not modified**; (c) This design is **independent of Epic #6 Issue G Track 3 (production ja broker real-run / dogfood execution)** ([§8](#8-independence-from-issue-g-track-3)).
 >
-> Dependency documents (references are one-way only from this design to existing documents):
-> - [`tools/transport.py`](../../tools/transport.py) (ja-side transport accessor. The single seam that reads the runtime descriptor)
-> - [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) (current state of raw env steps. Target of the §7 appendix-demotion proposal)
-> - [`docs/design/renga-decoupling.md`](./renga-decoupling.md) (upper-level design for decoupling from renga. This design is its UX layer)
-> - [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) (Set D / Surface 8 draft. broker auth & delivery)
-> - [`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) (where the launch report lives. Target of the §6 visibility proposal)
+> Dependent documents (references go one-way only, from this design to existing documents):
+> - [`tools/transport.py`](../../tools/transport.py) (ja-side transport accessor; the single seam that reads the runtime descriptor)
+> - [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) (current state of the raw env steps; target of the §7 appendix relegation proposal)
+> - [`docs/design/renga-decoupling.md`](./renga-decoupling.md) (upper-level design of renga dependency removal; this design is its UX layer)
+> - [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) (Set D / Surface 8 proposal; broker auth & delivery)
+> - [`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) (location of the startup report; target of the §6 visualization proposal)
 >
-> **Two-frame note (Refs #586 #604, added 2026-06-17 — the design-only body is not changed)**: This design document is written in the **operational frame** as of 2026-06-11. The "default `renga` (no `ORG_TRANSPORT`)" phrasing throughout, and the non-destructive invariant "no env -> `resolve()` returns default renga -> `rewrite_allow_entries` is identity -> bit-equivalent" in [§2](#2-inviolable-premises-explicit-constraints)-1 / [§5.5](#55-causal-chain-of-the-non-destructive-invariant), refer to the **operational default path** of the runtime at the time of writing (0.1.27, `DEFAULT_TRANSPORT = "renga"`). Separately, there is a **code-constant frame**: `DEFAULT_TRANSPORT` was flipped from `renga` to `broker` in runtime 0.1.28 (Epic #586 Phase 2), and on the code side `resolve(env={})` returns `broker`. The two frames refer to different things (operational default path vs code constant) and do not contradict. The persisted-choice mechanism ([§5.4](#54-proposed-persisted-choice-mechanism)) / conversational IF proposed by this design is a thin layer that **holds whether the built-in default is one or the other** ([§5.1](#51-conversational-triggers-intent--transport-selection) L97 explicitly states "this holds both before and after the flip"). The operational default path (production broker live run = Epic #6 Issue G **track 3** ([§8](#8-independence-from-issue-g-track-3)) until that activates, remains renga; the #515 co-existence dogfood within Issue G itself is ratified, only production promotion = track 3 is pending) is realized by the persisted choice substituting for `ORG_TRANSPORT` configuration. Therefore this note does not revise the design body; it is an alignment note for reading the above "default renga" prose as an expression of the operational frame (no flip / no revert).
+> **Two-frame note (Refs #586 #604, added 2026-06-17 — design only body is not modified)**: This design document is written in the **operational frame** as of the 2026-06-11 writing time, and the references throughout to "default `renga` (`ORG_TRANSPORT` unset)" and the non-destructive invariant of "env absent → `resolve()` returns default renga → `rewrite_allow_entries` is identity → bit-equivalent" in [§2](#2-explicit-statement-of-untouchable-premises-constraints)-1 / [§5.5](#55-causal-chain-of-the-non-destructive-invariant) are expressions referring to the **operational default route** of the runtime at writing time (0.1.27, `DEFAULT_TRANSPORT = "renga"`). Separately, in the **code-constant frame**, `DEFAULT_TRANSPORT` has flipped `renga` → `broker` in runtime 0.1.28 (Epic #586 Phase 2), and at the code level `resolve(env={})` returns `broker`. The two frames point at different objects (operational default route vs code constant) and do not conflict. The persisted-choice mechanism ([§5.4](#54-the-proposed-persisted-choice-mechanism)) / conversational IF proposed in this design is a thin layer that **holds whether the built-in default is renga or broker** (as [§5.1](#51-conversational-trigger-intent--transport-selection) L97 makes explicit, "holds before and after the flip"), and the operational default route (production broker real-run = Epic #6 Issue G **Track 3** ([§8](#8-independence-from-issue-g-track-3)) is renga until activated; the Issue G #515 coexistence dogfood itself is ratified, only the production promotion = Track 3 remains) is realized by persisted choice acting as proxy setter for `ORG_TRANSPORT`. Therefore, this note does not revise the design body; it is a consistency note for reading the "default renga" prose above as an expression of the operational frame (no flip / revert).
 
 ---
 
-## 1. Background and goal
+## 1. Background and purpose
 
 ### 1.1 Current state: raw env is exposed to the user
 
-The transport layer has two systems, default `renga` / opt-in `broker` ([`tools/transport.py`](../../tools/transport.py), [`docs/design/renga-decoupling.md`](./renga-decoupling.md)). The single control point for switching is the environment variable `ORG_TRANSPORT` (`renga` | `broker`, unset = default `renga`), and today this raw env being **set by the user in their shell** is the switching mechanism. A user trying the broker system follows [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md), prefixing env like `ORG_TRANSPORT=broker python3 ...`, and runs `unset ORG_TRANSPORT` (§5(1)) to switch back.
+The transport layer has both tracks of default `renga` / opt-in `broker` ([`tools/transport.py`](../../tools/transport.py), [`docs/design/renga-decoupling.md`](./renga-decoupling.md)). The sole control point for switching is the environment variable `ORG_TRANSPORT` (`renga` | `broker`, unset = default `renga`); currently, the switching means is that **the user sets this raw env in their shell themselves**. Users trying the broker track follow the [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) procedure to prepend env as in `ORG_TRANSPORT=broker python3 ...`, and to roll back they strike `unset ORG_TRANSPORT` (§5(1)).
 
-This current state has the following friction (**all of these are motivation for the proposal, not a claim that the current state is broken** — the default renga path works perfectly):
+This current state has the following frictions (**all of these are motivations for proposal, not claims that the current state is broken** — the default renga route is fully functional):
 
-- **Raw env is not business language**: `CLAUDE.md`'s Secretary policy says "avoid technical terms, speak in business language", but `ORG_TRANSPORT=broker` is itself a technical term and falls outside the Secretary's conversational model.
-- **The configuration site and inheritance scope depend on the user's tacit knowledge**: The Secretary, dispatcher, and worker all run in separate panes (separate processes). Which process's env needs to be set so the switch reaches all roles requires internal knowledge of [`tools/transport.py`](../../tools/transport.py) and the generators, and is invisible to the user ([§5.2](#52-two-propagation-surfaces)).
-- **Which system is currently running is not visible**: The launch report shows no transport, so the user cannot confirm "am I on renga or broker right now" without reading env.
-- **Raw env steps in the runbook assume POSIX**: The env operations in [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) are written in bash (`export` / `unset` / `kill -INT`), which Windows (PowerShell) users cannot use as-is.
+- **Raw env is not business language**: The Secretary policy in `CLAUDE.md` is to "avoid technical terms and converse in business language," but `ORG_TRANSPORT=broker` is technical jargon itself, falling outside the Secretary's conversation model.
+- **Where to set and the inheritance scope depend on the user's implicit knowledge**: Secretary, Dispatcher, and Workers run in separate panes (separate processes). Which process's env to set so the switch reaches all roles requires knowledge of the internals of [`tools/transport.py`](../../tools/transport.py) and the generators, invisible to the user ([§5.2](#52-two-propagation-surfaces)).
+- **Which track is currently active is not visible**: There is no transport display in the startup report; the user cannot confirm "is it renga or broker right now" without reading env.
+- **Raw env steps of the runbook assume POSIX**: The env operations of [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) are written in bash (`export` / `unset` / `kill -INT`), and Windows (PowerShell) users cannot use them as-is.
 
-### 1.2 Goal
+### 1.2 Purpose
 
-**Hide the raw env `ORG_TRANSPORT` from the user-facing operation surface** and put transport switching on the **Secretary's conversational interface**. At the same time, **always show the current transport on one line in the launch report** and define a policy of **demoting the raw env steps in the runbook to a last-resort appendix** with PowerShell added. **The raw env is not removed** — the lowest control point of the resolution order (env) remains unchanged as part of the SoT chain, and the conversational interface is layered on top as **a thin layer that substitutes for setting that env** ([§3](#3-central-thesis-the-conversational-interface-is-a-thin-layer-on-top-of-the-resolve-chain)).
-
----
-
-## 2. Inviolable premises (explicit constraints)
-
-Fixed constraints this design does **not** overturn. Everything in the design sits beneath these three points.
-
-1. **Default `renga` (unset) = bit-equivalent non-destructive invariant is inviolable**. With `ORG_TRANSPORT` unset, the generators (generated artifacts such as settings / allowlist) are not changed by even one byte from the current state. This is structurally guaranteed by `rewrite_allow_entries` in [`tools/transport.py`](../../tools/transport.py) (identity that returns input as-is for default `renga`) and by the runtime descriptor. **Adding a conversational interface, env is not set as long as broker is not selected via the conversational IF (= persisted choice is unset / renga), and the default renga remains bit-equivalent** (the condition is not "did we converse in this session" but "did we opt into broker". [§5.4](#54-proposed-persisted-choice-mechanism) cross-session implication / [§5.5](#55-causal-chain-of-the-non-destructive-invariant)).
-
-2. **The resolution order (explicit argument > `ORG_TRANSPORT` env > default `renga`) and the SoT are not changed**. The decision logic for the transport is closed within `resolve()` (= the runtime's `resolve_transport`) in [`tools/transport.py`](../../tools/transport.py), and its single SoT is the runtime transport descriptor (`claude_org_runtime.transport`). **The conversational interface does not replace `resolve()`; it only *supplies* its input (env)**. The visibility ([§6](#6-mechanism-2-always-on-one-line-visibility-of-the-current-transport-in-the-org-start-launch-report)) only **consumes** `resolve()` and does not re-derive the transport (does not judge independently).
-
-3. **Independent of Epic #6 Issue G track 3**. This design is "the UX / human-factors layer of switching" and **does not depend on or block** track 3 (production ja broker live run = dogfood execution) ([§8](#8-independence-from-issue-g-track-3)).
+**Hide the raw env `ORG_TRANSPORT` from the user's operational surface**, and put transport switching on the **Secretary's conversational interface**. At the same time, always **visualize 1 line of the current transport** in the startup report, and define the policy of **relegating the raw env steps of the runbook to the last resort (appendix)** with PowerShell equivalents alongside. **Do not abolish raw env** — the bottom-layer control point of the resolution order (env) remains invariant as part of the SoT chain, and the conversational interface is layered on top as a **thin upper layer that proxies the env setting** ([§3](#3-central-thesis-the-conversational-interface-is-a-thin-layer-on-top-of-the-resolve-chain)).
 
 ---
 
-## 3. Central thesis: the conversational interface is a thin layer on top of the `resolve()` chain
+## 2. Explicit statement of untouchable premises (constraints)
 
-Issue #535 requires two seemingly contradictory things — "hide raw env from the user" and "do not change the resolution order / SoT". The core of this design is to show that **these two coexist**. The key to that coexistence is captured in one sentence:
+The confirmed constraints this design **does not overturn**. The entire design sits under these three.
 
-> **The conversational interface is a thin layer of write-side automation (substituting env configuration) + read-side display (visibility of the current system) layered *on top of* the unchanged `resolve()` chain. It is not a replacement or re-derivation of `resolve()`.**
+1. **Default `renga` (unset) = bit-equivalent non-destructive invariant is untouchable**. With `ORG_TRANSPORT` unset, generators (settings / allowlist etc. outputs) do not change by even 1 byte from the current. This is structurally guaranteed by `rewrite_allow_entries` (identity that returns input as-is under default `renga`) in [`tools/transport.py`](../../tools/transport.py) and the runtime descriptor. **Even adding the conversational interface preserves bit equivalence under default renga: as long as broker has not been selected in the conversational IF (= persistent choice unset / renga), env is not set** (the condition is not "did you converse in this session" but "did you opt in to broker"; [§5.4](#54-the-proposed-persisted-choice-mechanism) cross-session implication / [§5.5](#55-causal-chain-of-the-non-destructive-invariant)).
 
-- "Start with broker" -> this layer **sets** `ORG_TRANSPORT=broker` on behalf of the user (+ propagates to child panes, [§5](#5-mechanism-1-conversational-interface-as-substitute-for-env-configuration-and-child-pane-inheritance)).
-- "Switch back to renga" -> this layer **clears** `ORG_TRANSPORT` (back to default renga).
-- `resolve_transport()` / descriptor does **exactly the same thing** as today. The conversation only *supplies* the input env; it does not bypass or re-derive.
-- The non-destructive invariant **follows automatically from this layer**: as long as broker is never selected through the conversational IF (= persisted choice is unset / renga) -> env unset -> default renga -> `rewrite_allow_entries` identity -> bit-equivalent ([§5.5](#55-causal-chain-of-the-non-destructive-invariant)). Note that **the invariant governs "the default renga state where broker is not selected", not "whether or not we conversed in this session"** (refined in [§5.5](#55-causal-chain-of-the-non-destructive-invariant)).
+2. **Resolution order (explicit argument > `ORG_TRANSPORT` env > default `renga`) and SoT are not modified**. The transport-decision logic is closed within `resolve()` in [`tools/transport.py`](../../tools/transport.py) (= `resolve_transport` of the runtime), and its sole SoT is the runtime transport descriptor (`claude_org_runtime.transport`). **The conversational interface does not replace `resolve()`; it only *supplies* its input (env)**. Visualization ([§6](#6-mechanism-2-always-on-1-line-visualization-of-the-current-transport-in-the-org-start-startup-report)) also **consumes** `resolve()` only and does not re-derive (independently judge) the transport.
 
-The mechanisms that follow are all details under this thesis.
+3. **Independent of Epic #6 Issue G Track 3**. This design is "the UX / human-engineering layer of switching" and **does not depend on or block** Track 3 (production ja broker real-run = dogfood execution) ([§8](#8-independence-from-issue-g-track-3)).
+
+---
+
+## 3. Central thesis: The conversational interface is a thin layer on top of the `resolve()` chain
+
+Issue #535 demands two things that look contradictory — "hide raw env from the user" and "do not modify resolution order / SoT". The core of this design is to show that **these two are compatible**. The key to compatibility is condensed in one sentence:
+
+> **The conversational interface is a thin write-side automation layer (proxy env setting) + read-side display (visualization of the current track) layered *on top of* the unchanged `resolve()` chain; it is not a replacement or re-derivation of `resolve()`.**
+
+- "Start with broker" → this layer **sets** `ORG_TRANSPORT=broker` on the user's behalf (+ propagates to child panes, [§5](#5-mechanism-1-proxying-env-setup-and-child-pane-inheritance-via-the-conversational-interface)).
+- "Go back to renga" → this layer **unsets** `ORG_TRANSPORT` (returns to default renga).
+- `resolve_transport()` / descriptor does **exactly** the same thing as today. The conversation only *supplies* its input env and does neither bypass nor re-derivation.
+- The non-destructive invariant **follows automatically from this layer**: as long as broker has never been selected in the conversational IF (= persistent choice unset / renga) → env unset → default renga → `rewrite_allow_entries` identity → bit equivalent ([§5.5](#55-causal-chain-of-the-non-destructive-invariant)). **Note that what governs the invariant is "the default renga state in which broker has not been selected" rather than "did you converse in this session"** (refined in [§5.5](#55-causal-chain-of-the-non-destructive-invariant)).
+
+The detailed mechanisms below are all under this thesis.
 
 ---
 
 ## 4. Where the mechanisms live (Secretary + org-start)
 
-The **listener** of the conversational interface and the **display owner** of visibility are positioned as follows (consistent with [`CLAUDE.md`](../../CLAUDE.md) where Secretary = the sole human contact point):
+The **listener** of the conversational interface and the **subject of visualization** are positioned as follows (consistent with [`CLAUDE.md`](../../CLAUDE.md) declaring the Secretary = the sole point of contact with humans):
 
 | Role | Position in this design |
 |---|---|
-| **Secretary** | The entity listening for conversational triggers like "start with broker" / "switch back to renga". Translates user intent into a transport selection (renga / broker) and initiates the substituted configuration in [§5](#5-mechanism-1-conversational-interface-as-substitute-for-env-configuration-and-child-pane-inheritance). Transport selection is a judgment accompanied by a human gate (broker is opt-in / revertible), and the Secretary is the sole conversational surface for it |
-| **`org-start` (and each pane's launch sequence)** | Two roles: (i) **applying the substituted configuration** — at startup, reads the persisted choice ([§5.4](#54-proposed-persisted-choice-mechanism)) and reflects `ORG_TRANSPORT` into its own pane's env (the entity that makes the choice confirmed by the Secretary's conversation take effect at startup as "substituted env configuration"). (ii) **visibility** — reads the confirmed transport via `resolve()` and always appends it as one line to the launch report ([§6](#6-mechanism-2-always-on-one-line-visibility-of-the-current-transport-in-the-org-start-launch-report)) |
+| **Secretary** | The subject that listens for conversational triggers like "start with broker" / "go back to renga". Translates user intent to transport selection (renga / broker) and triggers the proxy setting in [§5](#5-mechanism-1-proxying-env-setup-and-child-pane-inheritance-via-the-conversational-interface). Transport selection is a judgment accompanied by a human gate (broker is opt-in / rollback-safe); the Secretary is the sole conversational surface for it |
+| **`org-start` (and each pane's startup sequence)** | Plays two roles: (i) **Applying the proxy setting** — reads the persistent choice ([§5.4](#54-the-proposed-persisted-choice-mechanism)) at startup time and reflects `ORG_TRANSPORT` into its own pane's env (the subject that, at startup, enacts the choice the Secretary finalized in conversation as "proxy env setting"). (ii) **Visualization** — reads the finalized transport via `resolve()` and always attaches a 1-line note to the startup report ([§6](#6-mechanism-2-always-on-1-line-visualization-of-the-current-transport-in-the-org-start-startup-report)) |
 
-> **Responsibility split (mapping to Issue #535 scope wording)**: The opening scope phrase "Secretary / `org-start` substitutes for env configuration and child-pane inheritance via the conversational IF" is realized in two stages: **Secretary = conversation listener (intent -> confirming and persisting the choice)**, **`org-start` / each pane's launch sequence = reflecting the confirmed choice into env (the execution point of substituted configuration) + visibility**. The "instruction" for env configuration belongs to the Secretary, the "reflection" to the launch sequence, and together they make up "substituting env configuration and child-pane inheritance via the conversational IF".
+> **Sorting out the responsibility split (mapping to the scope wording of Issue #535)**: The opening scope's "the Secretary / `org-start` proxies env setup and child-pane inheritance via the conversational IF" is realized in two stages: **Secretary = the conversation listener (intent → finalize and persist the choice)**, **`org-start` / each pane's startup sequence = reflecting the finalized choice into env (the enactment point of the proxy setting) + visualization**. The "instruction" of env setting is the Secretary, the "reflection" is the startup sequence; together they form "proxy of env setup and child-pane inheritance by the conversational IF".
 
-> **design-only note**: The above is **not a change proposal** to normative documents (`CLAUDE.md` / each SKILL); it is a design-level positioning of "which role takes care of which conversational trigger / visibility / env reflection where". Actual prose reflection is out of scope (after a decision on adopting this design), and this design document does not touch the normative documents.
+> **design only note**: The above is not a **change proposal** to the normative documents (`CLAUDE.md` / each SKILL); it is the design-level positioning of "which role handles which of conversational triggers / visualization / env reflection where". Actual prose reflection is out of scope (after a decision to take this design in is made), and this design document does not touch the normative documents.
 
 ---
 
-## 5. Mechanism (1): conversational interface as substitute for env configuration and child-pane inheritance
+## 5. Mechanism (1): Proxying env setup and child-pane inheritance via the conversational interface
 
-This is the mechanism that needs the most care in the design. The transport selection has to reach all roles in **Secretary -> dispatcher -> worker** (multiple processes), and has to cross the `spawn_claude_pane` pane boundary twice.
+The most attention-requiring mechanism in this design. The transport choice needs to reach all roles **Secretary → Dispatcher → Worker** (multiple processes), and crosses the `spawn_claude_pane` pane boundary twice.
 
-### 5.1 Conversational triggers (intent -> transport selection)
+### 5.1 Conversational trigger (intent → transport selection)
 
-The Secretary translates utterances in business language like the following into transport selections (vocabulary is illustrative; **not normalized**):
+The Secretary translates business-language utterances like the following into transport selection (vocabulary is illustrative; **not normative**):
 
-| User utterance (example) | Translated selection | Substituted operation |
+| User utterance (example) | Translated choice | Proxied operation |
 |---|---|---|
-| "Start with broker", "I want to try broker" | `broker` | Substitute `ORG_TRANSPORT=broker` equivalent ([§5.4](#54-proposed-persisted-choice-mechanism)) + child-pane inheritance |
-| "Switch back to renga", "Run on renga", "Revert" | `renga` (default) | Substitute clearing `ORG_TRANSPORT` (return persisted choice to renga = unset) |
-| "Which one (transport) am I on now?" | (no change, query) | Consume `resolve()` and report the current system (same display path as [§6](#6-mechanism-2-always-on-one-line-visibility-of-the-current-transport-in-the-org-start-launch-report)) |
+| "Start with broker" / "I want to try broker" | `broker` | Equivalent of `ORG_TRANSPORT=broker` set on behalf ([§5.4](#54-the-proposed-persisted-choice-mechanism)) + child-pane inheritance |
+| "Go back to renga" / "Run on renga" / "Revert" | `renga` (default) | Equivalent of `ORG_TRANSPORT` unset on behalf (return persistent choice to renga = unset) |
+| "Which transport am I on?" | (no change, inquiry) | Consume `resolve()` and report current track (same display path as [§6](#6-mechanism-2-always-on-1-line-visualization-of-the-current-transport-in-the-org-start-startup-report)) |
 
-- **broker selection is treated as an opt-in / revertible judgment**. This is based on the **current transport descriptor semantics** (default = renga / `broker` only when `ORG_TRANSPORT=broker` is explicit. [`tools/transport.py`](../../tools/transport.py) L17-22, [`CLAUDE.md`](../../CLAUDE.md) "transport (transport) both systems"). The Secretary only substitutes the selection configuration; it does not step into broker daemon startup / dogfood execution (track 3) ([§8](#8-independence-from-issue-g-track-3)).
-  - **Note (relation to [`docs/design/renga-decoupling.md`](./renga-decoupling.md))**: In the **future end-state** (full migration) of renga-decoupling, the default flips to a pure backend and "renga becomes an opt-in fallback" (same §1 adopted policy / §2). What this design assumes is **the current semantics** (default renga / broker is opt-in), and the timing is different from the end-state flip. The conversational IF of this design holds both before and after the flip, as "a layer that substitutes for selection configuration and visibility, whichever is currently the default" (whether the default is renga or broker is decided by the descriptor; this design does not judge it).
-- The resolution order ([§2](#2-inviolable-premises-explicit-constraints)-2) is unchanged, so the path where the user passes the transport as an **explicit argument** (`explicit`) to an individual call takes priority over the conversational IF (top level). The conversational IF only touches the env layer (middle).
+- **Treat broker selection as an opt-in / rollback-safe judgment**. This is based on the **current transport descriptor semantics** (default = renga / `broker` only when `ORG_TRANSPORT=broker` is explicit; [`tools/transport.py`](../../tools/transport.py) L17-22, [`CLAUDE.md`](../../CLAUDE.md) "Transport (transport) two-track"). The Secretary only proxies the choice setting and does not step into broker daemon startup / dogfood execution (Track 3) ([§8](#8-independence-from-issue-g-track-3)).
+  - **Note (relationship to [`docs/design/renga-decoupling.md`](./renga-decoupling.md))**: In the **future end-state** (full migration) of renga-decoupling, the default flips to pure backend and "renga becomes opt-in fallback" (same §1 adoption policy / §2). This design assumes **current semantics** (default renga / broker as opt-in), distinct in time from the end-state flip. The conversational IF in this design is **a layer that, regardless of which is the default now, proxies the choice setting and visualizes it**, and holds before and after the flip (which of renga or broker is the default is decided by the descriptor; this design does not judge).
+- Resolution order ([§2](#2-explicit-statement-of-untouchable-premises-constraints)-2) is invariant, so the path where the user passes a transport via **explicit argument** (`explicit`) to an individual call takes precedence over the conversational IF (top of the order). The conversational IF only touches the env layer (middle).
 
 ### 5.2 Two propagation surfaces
 
-"The transport selection reaches everywhere" has **two distinct propagation surfaces** that are often confused. This design separates them:
+There are **two distinct propagation surfaces** for the transport selection to "reach" — frequently confused. This design separates them:
 
-- **(A) Generation-time baking**: ja's generators ([`tools/gen_delegate_payload.py`](../../tools/gen_delegate_payload.py) / [`tools/gen_worker_brief.py`](../../tools/gen_worker_brief.py)) read `ORG_TRANSPORT` from the **env of the process running the generation**, via the [`tools/transport.py`](../../tools/transport.py) accessor, and **bake** transport-specific values (server names `renga-peers` / `org-broker`, `spawn_inject` flag, allowlist) into the artifacts (delegate payload / worker brief). That is, the selection propagates into the *content* of the artifact through "the env of the process running the generator".
+- **(A) Generation-time baking**: ja's generators ([`tools/gen_delegate_payload.py`](../../tools/gen_delegate_payload.py) / [`tools/gen_worker_brief.py`](../../tools/gen_worker_brief.py)) read the `ORG_TRANSPORT` of the **env of the generation-executing process** via the [`tools/transport.py`](../../tools/transport.py) accessor and **bake** transport-specific values (server names `renga-peers` / `org-broker`, `spawn_inject` flag, allowlist) into the artifact (delegate payload / worker brief). That is, the choice propagates to the artifact *content* via "the env of the process running the generator".
 
-- **(B) Child-pane process env**: Whether the child pane (dispatcher / worker Claude process) launched by `spawn_claude_pane` **has `ORG_TRANSPORT` in its own `os.environ`** at launch. This matters when that child pane **runs further generators itself** (e.g. dispatcher runs `delegate-plan` / `gen_delegate_payload` to make artifacts for the worker).
+- **(B) Child-pane process env**: Whether the child pane (Dispatcher / Worker Claude process) launched via `spawn_claude_pane` **has `ORG_TRANSPORT` in its own `os.environ`** at startup. This matters when **the child pane itself runs a generator** (e.g., the Dispatcher runs `delegate-plan` / `gen_delegate_payload` to create artifacts targeted at the Worker).
 
-> **Important distinction**: (A) is "artifact content"; (B) is "child-process environment". "Child-pane inheritance" in Issue #535 mainly refers to (B), but in actual operation the path by which the transport reaches all roles also spans (A) (artifacts baked by the generators propagate). This design makes both surfaces explicit and decides which to bet on in [§5.4](#54-proposed-persisted-choice-mechanism).
+> **Important distinction**: (A) is "artifact content," (B) is "child process environment." What Issue #535 calls "child-pane inheritance" mainly refers to (B), but the path by which the transport reaches all roles in actual operation also spans (A) (the artifacts baked by the generator are propagated). This design exposes both surfaces and decides which to bet on in [§5.4](#54-the-proposed-persisted-choice-mechanism).
 
-### 5.3 Propagation chain (Secretary -> dispatcher -> worker)
+### 5.3 Propagation chain (Secretary → Dispatcher → Worker)
 
-The path that has to be propagated for the transport to be consistent across all roles (making explicit **why the naive "export env in one place" approach is insufficient**):
+The path that must propagate so the transport is consistent across all roles (making explicit why **a naive "export env in one place" is not enough**):
 
 ```
 User: "Start with broker"
    |
    v
-Secretary (secretary process) -- substituted env config -+
-   | (A) For parts where Secretary itself runs the generator, Secretary process env applies
-   | (B) Is ORG_TRANSPORT inherited at child-pane spawn? <- uncertain (see below)
+Secretary (secretary process) -- proxy env setting --+
+   | (A) Generation by the Secretary itself uses Secretary process env
+   | (B) Will ORG_TRANSPORT be inherited at child-pane spawn?  <- uncertain (below)
    v
-Dispatcher (separate pane = separate process)
-   | (A) For parts where dispatcher runs gen_delegate_payload / delegate-plan,
-   |     dispatcher process env applies
-   | (B) Is ORG_TRANSPORT inherited at worker spawn? <- uncertain
+Dispatcher (different pane = different process)
+   | (A) The portion where the Dispatcher runs gen_delegate_payload / delegate-plan
+   |     uses Dispatcher process env
+   | (B) Will ORG_TRANSPORT be inherited at Worker spawn?  <- uncertain
    v
 Worker (yet another pane = yet another process)
 ```
 
-- **Point of uncertainty (needs verification at implementation time, [§9](#9-residual-risks-and-implementation-time-verification-items))**: The env of the child pane that `spawn_claude_pane` launches **does not necessarily inherit the (mid-session-modified) `os.environ` of the calling Claude process**. Because renga launches panes under the same renga server process lineage, what a child pane inherits is the shell env at the time `renga --layout ops` was started, not changes added mid-session to the Secretary Claude's `os.environ`. **Do not write "mid-session env configuration is inherited by child panes via spawn" as if it were established fact** (per advisor feedback / confirmed by grep that spawn-flow contains no env inheritance description: [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) describes broker spawn as `--mcp-config <broker>` injection and does not mention `ORG_TRANSPORT` inheritance).
+- **Uncertain point (empirical verification required, [§9](#9-residual-risks-and-implementation-time-verification-items))**: The env of the child pane started via `spawn_claude_pane` does **not necessarily inherit the `os.environ` of the caller Claude process (as modified mid-session)**. Renga starts panes under the same renga-server process hierarchy, so what the child pane inherits is the shell env at the time of `renga --layout ops` startup, not changes made to the Secretary Claude's `os.environ` mid-session — high probability. **Do not write "mid-session env settings are inherited by child panes via spawn" as established fact** (per advisor advice / grep also confirms there is no description of env inheritance in spawn-flow: [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) describes broker spawn as `--mcp-config <broker>` injection and does not mention `ORG_TRANSPORT` inheritance).
 
-### 5.4 Proposed persisted-choice mechanism
+### 5.4 The proposed persisted-choice mechanism
 
-Given the uncertainty in [§5.3](#53-propagation-chain-secretary---dispatcher---worker) (cannot bet on process env inheritance), this design proposes **a persisted-choice mechanism that does not depend on process env inheritance**. It is more robust than naive reliance on process env and coexists with the constraint of not changing resolution order / SoT.
+In light of the uncertainty in [§5.3](#53-propagation-chain-secretary--dispatcher--worker) (we cannot bet on process env inheritance), this design proposes a **persisted-choice mechanism that does not depend on process env inheritance**. It is more robust than naive reliance on process env and compatible with the constraint of not modifying the resolution order / SoT.
 
-**Proposal: hold the transport selection as a small piece of persistent state, and have each process reflect it into env at startup**.
+**Proposal: Hold the transport choice as a small persistent state, and have each process reflect it into env at startup.**
 
-- When the Secretary selects broker via conversation, the substituted operation does not bet on "changing the Secretary process's `os.environ`" but **writes the transport selection to a single persistence point** (candidates: part of existing state / dedicated small config. Concrete location / format is decided at implementation time, and if there is a need for consistency with [`docs/contracts/state-schema-contract.md`](../contracts/state-schema-contract.md) Set C inventory, a contract revision is handled as a separate proposal).
-- Each pane's (Secretary / dispatcher / worker) **launch sequence** reads this persisted choice and reflects `ORG_TRANSPORT` into its own process env. This way both (B) child-pane env and (A) generation-time baking **converge on the same selection**.
-- **Resolution order / resolution inputs are unchanged (important)**: The persisted choice is **not a new resolution input** to `resolve()`. The non-explicit input that `resolve()` looks at is still just `ORG_TRANSPORT` env, exactly as today ([`tools/transport.py`](../../tools/transport.py) L18-21 / L62-73). The persisted choice is "the source of the value when each pane's launch sequence writes `ORG_TRANSPORT` into env" = **env configuration automation mechanism**, equivalent to consistently / automatically doing what a user would otherwise do by hand in each pane's shell as `export ORG_TRANSPORT`. Neither the resolution order (explicit > env > default) nor the priority logic of `resolve()` is touched at all.
-- **Switch back**: "Switch back to renga" returns the persisted choice to renga (= equivalent to env unset). From the next launch, all panes converge on default renga. Immediate reversion of running broker panes is an operations area following the switch-back conditions in [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) §5, and this design (UX layer) does not step into it.
-- **Cross-session implication (explicit)**: The persisted choice survives across sessions. Once broker is selected, subsequent launches will continue to converge on broker until the user explicitly says "switch back to renga" (= the opt-in state persists. This is the intended UX). Therefore **you cannot say "did not converse in this session => renga"** — if broker was selected previously, the persisted choice stays at broker. The bit-equivalent invariant governs "the state where broker is not selected (persisted choice unset / renga)", and the non-bit-equivalent state after broker opt-in is **a correct consequence of the user's explicit selection** ([§5.5](#55-causal-chain-of-the-non-destructive-invariant)).
+- When the Secretary picks broker in conversation, the proxy operation does not bet on "changing the Secretary process's `os.environ`"; instead it **writes the transport choice into one persistent point** (candidates: part of existing state / a small dedicated configuration; the specific location and format are decided at implementation, and if alignment with the inventory of [`docs/contracts/state-schema-contract.md`](../contracts/state-schema-contract.md) Set C is needed, treat as a separate contract-amendment proposal).
+- The **startup sequence** of each pane (Secretary / Dispatcher / Worker) reads this persistent choice and reflects `ORG_TRANSPORT` into its own process env. This **aligns both surfaces of (B) child-pane env and (A) generation-time baking on the same choice**.
+- **Resolution order / resolution input is invariant (important)**: The persisted choice is **not a new resolution input** for `resolve()`. What `resolve()` sees as non-explicit input is, the same as today, **only** the `ORG_TRANSPORT` env ([`tools/transport.py`](../../tools/transport.py) L18-21 / L62-73). The persisted choice is "the source of the value when each pane's startup sequence writes `ORG_TRANSPORT` into env" = **an env-setting automation mechanism**, equivalent to consistently / automatically replacing the user manually exporting `ORG_TRANSPORT` in each pane's shell. Neither the resolution order (explicit > env > default) nor `resolve()`'s priority logic is touched in any way.
+- **Rollback**: "Go back to renga" returns the persisted choice to renga (= equivalent to env unset). From the next start, all panes align to default renga. Immediate return of running broker panes is the operational area governed by the rollback conditions in [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) §5, and this design (UX layer) does not step into that.
+- **Cross-session implication (explicit)**: The persisted choice persists across sessions. Once broker is picked, subsequent starts also align to broker until "go back to renga" is said explicitly (= the opt-in state continues; this is the intended UX). Therefore, **"did not converse in this session ⇒ renga" cannot be said** — if broker was picked in the past, the persisted choice stays broker. The bit-equivalent invariant only governs "the state in which broker has not been picked (persisted choice unset / renga)"; non-bit-equivalence after opt-in to broker is the **correct consequence of the user's explicit choice** ([§5.5](#55-causal-chain-of-the-non-destructive-invariant)).
 
 > **Alternatives considered and rejected**:
-> - "Change the Secretary process's env and bet on spawn inheritance" — there is no guarantee that renga's spawn inherits the Secretary Claude's mid-session env ([§5.3](#53-propagation-chain-secretary---dispatcher---worker)), so it is less robust than the persisted choice.
-> - "Do not persist, ask in conversation every time" — has the advantage that the simple invariant "if we did not converse, always default renga" holds, but the selection cannot be shared on the (A) path where dispatcher / worker run generators independently, and re-selection is required at every launch. This design prefers cross-pane / cross-session consistency and recommends persisted choice, but if an operation does not accept the cross-session implication (above), this alternative is also choosable (final decision is implementation scope).
+> - "Change Secretary process env and bet on spawn inheritance" — inferior in robustness to persisted choice because renga's spawn has no guarantee of inheriting Secretary Claude's mid-session env ([§5.3](#53-propagation-chain-secretary--dispatcher--worker)).
+> - "Do not persist; specify in conversation each time" — has the merit of preserving the simple invariant "if you don't converse, always default renga", but the choice cannot be shared on the (A) path where Dispatcher / Workers independently run generators, and re-selection is required at every startup. This design recommends persisted choice prioritizing cross-pane / cross-session consistency, but if the operation does not accept the cross-session implication (above), this alternative can be picked (final decision is in implementation scope).
 
-> **design only**: The above is a **proposal** for the mechanism; introducing a persistence point and embedding into the launch sequence is implementation scope (normative docs / state schema are not changed by this design document).
+> **design only**: The above is a **proposal** for the mechanism; new persistence point and integration into the startup sequence are in implementation scope (normative documents / state schema are not modified in this design document).
 
 ### 5.5 Causal chain of the non-destructive invariant
 
-**Proof** (causal chain) that [§2](#2-inviolable-premises-explicit-constraints)-1 is preserved even when we add the conversational IF. The condition the invariant governs is **"broker is not selected via the conversational IF (= persisted choice unset / renga)"**, not "did we converse in this session" ([§5.4](#54-proposed-persisted-choice-mechanism) cross-session implication):
+**Proof** (causal chain) that [§2](#2-explicit-statement-of-untouchable-premises-constraints)-1 is preserved even after adding the conversational IF. The condition the invariant governs is **"broker has not been picked in the conversational IF (= persisted choice unset / renga)"**, not "did you converse in this session" ([§5.4](#54-the-proposed-persisted-choice-mechanism) cross-session implication):
 
 ```
-Broker has never been selected via the conversational IF (persisted choice = unset / renga)
-   -> Each pane's launch sequence does not set ORG_TRANSPORT in env
+broker has never been selected in the conversational IF (persisted choice = unset / renga)
+   -> each pane startup sequence does not set ORG_TRANSPORT in env
    -> resolve() sees "no env" and returns default renga
-   -> rewrite_allow_entries returns input identically under DEFAULT_TRANSPORT
-   -> Generated artifacts are not changed by even one byte (bit-equivalent)
+   -> rewrite_allow_entries identity-returns input under DEFAULT_TRANSPORT
+   -> artifacts do not change by 1 byte (bit equivalent)
 ```
 
-- That is, the conversational IF is **completely passive** with respect to the default renga path (broker not selected) (if broker is not chosen, env is not set and nothing happens). This is the structural basis for "even when we layer on the conversational IF, the non-destructive invariant remains inviolable".
-- Conversely, after a user opts in to broker, the persisted choice remains broker, and the launch sequence sets `ORG_TRANSPORT=broker` in env. The fact that artifacts then change to the broker surface (become non-bit-equivalent) is **not a violation of the invariant but a correct response to the user's explicit selection (opt-in)**. The invariant only promises to protect the "default renga (broker not selected) state" and does not extend to the post-opt-in state.
+- That is, the conversational IF is **completely passive against the default renga route (broker not picked)** (if broker is not picked, env is not set and nothing happens). This is the structural ground for "even layering the conversational IF, the non-destructive invariant is untouchable".
+- Conversely, after the user opts in to broker, the persisted choice remains broker, and the startup sequence sets `ORG_TRANSPORT=broker` in env. At that time, the artifact changing to the broker surface (becoming non-bit-equivalent) is **not a violation of the invariant but a correct response to the user's explicit choice (opt-in)**. The invariant only promises protection of "the default renga (broker not picked) state" and does not extend to the post-opt-in state.
 
 ---
 
-## 6. Mechanism (2): always-on one-line visibility of the current transport in the `org-start` launch report
+## 6. Mechanism (2): Always-on 1-line visualization of the current transport in the `org-start` startup report
 
 ### 6.1 Proposal
 
-In the launch-completion report of `org-start` (the report template group in [`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Step 4), append **the current transport as a one-line, always-on** entry. Whether renga or broker, and regardless of whether a selection exists, **always display it** (rather than "only show when on broker", always make the current system explicit to remove the invisibility of "what am I implicitly running on now").
+To the `org-start` startup completion report (the report-template group in [`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Step 4), attach **the current transport always in 1 line**. For both renga / broker, and regardless of whether a choice has been made, **always display** (instead of "show only when broker," resolve the invisibility of "what am I implicitly running on now" by always making the current track explicit).
 
-Display example (**the wording is a proposal and not normalized**):
+Display example (**the wording is a proposal, not normative**):
 
 ```
 Started the organization.
 Previous state: {summary}
-Started the dispatcher (the curator is auto-started temporarily when knowledge accumulates).
-Transport: renga (default)          <- always one line (when broker is selected: "Transport: broker (opt-in)")
-What do you want to do?
+Started the Dispatcher (Curator is auto-launched temporarily when learnings accumulate).
+Transport: renga (default)          <- always 1 line (when broker is picked: "Transport: broker (opt-in)")
+What would you like to do?
 ```
 
-### 6.2 Consistency with the inviolable constraints
+### 6.2 Alignment with untouchable constraints
 
-- **Do not re-derive the SoT**: The transport to display is obtained by **consuming** `resolve()` (= runtime-descriptor-driven) in [`tools/transport.py`](../../tools/transport.py). Do not independently read env or recompute the transport ([§2](#2-inviolable-premises-explicit-constraints)-2). This is how "do not change the SoT" is preserved on the display side.
-- **Does not threaten bit equivalence**: The launch report is a **conversational output**, not a file write. The bit-equivalent invariant governs *artifacts (settings / allowlist)*, not human-facing one-line reports. Therefore, even with this one-line always-on display under default renga, the bit equivalence of artifacts is completely unaffected (state this explicitly to avoid confusion).
-- **Relation to the runtime drift line**: The existing `org-start` Step 4 has a mechanism to append the drift line from `tools/check_runtime_version.py` at the end ([`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C2 / Step 4). The transport one-liner is positioned as **an independent always-on line** alongside it (drift is a conditional warning; transport is an unconditional status display).
+- **Do not re-derive the SoT**: The transport to display is obtained by **consuming** `resolve()` (= runtime-descriptor-driven) in [`tools/transport.py`](../../tools/transport.py). Do not independently read env to judge or recompute the transport ([§2](#2-explicit-statement-of-untouchable-premises-constraints)-2). This is the way to keep "SoT not modified" on the display side.
+- **Do not threaten bit equivalence**: The startup report is **conversational output** and does not write to file. The bit-equivalence invariant governs *artifacts (settings / allowlist)*, not the human-facing 1-line report. Therefore, even if this 1 line is always shown under default renga, there is no effect on bit equivalence of artifacts (state this clearly to avoid confusion).
+- **Relationship to the runtime drift line**: The existing `org-start` Step 4 has a mechanism to transcribe the drift line from `tools/check_runtime_version.py` at the end ([`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C2 / Step 4). Position the transport 1 line as an **independent, always-on line** of that (drift is a conditional warning; transport is an unconditional status display).
 
-> **design only**: Actual reflection into the Step 4 template is out of scope. This design document does not change the SKILL.
+> **design only**: Actual reflection into the Step 4 template is out of scope. This design document does not modify the SKILL.
 
 ---
 
-## 7. Mechanism (3): policy of demoting raw env steps in broker-dogfood-runbook to an appendix + adding PowerShell
+## 7. Mechanism (3): Policy for relegating raw env steps of the broker-dogfood-runbook to the appendix + adding PowerShell equivalents
 
-### 7.1 Policy (do not change the runbook body)
+### 7.1 Policy (do not modify the runbook body)
 
-On the premise that the conversational interface of [§5](#5-mechanism-1-conversational-interface-as-substitute-for-env-configuration-and-child-pane-inheritance) becomes the **main path**, define a policy of **demoting raw env steps (prefixing `ORG_TRANSPORT=broker python3 ...`, `unset ORG_TRANSPORT` to switch back, etc.) in [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) to a last-resort appendix**. The intent is to give the runbook the following priority:
+On the premise that the conversational interface in [§5](#5-mechanism-1-proxying-env-setup-and-child-pane-inheritance-via-the-conversational-interface) becomes the **main path**, define the policy of **relegating to the appendix as a last resort** the raw env steps of [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) (prepending `ORG_TRANSPORT=broker python3 ...`, rolling back with `unset ORG_TRANSPORT`, etc.). The intent is to give the runbook the following priority order:
 
-1. **Main path**: Conversational interface ("start with broker", "switch back to renga").
-2. **Appendix / last resort**: Direct manipulation of raw env (limited to cases where the conversational IF is unavailable / debugging / CI / automation, where the user explicitly needs low-level control).
+1. **Main path**: Conversational interface ("start with broker" / "go back to renga").
+2. **Appendix / last resort**: Direct raw env manipulation (limited to scenes where the user explicitly requires low-level control, such as when the conversational IF is unavailable / debugging / CI / automation).
 
-Demotion is not "deletion" — the raw env remains as a legitimate control point of the resolution order ([§2](#2-inviolable-premises-explicit-constraints)-2) and continues to be accurately documented in the runbook appendix. **This design document only states the policy; it does not edit the runbook body** (design only).
+Relegation is not "deletion" — raw env remains as a legitimate control point of the resolution order ([§2](#2-explicit-statement-of-untouchable-premises-constraints)-2) and continues to be accurately documented in the runbook's appendix. **This design document only states this policy and does not edit the runbook body** (design only).
 
-### 7.2 PowerShell coexistence (proposed correspondence table to add in the appendix)
+### 7.2 PowerShell equivalents (proposed mapping table to attach to the appendix)
 
-The current runbook's env operations assume bash (`export` / `unset` / `kill -INT`). The policy is to add Windows (PowerShell) equivalents in the appendix. Proposed correspondence:
+The current runbook's env operations assume bash (`export` / `unset` / `kill -INT`). The policy is to also write the Windows (PowerShell) equivalents in the appendix. Proposed mapping table:
 
-| Operation | bash (current runbook) | PowerShell (proposed coexistence) |
+| Operation | bash (current runbook) | PowerShell (proposed equivalent) |
 |---|---|---|
-| Apply broker to **just one command** (child process only) | `ORG_TRANSPORT=broker python3 ...` (applies only to that one process; does not remain in the shell) | PowerShell has **no equivalent prefix form**. `$env:ORG_TRANSPORT = "broker"` overwrites session env and remains afterward, so do `$env:ORG_TRANSPORT = "broker"; python ...; Remove-Item Env:\ORG_TRANSPORT` to **explicitly clear after execution**, or if child-process-only is required, use `Start-Process` with `-Environment` to pass to the launched process only (note that bash's child-only equivalent is not trivially writable) |
-| Set broker for the current session (and keep) | `export ORG_TRANSPORT=broker` | `$env:ORG_TRANSPORT = "broker"` |
+| Make broker take effect **only for 1 command** (child-process-only) | `ORG_TRANSPORT=broker python3 ...` (affects only that 1 process; does not remain in shell) | **There is no equivalent prepend form in PowerShell**. `$env:ORG_TRANSPORT = "broker"` rewrites the session env and persists; therefore either **explicitly unset after execution** as in `$env:ORG_TRANSPORT = "broker"; python ...; Remove-Item Env:\ORG_TRANSPORT`, or if child-process-only is mandatory, pass via `Start-Process -Environment` etc. only to the started process (note that bash's child-only equivalent cannot be written obviously) |
+| Set broker in this session (remain thereafter) | `export ORG_TRANSPORT=broker` | `$env:ORG_TRANSPORT = "broker"` |
 | Check current value | `echo "$ORG_TRANSPORT"` | `$env:ORG_TRANSPORT` |
-| Switch back (unset) | `unset ORG_TRANSPORT` | `Remove-Item Env:\ORG_TRANSPORT` (if you do not want an error when unset: `Remove-Item Env:\ORG_TRANSPORT -ErrorAction SilentlyContinue`) |
-| Stop daemon (SIGINT to foreground serve) | `kill -INT <pid>` | If foreground, `Ctrl+C`. Stop by PID is `Stop-Process -Id <pid>` (graceful stop equivalent to SIGINT is generally hard on Windows; note that foreground `Ctrl+C` is the main path) |
+| Rollback (unset) | `unset ORG_TRANSPORT` | `Remove-Item Env:\ORG_TRANSPORT` (to not error on unset: `Remove-Item Env:\ORG_TRANSPORT -ErrorAction SilentlyContinue`) |
+| Stop daemon (SIGINT to foreground serve) | `kill -INT <pid>` | If foreground, `Ctrl+C`. PID-specified stop is `Stop-Process -Id <pid>` (note that SIGINT-equivalent graceful stop is generally difficult on Windows, so foreground `Ctrl+C` is the main means) |
 
-> **Note (non-equivalence of the prefix form, important)**: bash's `VAR=val cmd` **passes env only to the launched child process** and does not remain in the shell itself. PowerShell's `$env:VAR = "val"` **overwrites the current session env** and remains for subsequent launches until explicitly cleared. Equating them causes Windows users to unintentionally leave broker set, so the appendix should explicitly state "in PowerShell, set -> run -> clear (or `Start-Process -Environment`)".
+> **Note (non-equivalence of prepend form, important)**: bash's `VAR=val cmd` passes env **only to the started child process** and does not leave it in the shell itself. PowerShell's `$env:VAR = "val"` **rewrites the current session env** and remains for subsequent starts until explicitly unset. Treating them as equivalent makes Windows users unintentionally leave broker behind, so the appendix should state "in PowerShell, set → run → unset (or `Start-Process -Environment`)".
 
-> **Note (resolution order is unchanged)**: PowerShell coexistence is an addition of notation and affects neither the resolution order, the SoT, nor bit equivalence (`$env:ORG_TRANSPORT` only places a value in the same env layer as bash's `ORG_TRANSPORT`).
+> **Note (resolution order invariance)**: The PowerShell equivalent is an addition of notation; it does not affect resolution order / SoT / bit equivalence (`$env:ORG_TRANSPORT` only places a value in the same env layer as bash's `ORG_TRANSPORT`).
 >
-> **Note (alignment with CLAUDE.local.md's Windows guidance)**: In this repository's Windows environment, Python is `py -3` or `python`. The appendix's PowerShell examples follow this (use `python` / `py -3` in environments where there is no `python3` invocation).
+> **Note (alignment with the Windows guidance in CLAUDE.local.md)**: On Windows environments in this repository, Python is `py -3` or `python`. The appendix's PowerShell examples should follow this as well (in environments without direct `python3`, use `python` / `py -3`).
 
-> **design only**: The above correspondence table is a **proposal** to add to the runbook appendix; this design document does not edit the runbook.
+> **design only**: The mapping table above is a **proposal** for the runbook appendix; this design document does not edit the runbook.
 
 ---
 
-## 8. Independence from Issue G track 3
+## 8. Independence from Issue G Track 3
 
-The boundary between this design (switching UX layer) and Epic #6 Issue G track 3 (production ja broker live run / dogfood execution) is made explicit:
+Make explicit the boundary between this design (UX layer of switching) and Epic #6 Issue G Track 3 (production ja broker real-run / dogfood execution):
 
-- **What this design covers**: The **human factors of transport selection** — conversational switching, current-system visibility, policy of demoting raw env steps. A layer for presenting / recording / displaying the choice that holds whichever of renga / broker is chosen.
-- **What this design does not cover**: broker daemon startup / lifecycle / dogfood live run / executing switch-back conditions (these are the scope of [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) and track 3).
-- **Dependencies**: This design **does not depend on track 3** (the conversational IF / visibility / runbook policy can be designed and implemented without broker actually running). Conversely, it also **does not block track 3** (track 3 can proceed as-is through the raw env path; the conversational IF only overlays a main path and does not close off the raw env path — [§7.1](#71-policy-do-not-change-the-runbook-body)). The two can progress independently.
+- **What this design handles**: **Human-engineering of transport selection** — switching by conversation, visualization of the current track, the policy for relegating raw env steps. A layer that presents / records / displays choices, holding whichever of renga / broker is picked.
+- **What this design does not handle**: broker daemon startup / lifecycle / dogfood real-run / execution of the rollback conditions (these are within the scope of [`docs/operations/broker-dogfood-runbook.md`](../operations/broker-dogfood-runbook.md) and Track 3).
+- **Dependency**: This design **does not depend on Track 3** (the conversational IF / visualization / runbook policy can be designed and implemented without a broker real-run). Conversely, it **does not block Track 3** (Track 3 can proceed as-is on the raw env path; the conversational IF only layers the main path and does not block the raw env path — [§7.1](#71-policy-do-not-modify-the-runbook-body)). The two can proceed independently.
 
 ---
 
 ## 9. Residual risks and implementation-time verification items
 
-| Item | Note |
+| Item | Notes |
 |---|---|
-| **Real-world behavior of child-pane env inheritance ([§5.3](#53-propagation-chain-secretary---dispatcher---worker))** | Whether the child pane launched by `spawn_claude_pane` inherits the caller's mid-session-modified env or not **requires real-world verification**. This design does not bet on inheritance and proposes persisted choice ([§5.4](#54-proposed-persisted-choice-mechanism)), but the concrete path by which the launch sequence reflects the persisted choice into env is verified at implementation time |
-| **Persisted choice location and Set C consistency** | The storage location (part of existing state or a dedicated config) and format of persisted choice are decided at implementation time. If newly placed under `.state/`, a proposal to revise the inventory in [`docs/contracts/state-schema-contract.md`](../contracts/state-schema-contract.md) Set C is required (this design document does not perform that revision) |
-| **Ambiguity of conversational trigger vocabulary** | Natural language like "start with broker" can be ambiguous. Before the Secretary confirms a selection, make it possible to confirm that broker is opt-in / revertible and that the current system can be queried ([§6](#6-mechanism-2-always-on-one-line-visibility-of-the-current-transport-in-the-org-start-launch-report) query path). Normalization is out of scope |
-| **Generation-time bake / display discrepancy** | Both the transport baked into artifacts by the generator ([§5.2](#52-two-propagation-surfaces) (A)) and the launch report display ([§6](#6-mechanism-2-always-on-one-line-visibility-of-the-current-transport-in-the-org-start-launch-report)) consume the same `resolve()`, guaranteeing agreement. If the two judge the transport via separate paths, they can drift, so the display must always consume the SoT ([§6.2](#62-consistency-with-the-inviolable-constraints)) |
+| **Empirical child-pane env inheritance behavior ([§5.3](#53-propagation-chain-secretary--dispatcher--worker))** | Whether the child pane started via `spawn_claude_pane` inherits the caller env (as modified mid-session) **requires empirical verification**. This design does not bet on inheritance and proposes persisted choice ([§5.4](#54-the-proposed-persisted-choice-mechanism)), but the concrete path by which the startup sequence reflects the persisted choice into env should be verified at implementation |
+| **Persistence-choice location and Set C alignment** | The storage destination of the persisted choice (part of existing state or dedicated configuration) and format are decided at implementation. If newly placed under `.state/`, an amendment proposal to the inventory of [`docs/contracts/state-schema-contract.md`](../contracts/state-schema-contract.md) Set C is needed (this design document does not make that amendment) |
+| **Conversational-trigger vocabulary ambiguity** | Natural language like "start with broker" can be ambiguous. Before the Secretary finalizes the choice, ensure that broker is opt-in / rollback-safe and the current track can be confirmed (the inquiry path in [§6](#6-mechanism-2-always-on-1-line-visualization-of-the-current-transport-in-the-org-start-startup-report)). Normativization is out of scope |
+| **Inconsistency between generation-time bake and display** | The transport baked into the artifact by the generator ([§5.2](#52-two-propagation-surfaces) (A)) and the display in the startup report ([§6](#6-mechanism-2-always-on-1-line-visualization-of-the-current-transport-in-the-org-start-startup-report)) are guaranteed consistent by consuming the same `resolve()`. If both judge the transport via separate paths, they may drift, so the display must always consume the SoT ([§6.2](#62-alignment-with-untouchable-constraints)) |
 
 ---
 
 ## Revision history
 
-- 2026-06-11: First version (design only. UX design for Issue #535 "transport switch conversational interface"). Hide raw env `ORG_TRANSPORT` (conversational IF substitutes for env configuration / child-pane inheritance / proposes persisted choice), always-on one-line visibility of the current transport in `org-start` launch report, policy of demoting raw env steps in broker-dogfood-runbook to an appendix + PowerShell coexistence. Under the inviolable constraints (default renga = bit equivalent / resolution order / SoT unchanged / independent of Issue G track 3), fixes as a central thesis that the conversational IF is a thin layer on top of the `resolve()` chain. Does not touch normative documents / runbook / runtime (one-way reference only).
+- 2026-06-11: First version (design only; UX design of Issue #535 "Make transport switching conversational"). Designed hiding raw env `ORG_TRANSPORT` (proxy env setup / child-pane inheritance by the conversational IF / persisted-choice proposal), always-on 1-line visualization of the current transport in the `org-start` startup report, and the policy for relegating raw env steps of the broker-dogfood-runbook to the appendix + PowerShell equivalents. Under the untouchable constraints (default renga = bit equivalence / resolution order and SoT invariant / Issue G Track 3 independence), fixed as the central thesis that the conversational IF is a thin layer layered on top of the `resolve()` chain. Does not touch normative documents / runbook / runtime (one-way reference only).
