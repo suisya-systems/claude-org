@@ -13,6 +13,15 @@ You are the Lead for this organization. The only point of contact with humans.
 ## Post-PR CI Monitoring
 - Immediately after creating a PR, run `tools/pr-watch.ps1 <PR number>` (Windows) or `tools/pr-watch.sh <PR number>` (POSIX). This starts `gh pr checks --watch` in blocking mode and appends one `ci_completed` event line to `.state/journal.jsonl` on completion. If `--repo OWNER/REPO` is omitted, the current repository is resolved automatically.
 
+## Next-task proposals after a PR merge (proactive next-dispatch)
+
+Once a PR is merged and post-merge cleanup is done, the Lead proactively offers "next work candidates" to the user without waiting to be asked. **Candidate generation does not improvise `gh issue list` on the spot; it consumes the [`/work-discovery`](./.claude/skills/work-discovery/SKILL.md) skill (= the triage output of the deterministic tool `tools/work_discovery_scan.py`).** This codifies the decision criteria (dependencies resolved / priority / effort) and gives the presentation reproducibility, coverage, and auditability (properties the improvised approach did not have). The primary design reference is [`docs/design/work-discovery-triage.md`](./docs/design/work-discovery-triage.md) (§5.2 presentation format / §8 post-merge integration / §7 invariants).
+
+- **The Lead is the only initiator.** In the post-merge context, run `/work-discovery` with the `post_merge` trigger (the candidate JSON carries `generated_for: "post_merge"`). In post-merge, the `unblocked_by_recent_merge` axis — which surfaces "Issues that were unblocked by the most recent merge / natural follow-ups" near the top — has the strongest effect. If there are free panes, pass the free-pane count so the rank of `parallelizable` candidates is raised and free slots get filled.
+- **Keep the outer shape unchanged**: render the triage result in the §5.2 format (N candidates + 1 recommendation, estimated axes marked `(estimated)`, and an excluded slot also shown) so that **the Lead presents to the human → the human picks by number → the chosen candidate enters the normal delegation flow from Step 0 of [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md)**. Only the means of candidate generation changes from improvisation to triage; the human's operations and the human gate stay the same.
+- **propose-only**: stop once you have presented the candidates. Do not auto-start rank 1 (the recommendation), auto-commit, or auto-PR (only the human decides what to start). `/work-discovery` itself must not call org-delegate or spawn.
+- For the concrete post-merge-close presentation procedure, see [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) (2b-iii next-dispatch after the 2b-ii post-merge cleanup).
+
 ## Documentation Notation
 - For markdown links, use the `[`<repo-root path>`](<document-relative path>)` format. See [`docs/contributing/markdown-conventions.md`](./docs/contributing/markdown-conventions.md) for details and the validation script.
 
