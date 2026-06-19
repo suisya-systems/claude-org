@@ -3,6 +3,14 @@
 Task-specific instructions sent via renga-peers `send_message` (`to_id="worker-{task_id}"`).
 Instructions for permissions, reporting destination, SUSPEND handling, and knowledge logging are centralized in `worker-claude-template.md` (via `CLAUDE.md`), so they are not repeated here.
 
+## Worker entry-point convention for ultracode tasks (Issue #554)
+
+For tasks whose worker brief (the worker's behavioral rules file — default `CLAUDE.md`, `CLAUDE.local.md` for claude-org self-edit tasks) permits ultracode use, ultracode is armed only by the **`ultracode` kickoff (user turn) that the Dispatcher types into the pane with `send_keys`** (writing `ultracode` inside this instruction body — i.e., inside the peer/channel message delivered via `send_message` / `check_messages` — does not arm; this has been confirmed in live runs). Therefore, the convention on the worker side (also written into the "How to Proceed" section of the templates below so it reaches the worker):
+
+- If the brief permits ultracode, **do not start the work from this peer message**; respond to the Dispatcher's `ultracode` send_keys kickoff turn to start the work (since the entire response in that turn is what gets armed). The peer message instructions are reference material. If permission is not granted, you may start the work from this instruction as usual.
+- For the arming details and the SoT of the Dispatcher procedure, see **3-5a** in [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md). The permission text need not be copied into this template (the SoT is the implementation guidance in the worker brief).
+- The positioning of ultracode (front stage for implementation and pre-Codex self-review convergence; the final Codex gate is maintained) is included conditionally in the "Verification Depth: full" section of the templates below, so it reaches the worker.
+
 ## Template
 
 ```
@@ -42,6 +50,7 @@ Do not run `git clone` / `git init` on the Worker side. Do not create directorie
 
 ## How to Proceed
 Work directly in auto mode. Do not use Plan mode.
+**ultracode-permitted tasks only** (when the "Implementation guidance" in the worker brief permits ultracode use): **do not start the work from this peer message**. Start the work by responding to the `ultracode` send_keys kickoff (user turn) typed by the Dispatcher (only that turn arms the multi-agent workflow / Workflow tool; the body delivered via peer message / `check_messages` does not arm). If permission is not granted, you may start the work from this instruction as-is.
 
 ## Constraints
 {Include any language, framework, test requirements, etc.}
@@ -53,6 +62,7 @@ The default is `full`. Only for a trivial fix should the Lead choose and fill in
 - **full** (new feature implementation / fix / refactor / test addition / hook, skill, or config edits, and anything else involving code or behavior changes)
   - **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs into these directories. If you learn something that includes such information, do not record it; escalate to the Lead (secretary) instead.
   - **Required regardless of whether codex is present**: run the repository's normal verification steps such as the existing test suite / lint / type-check until green, and report using the normal completion format (deliverable summary, remaining work, PR draft / retrospective record)
+  - **ultracode (only for permitted tasks)**: if the brief permits ultracode use and arming has occurred on the kickoff user turn, you may use ultracode (multi-agent workflow / Workflow tool) for implementation and **pre-Codex self-review convergence** (parallel review from multiple perspectives crushes the seeds of findings and reduces Codex round counts). The final gate (Codex Blocker / Major zero below) is **maintained as before regardless of whether ultracode is used**. ultracode is the **front stage** of the Codex gate, not a replacement. If arming has not occurred, do not use ultracode (arming is handled by the Dispatcher's `send_keys` user turn, not by message bodies. See [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a)
   - **Additional gate (optional)**: after completing the commit, if the `codex` CLI is available, run a Codex self-review with `codex exec --skip-git-repo-check`
     - Check command: `command -v codex` (Bash/zsh) / `Get-Command codex -ErrorAction SilentlyContinue` (PowerShell)
     - In environments where codex is not installed, skip the self-review and proceed to the completion report with only the normal verification above (the round rules below do not apply)
@@ -141,7 +151,7 @@ Replace `{ARTIFACT_NAME}` with the actual filename such as `AUDIT.md` or `REPORT
 
 ## Auto-Expansion Template (helper-rendered)
 
-If the task JSON includes `instruction_vars`, `claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` expands the variables in the following strict template and writes the result as Worker instructions (defaults such as Japanese greeting text or `(none)` are overridden in `tools/ja_locale.json` directly under the repository root. Because the Dispatcher runs with `cwd=".dispatcher/"`, the actual invocation should point one level up, such as `--locale-json ../tools/ja_locale.json --template-repo ..`. See the command example in `.dispatcher/CLAUDE.md` for details). If the `instruction` field is specified directly, that takes precedence and this template is not used (backward-compat).
+If the task JSON includes `instruction_vars`, `claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` expands the variables in the following strict template and writes the result as Worker instructions (defaults such as Japanese greeting text or `(none)` are overridden in `tools/ja_locale.json` directly under the repository root. Because the Dispatcher runs with `cwd=".dispatcher/"`, the actual invocation should point one level up, such as `--locale-json ../tools/ja_locale.json --template-repo ..`. See the command example in `.dispatcher/CLAUDE.md` for details). If the `instruction` field is specified directly, that takes precedence and this template is not used (backward-compat). **In this direct-specification path, the ultracode standby text in the "How to Proceed" section above is also not inserted automatically**, so when dispatching an ultracode-permitted task with a directly-specified instruction, either have the Dispatcher prepend the standby text to the body, or do not send the reference `send_message` and use `send_keys` as the sole entry trigger ([`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a step 1).
 
 Variable list (referenced by the helper side):
 
@@ -174,12 +184,13 @@ All file creation must be limited to this directory. Moving to `..` or recreatin
 
 ## How to Proceed
 Work directly in auto mode. Do not use Plan mode.
+**ultracode-permitted tasks only** (when the "Implementation guidance" in the worker brief permits ultracode use): **do not start the work from this peer message**. Start the work by responding to the `ultracode` send_keys kickoff (user turn) typed by the Dispatcher (only that turn arms the multi-agent workflow / Workflow tool; the body delivered via peer message / `check_messages` does not arm). If permission is not granted, you may start the work from this instruction as-is.
 
 ## Constraints
 {constraints}
 
 ## Verification Depth: {verification_depth}
-- full: run normal verification such as the existing test suite / lint / type-check until green, and after completing the commit, if the codex CLI is available, run a self-review with `codex exec --skip-git-repo-check`. For Blocker / Major findings, add a fix commit before the completion report. If the same finding category cannot be cleared after 3 rounds, report completion immediately. Minor / Nit findings should be left as-is (document them as known limitations). **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs. Do not record learnings that include such information; escalate them to the Lead (secretary).
+- full: run normal verification such as the existing test suite / lint / type-check until green, and after completing the commit, if the codex CLI is available, run a self-review with `codex exec --skip-git-repo-check`. For Blocker / Major findings, add a fix commit before the completion report. If the same finding category cannot be cleared after 3 rounds, report completion immediately. Minor / Nit findings should be left as-is (document them as known limitations). **ultracode (only for permitted tasks)**: if armed at kickoff, you may use ultracode for implementation and pre-Codex self-review convergence (the final Codex gate (Blocker / Major zero) is maintained as before. ultracode is the front stage, not a replacement). If not armed, do not use it. **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs. Do not record learnings that include such information; escalate them to the Lead (secretary).
 - minimal: only for trivial fixes. Codex self-review and additional verification are prohibited. Send the completion report to the Lead as a single line (`done: <SHA> <files>`).
 
 ## Reporting Destination

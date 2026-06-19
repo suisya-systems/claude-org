@@ -15,6 +15,7 @@
 ### Windows
 - Python は `py -3` または `python` (3.10 推奨)
 - 日本語ファイル: `encoding="utf-8"` 明示
+- CLI 出力文字列（argparse `help=` / `print()`）は ASCII の `-` を使う（em-dash 等 cp932 非対応文字は cp932 コンソールでの `--help` を `UnicodeEncodeError` でクラッシュさせる。pytest の `redirect_stdout` では検出できず実端末でのみ落ちる）。実装後 `--help` を実端末で 1 回スモーク
 
 ## プロジェクト
 - ${project_name}: ${project_description}
@@ -56,6 +57,11 @@ codex exec --skip-git-repo-check "このブランチの main からの差分を�
 - Blocker/Major 修正、3 ラウンド上限
 - Minor/Nit 残置可
 - `codex:rescue` skill 禁止、`codex exec` 直打ちのみ
+
+**完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
+1. **最重要の変更点（N 個）**: 効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
+2. **要確認ファイル / hunk**: 人間が承認前に必ず目を通すべきファイル / hunk（要点に絞る）
+3. **設計判断と理由**: 採用した設計上の選択と、なぜそれを選んだか（却下した代替案があれば 1 行）
 
 <!--END:codex_full-->
 <!--BEGIN:codex_minimal-->
