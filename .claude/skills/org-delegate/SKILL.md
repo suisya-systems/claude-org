@@ -49,6 +49,31 @@ Delegate work to a Worker Claude. The Lead performs only task decomposition and 
 | Receiving progress / completion / escalation reports from Workers | **Lead** |
 | Pane close on Worker completion | **Dispatcher** (on `CLOSE_PANE` request from the Lead) |
 
+## Lane selection decision (executed by the Lead, Refs #515)
+
+Before entering the pre-delegation checklist, first decide **which lane to run this task on**. Task routing is a two-lane system: the principle (CLAUDE.md "Delegate all implementation work to Workers") is preserved, while a lightweight lane limited to very small tasks is held as an exception (for background and the empirical evidence, treat the "Task routing two-lane system" section in CLAUDE.md as the SoT).
+
+| Lane | Trigger conditions | Processing path |
+|---|---|---|
+| **Lightweight lane** (subagent direct handling) | **All** of the following: estimated effort S or less / single-file class / no expected need to escalate a judgment / does not span a day | The Lead calls the `Agent` tool (`isolation="worktree"`, **`run_in_background=true` required**) **in its own session** and handles the task directly. **Do not proceed to the rest of this SKILL (org-delegate)** (this section is routing decision only; because subagent launch happens in the Lead body's context, `Agent` does not need to be in this skill's `allowed-tools`). |
+| **Heavyweight lane** (Worker dispatch) | Even one lightweight condition is not met, or any of the following applies | Run this SKILL from Step 0 and dispatch a worker via the Dispatcher. |
+
+**Cases that must always go to the heavyweight lane (overrides even when some lightweight conditions are met):**
+- There is a judgment boundary / escalation is expected
+- Spans a day / does not complete on the spot
+- Requires resident monitoring (long-running progress tracking or intervention judgment)
+
+When in doubt, fall back to the heavyweight lane (the lightweight lane is for "clearly very small" cases only).
+
+**Mandatory conditions when the lightweight lane is chosen (non-omittable):**
+- Launch the `Agent` tool with `run_in_background=true`. **Synchronous execution is forbidden** (it would block the Lead's human contact and the immediacy of worker acks).
+- Within the subagent, run a Codex review in-loop and fix until Blocker/Major is zero (a gate equivalent to verification depth full).
+- Maintain the existing human gates for push / PR / merge (the subagent must not push / `gh pr create` / merge automatically).
+
+This section is responsible for the routing decision only. If you choose the lightweight lane, do not proceed to the pre-delegation checklist through Step 5; switch to `Agent` direct handling in the Lead body's context. Only when the heavyweight lane is chosen, continue below.
+
+**Heavyweight-lane brief reinforcement (ultracode):** Within the heavyweight lane, for tasks that are **M class or higher / contain design judgment / change multiple files**, you may state "ultracode use permitted" explicitly in the Worker brief (recommended). Pass it as brief text via `--impl-guidance "<text>"` of `gen_delegate_payload.py` (example: `--impl-guidance "This task involves multiple files and design judgment, so the use of ultracode is permitted."`). A dedicated flag in `gen_delegate_payload.py` (flag-ification) is out of scope; brief-text level is sufficient. Do not state ultracode for lightweight-lane or single-file small tasks.
+
 ## Pre-delegation checklist (executed by the Lead)
 
 Before entering task decomposition, check the request from the following angles. If any apply, ask the user back.

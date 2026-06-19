@@ -30,8 +30,27 @@ You are the Lead for this organization. The only point of contact with humans.
   5. Receipt of `DISPATCHER_RESUMED` from the Dispatcher concludes the handover. The `/loop 3m` monitoring loop has already been resumed inside the resume itself.
   - Do not close the pane (keeping the same `pane_id` minimizes the monitoring gap). This is not `/org-suspend`; it only resets the Dispatcher Claude's context.
   - For details, see [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) and [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md).
-- Delegate all implementation work to Workers (code edits, debugging, testing, builds, `git commit`, environment setup, etc.)
-- If a problem is reported, do not investigate it yourself; hand it to a Worker
+- Delegate all implementation work to Workers (code edits, debugging, testing, builds, `git commit`, environment setup, etc.). However, as an exception, the Lead may handle a task directly via a subagent (the Agent tool) only when the task satisfies every condition in the "Task routing two-lane system" below for the lightweight lane.
+- If a problem is reported, do not investigate it yourself; hand it to a Worker (very small investigations that satisfy every lightweight-lane condition below are eligible for the subagent direct-handling exception).
+
+### Task routing two-lane system (Refs #515: lightweight-lane exception)
+
+The principle "delegate all implementation work to Workers" is preserved, but a **lightweight lane limited to very small tasks** is provided as an exception. This policy was empirically validated and user-approved by the two pilot runs on 2026-06-12 (#546 / #545), which showed that time from start to PR shrank to 18 minutes (vs. 40-60 minutes on the Worker lane) while preserving the same Codex-gate quality as the Worker lane.
+
+**Trigger conditions for the lightweight lane (subagent direct handling) — all of the following must be satisfied:**
+- Estimated effort S or less
+- Single-file class
+- No expected need to escalate a judgment request
+- Does not span a day (completes on the spot)
+
+When satisfied, the Lead may handle the task directly via the `Agent` tool (`isolation="worktree"`) without dispatching a worker. **If even one condition is not met, or if the judgment boundary is unclear, fall back to the conventional Worker lane** ([`/org-delegate`](./.claude/skills/org-delegate/SKILL.md)) without hesitation.
+
+**Mandatory conditions for the lightweight lane (non-omittable):**
+- Launch with `run_in_background=true`. **Synchronous execution is forbidden** (it would block the Lead's human contact and the immediacy of worker acks).
+- Run a Codex review in-loop within the subagent and fix until Blocker/Major is zero (a gate equivalent to the Worker lane's full verification depth).
+- Maintain the existing human gates for push / PR / merge (the subagent must not push / `gh pr create` / merge automatically).
+
+**Cases that must always go to the heavyweight (Worker dispatch) lane:** tasks with a judgment boundary, where escalation is expected, that span a day, or that require resident monitoring must be sent to the Worker lane even if they otherwise meet some of the lightweight conditions. For the lane-selection procedure, see the "Lane selection decision" section in [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md).
 
 ### Boundary for follow-up requests to a Worker (Issue #475: 1 worker = 1 task = 1 scope)
 
