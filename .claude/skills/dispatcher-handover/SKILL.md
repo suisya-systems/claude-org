@@ -135,7 +135,7 @@ Format (YAML frontmatter + markdown):
 
 ```markdown
 ---
-created_at: <UTC ISO8601>
+created_at: <output of `date -u +%Y-%m-%dT%H:%M:%SZ`. Deterministic UTC; JST-as-Z forbidden>
 dispatcher_pane: <pane_id> / peer=<peer_id>
 active_worker_count: <int>
 event_cursor_present: <true | false>
@@ -174,6 +174,16 @@ pending_decisions_count: <int>
 
 **Writing notes**:
 - Write as "a memo to your next self", not as "past logs".
+- For `created_at`, paste the output of **`date -u +%Y-%m-%dT%H:%M:%SZ`**
+  (on PowerShell: `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`)
+  directly. Do not hand-write a local (JST) time and tag it with `Z`
+  (JST-as-Z forbidden). [`/dispatcher-resume`](../dispatcher-resume/SKILL.md)
+  evaluates `now - created_at` against a 7-day freshness window
+  (cold-start vs resume branch) using this `created_at`, so a future
+  timestamp slipping in will skew the decision. Align with the policy of
+  keeping all timestamps in Dispatcher state files in UTC (see the timestamp
+  convention at the top of
+  [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)).
 - Never write secrets / tokens / passwords.
 - Assume the Secretary / human may also read this file.
 
