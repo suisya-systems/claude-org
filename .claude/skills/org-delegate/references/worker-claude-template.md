@@ -140,6 +140,7 @@ When the work is done, **always** do the following:
 
 1. **Completion report**: report to the **Secretary (`secretary`)** via renga-peers.
    - How to send: `mcp__renga-peers__send_message(to_id="secretary", message="...")` (`secretary` is the pane name fixed by the renga layout).
+   - **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the above is **default `renga`** (`ORG_TRANSPORT` unset). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified name gets machine-substituted to **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** (`to_id` etc. argument shape and destination are identical). Receiving acks from the Secretary is not an in-band push but a **pane-local nudge + `mcp__org-broker__check_messages` pull** (it just changes to "see the nudge → `check_messages`"). Instead of `[pane_not_found]` family codes, broker may return `[peer_not_found]`, but the fallback below (sending via numeric pane id) works the same way. The default-renga procedure is unchanged.
    - **Note: send to the Secretary, not to the Dispatcher (which sent you the instructions)**.
    - **Fallback**: if `to_id="secretary"` returns `[pane_not_found]`, the Secretary pane may have been launched via a path other than `renga --layout ops`. In that case, send using the numeric pane id specified in the DELEGATE message body (e.g., `to_id="1"`). Once the Secretary side runs the `set_pane_identity` auto-repair in `/org-start` Step 0, `to_id="secretary"` will work again from then on.
    - What you completed.
