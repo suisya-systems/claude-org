@@ -209,11 +209,26 @@ Consolidated raw files are not written back to active raw; they are moved into `
    ```
    mv knowledge/raw/<entry>.md knowledge/raw/archive/<entry>.md
    ```
-3. After the move, append the visual marker to the top of the archived file:
-   ```
-   <!-- curated -->
-   ```
+   (Under the normal flow, no file of the same name exists on the archive side and the move targets a fresh path, so even with a `mv -i` alias no overwrite prompt is raised. What the alias breaks is the marker addition in the next sub-step 3, not this normal move. Exceptionally, if the same raw entry reappears or a partial recovery leaves `knowledge/raw/archive/<entry>.md` already in place, `mv -i` will issue an interactive confirmation — in that case stop, inspect the existing archive-side file, resolve the collision via rename etc., and then move.)
+3. After the move, prepend the line `<!-- curated -->` as a visual marker to the top of the archived file.
+   **Addition must be performed via the Write tool (mandatory procedure)**: Read the target archive
+   file's contents, prepend `<!-- curated -->` + a newline, and Write it back to the same path
+   (= read -> prepend -> write).
    The marker is added **to the file after it has been moved to archive**. Files under active `knowledge/raw/` are never rewritten.
+
+   > **Why not add it via the shell (preventing recurrence of the past harm: 5 broken 17-byte `.md.tmp` remnants accumulated)**:
+   > The shell-style approach of "write marker + body to `<entry>.md.tmp`, then overwrite via `mv <entry>.md.tmp <entry>.md`"
+   > breaks under two environmental factors. (1) If `mv` is aliased to `mv -i`, an **overwriting `mv` against an
+   > existing file raises an interactive confirmation, and under non-interactive execution (curator runs unattended)
+   > it gets rejected on EOF** -- the original without the marker is left in place and only the `.tmp` remains as a
+   > stray. (2) zsh's history expansion interprets the `!` inside the marker string, and writing it directly to the
+   > shell injects a `\` as in `<\!-- curated -->`.
+   > **A prepend via the Write tool uses no `mv` at all (-> avoids (1)) and never passes `!` through the shell
+   > (-> avoids (2)), severing both at once.** If you must use the shell anyway, evade the alias on overwriting `mv`
+   > via `command mv -f`, and assemble any marker string containing `!` via `chr(33)` or similar rather than writing
+   > it directly to the shell (note however that this skill's allowed-tools only permits `Bash(mv knowledge/raw/*)`
+   > family, so `command mv -f` falls into a permission prompt under unattended execution -- hence the Write tool
+   > path is the default).
 
 The fact that a file lives under archive/ is itself the "curated" signal, but the marker is also added for visual continuity. The `raw_active` count in `tools/check_curate_threshold.py` excludes archive/, so even just moving alone removes a file from the count for next time.
 
