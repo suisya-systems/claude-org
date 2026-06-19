@@ -2,6 +2,8 @@
 
 Acknowledgement template that the Lead sends in response to a peer message from a worker. SKILL.md Step 5's "Canonical event flow" requires it as **step 1**.
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the `mcp__renga-peers__send_message` in the examples below is **default `renga`** (`ORG_TRANSPORT` unset). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified name gets machine-substituted from **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** (argument shape, address specification, and ack text are identical). The worker's report-receipt is not an in-band push but a **pane-local nudge + `check_messages` pull**, so the Lead's order becomes "see the nudge → pull the body via `mcp__org-broker__check_messages` → ack" (the ack-mandatory / dead-lock prevention nature is invariant across systems). See [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) and the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) for details. The default-renga example texts are unchanged (broker is additive).
+
 ## Why ack is mandatory
 
 - worker-claude-template instructs workers to end completion / progress reports with "Holding the pane. Awaiting next instructions."
