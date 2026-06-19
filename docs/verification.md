@@ -4,6 +4,8 @@ Verification steps for each feature. If an issue is found, fix the skill or `CLA
 
 **Prerequisites**: renga 0.18.0+ (`npm install -g @suisya-systems/renga@0.18.0`, then `renga mcp install --force` to register the `renga-peers` MCP server in user scope). Assumes support for structured `cwd` (0.16.0), `set_pane_identity` (0.17.0), and `spawn_claude_pane` (0.18.0).
 
+> **Startup transport note (default broker / renga fallback)**: The default startup main path is `claude-org-runtime org up` (acquire the broker daemon and launch the Lead TUI). Read the startup step in each test below as a combined **`claude-org-runtime org up` (default broker) / `renga --layout ops` (renga fallback, when `ORG_TRANSPORT=renga` is set)**. References below to `mcp__renga-peers__*` tools, the `renga-peers` MCP, and `renga-layouts/ops.toml` describe the **renga path's verification surface**; on the broker path, read them as the corresponding `mcp__org-broker__*` (tier-specific surface). The substance of the verification matrix (each test's purpose and expected results) is identical across both paths. For broker operations, see [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md).
+
 ---
 
 ## 0. Regression Check (Preventing startup template regressions)
@@ -60,8 +62,8 @@ This script does not require a live renga session (it is a static probe that ret
 
 **Steps**:
 1. `git clone` this repository to any location
-2. In the clone, run `renga --layout ops` (the secretary pane launches)
-3. Confirm that `mcp__renga-peers__list_panes` is reachable from the secretary's Claude Code (MCP availability check in Step 0)
+2. In the clone, run `claude-org-runtime org up` (default broker; in the renga fallback, `renga --layout ops`) (the secretary pane launches)
+3. Confirm that `mcp__org-broker__list_panes` (in the renga fallback, `mcp__renga-peers__list_panes`) is reachable from the secretary's Claude Code (MCP availability check in Step 0)
 4. Run `/org-start` in the secretary's Claude Code
 
 **Expected results**:
@@ -84,7 +86,7 @@ This script does not require a live renga session (it is a static probe that ret
 
 **Purpose**: Confirm that a worker is dispatched correctly, completes the work, and reports back.
 
-**Prerequisites**: Launched with `renga --layout ops` and `renga-peers` MCP enabled (Connected confirmed via `claude mcp list`). Test 1 has run `/org-start`.
+**Prerequisites**: Launched with `claude-org-runtime org up` (in the renga fallback, `renga --layout ops`) and the transport MCP enabled (for broker, `org up` auto-distributes the secretary MCP; for renga, confirm `renga-peers` Connected via `claude mcp list`). Test 1 has run `/org-start`.
 
 **Steps**:
 1. Ask the secretary Claude for a task (e.g., "Add a new article to the blog")
@@ -210,7 +212,7 @@ cat .state/journal.jsonl | tail -1  # Confirm the suspend event
 
 **Steps**:
 1. **Completely close** the secretary Claude's terminal
-2. Relaunch in the clone with `renga --layout ops`
+2. Relaunch in the clone with `claude-org-runtime org up` (in the renga fallback, `renga --layout ops`)
 3. Run `/org-start`
 
 **Expected results**:
@@ -238,7 +240,7 @@ cat .state/journal.jsonl | tail -1  # Confirm the suspend event
 
 **Steps**:
 1. From Test 2 (worker running), close the terminal **without suspending**
-2. Relaunch with `renga --layout ops`
+2. Relaunch with `claude-org-runtime org up` (in the renga fallback, `renga --layout ops`)
 3. Run `/org-start`
 
 **Expected results**:
@@ -367,7 +369,7 @@ head -1 knowledge/raw/archive/*.md  # Check <!-- curated --> marker
 **Purpose**: Confirm the full cycle of start → work → suspend → resume → knowledge curation.
 
 **Steps**:
-1. Launch ClaudeCode in the clone (`renga --layout ops`)
+1. Launch ClaudeCode in the clone (`claude-org-runtime org up`; in the renga fallback, `renga --layout ops`)
 2. Run `/org-start` (initial startup)
 3. Request 3 tasks (ones that trigger worker dispatch)
 4. Confirm a retrospective is recorded after each task
