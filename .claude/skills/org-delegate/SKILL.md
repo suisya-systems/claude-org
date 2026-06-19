@@ -254,7 +254,7 @@ worker → Secretary peer message
 
 #### 2a. Completion report
 
-- Return ack to the worker (see the "completion report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md))
+- Return ack to the worker (see the "completion report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md); immediately on receipt, before any other state update, to prevent dead-lock)
 - **Transition the run to REVIEW via the DB** (direct markdown edits prohibited):
   ```bash
   python -c "
@@ -268,6 +268,7 @@ worker → Secretary peer message
   ```
 - Append an event to the DB events table (`bash tools/journal_append.sh ...`)
 - **Register update on dogfood pass completion (Issue #338)**: If the completed task was earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition that row's `status` from `open → consumed`. Defects are assumed to already be aggregated in the paired follow-up issue (the `dogfood_issue` column) — the format is specified in the dogfood pass worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
+- **Use the human-comprehension summary as the basis of the approval presentation and persist it (verification depth `full` only)**: A full-mode completion report includes a worker-written "human-comprehension summary" — (1) the N most important changes, (2) files / hunks that require review, (3) design decisions and rationale (schema SoT is [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)). The Lead does not read the code itself; instead it uses this summary as the basis of the approval presentation to the user (rephrasing into business language as needed). Append the received summary to the Progress Log of `.state/workers/worker-{task_id}.md` verbatim under a `Human Understanding Summary:` heading followed directly by a fenced code block (this is the source that is re-presented at merge approval; if there are multiple full completion reports, the latest block is canonical). The PR description may also include a summary. **If a full completion report omits the summary, treat it as ordinary review feedback and ask the worker in the same pane to supply it** (handled via the review-feedback procedure in [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c). This is a procedural-layer extension of the completion report format and does not change the contract (T4 `worker_completed`) transition condition. The 1-line `done:` report in minimal mode does not carry a summary
 - **Emit awaiting_user notification (Issue #28)**: Just before reporting to the human → entering an approval-wait stop, inform the attention watcher that "the Secretary is stopping while awaiting the user's judgment":
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<short context such as PR/Issue>"
