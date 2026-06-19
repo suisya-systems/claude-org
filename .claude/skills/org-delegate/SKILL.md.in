@@ -18,12 +18,12 @@ allowed-tools:
   - Bash(git fetch:*)
   - Bash(git log:*)
   - Bash(gh issue create:*)
-  - mcp__org-broker__send_message
-  - mcp__org-broker__check_messages
-  - mcp__org-broker__send_keys
-  - mcp__org-broker__inspect_pane
-  - mcp__org-broker__list_peers
-  - mcp__org-broker__list_panes
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
+  - mcp__renga-peers__send_keys
+  - mcp__renga-peers__inspect_pane
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__list_panes
 ---
 
 # org-delegate: Worker dispatch
@@ -38,13 +38,7 @@ Delegate work to a Worker Claude. The Lead performs only task decomposition and 
 
 > **state-db cutover (M4, Issue #267 / #284)**: All writes to structured sections **must go through `StateWriter.transaction()`**. A post-commit hook auto-regenerates `.state/org-state.md` / `.state/org-state.json` from the DB, and calling `update_run_status('<task_id>', 'completed')` automatically moves `.state/workers/worker-<task_id>.md` to `.state/workers/archive/`. Direct markdown edits are detected by drift_check. The SoT for events is the DB `events` table (`tools/journal_append.sh` / `.py` already route to the DB). When the DB is missing, build it with `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`.
 
-> **Transport (transport) dual system -- default `broker` / opt-in `renga`**: The `mcp__org-broker__*` calls in this skill are written for **default `broker`** (no `ORG_TRANSPORT` set) and can be followed as-is (default behavior). With `ORG_TRANSPORT=renga` (opt-in, rollback-capable), the MCP server name becomes `renga-peers` and tool **fully-qualified names are mechanically rewritten from `mcp__org-broker__*` -> `mcp__renga-peers__*`** (argument shape and semantics are identical, so the logic of the procedure is unchanged). Only the points where the procedure depends on the transport are noted alongside renga:
->
-> - **Receive model (push-primary = `claude/channel` / pull fallback)**: With default broker, worker progress / completion / judgment requests arrive **push-primary** (runtime push-first 0.1.24+, transport-lab `docs/design/broker-native-roles.md` §9): a **channel sidecar** (`server:org-broker-channel`) co-resident in each pane claims->pushes from the broker queue at ~1 second intervals and injects the body into an idle session via `notifications/claude/channel` (creating the "respond as soon as you receive it" trigger). **pull is the fallback layer**: when the sidecar is missing / unhealthy (heartbeat timeout sets `delivery_mode=PULL`) / on channel-incapable panes / when claude.ai login is absent, each role actively calls `check_messages` (`mcp__org-broker__check_messages`) at its own cadence (the per-role cadence in the §9.6 read-through table. The nudge can be a trigger but does not wake idle, so active polling is the canonical receive path. **The existing "check_messages when you see a nudge" prose is not retracted** and reads as this fallback cadence). The "On message receipt from a Worker" trigger in Step 5 fires via channel injection under push-primary, and during fallback is received by the Lead's turn-start active `check_messages` (the ack `send_message` etc. procedures are isomorphic). With `ORG_TRANSPORT=renga` (opt-in), worker reports are pushed in-band as `<channel source="renga-peers" …>`. Contract side: Surface 8 has **ratified** push-primary (2026-06-15, S3. pull is retained as fallback, renga unchanged).
-> - **spawn ceremony (folder-trust approval + dev-channel sidecar approval, 2 steps)**: Worker spawning is Dispatcher-exclusive ([`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)), but in default broker, `--mcp-config <broker>` injection (daemon, all tools + agent token) and Claude Code's **folder-trust prompt** mechanical approval (`send_keys(enter=true)`) **plus**, for push-primary, the channel sidecar is loaded with `--dangerously-load-development-channels server:org-broker-channel` and the dev-channel approval prompt (spawn-flow 3-3b) is mechanically approved with `send_keys(enter=true)` (broker-native-roles.md §9.5). This is an **addition to, not a replacement of**, the folder-trust flow ratified in §5/§8.5 (note: the `docs/design/renga-decoupling.md` §4.6 "no dev-channel prompt exists" / contract §5.1 / §8.5 dev-channel -> `--mcp-config` replacement description is additively restored for the channel sidecar's dev-channel load with push-primary adoption = ratified on 2026-06-15 in S3, contract amended). Root `.claude/**` self-edit `send_keys` pre-approval (Step 5 below) also goes through the same procedure with `mcp__org-broker__send_keys`. With `ORG_TRANSPORT=renga` (opt-in), inject `--dangerously-load-development-channels server:renga-peers` and approve the "Load development channel?" prompt with Enter, a 1-step ceremony.
-> - **Error branches (default = with broker extension codes)**: In addition to shared codes, default broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes go to the default branch and escalate). For the full list, see the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md). Under `ORG_TRANSPORT=renga`, broker-specific codes do not occur.
->
-> `new_tab` / `focus_pane` are **not** in the broker surface (intentional exclusion; this flow doesn't use them anyway). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, ratified 2026-06-14. The additive amendment S3 for push-primary is **ratified** (2026-06-15, "Ratified amendment" section), existing ratified body unchanged), design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary redesign) / `docs/design/ja-migration-plan.md` §5.2(ii) / §8. Broker actual run (dogfood) is in Epic #6 Issue G scope and is not the default path for this skill.
+{{> org-delegate-transport }}
 
 ## Lead / Dispatcher division of roles
 
@@ -186,7 +180,7 @@ python tools/gen_delegate_payload.py apply \
 
 # 3. Copy-paste the send_plan.json from the apply output into the MCP call
 #    cat <worker_dir>/send_plan.json
-#    -> mcp__org-broker__send_message(to_id="dispatcher", message=<message>)
+#    -> {{FQ}}send_message(to_id="dispatcher", message=<message>)
 ```
 
 `apply` performs **only T1 reservation** (`runs.status='queued'`). Activation into Active Work Items is the Dispatcher's T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)), so this skill does not touch it. On failure, leave the queue as is and escalate to the Secretary for judgment.
@@ -258,13 +252,13 @@ Violation case: 2026-05-21, mixing a separate concern into the voice-v2-independ
 
 When you receive a dispatch-complete report from the Dispatcher, send a greeting message to each Worker:
 ```
-mcp__org-broker__send_message(
+{{FQ}}send_message(
   to_id="worker-{task_id}",
-  message="This is the Lead. You are assigned to {task_id}. Send all reports -- completion, progress, and blockers -- to `to_id=\"secretary\"` via org-broker."
+  message="This is the Lead. You are assigned to {task_id}. Send all reports -- completion, progress, and blockers -- to `to_id=\"secretary\"` via {{SERVER}}."
 )
 ```
 
-**`.claude/` edit task send_keys pre-approval (root `.claude/**` self-edit only)**: When the delegation target includes claude-org root's `.claude/**` (`.dispatcher/` / `.curator/`, worker dir generated `.claude/settings.local.json` are out of scope), the Lead **also** inputs the approval text (target file enumeration + task_id + the explicit statement "user-approved via the Lead") into the worker pane via `mcp__org-broker__send_keys`, following the greeting send. The worker verifies the presence of this approval input before editing, and if it is absent, refuses to edit and requests it from the Lead (fixed handshake to prevent deadlock / empty type). For scope boundaries, background (2-layer guard), approval text template, and required worker brief wording, refer to [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 as the primary source.
+**`.claude/` edit task send_keys pre-approval (root `.claude/**` self-edit only)**: When the delegation target includes claude-org root's `.claude/**` (`.dispatcher/` / `.curator/`, worker dir generated `.claude/settings.local.json` are out of scope), the Lead **also** inputs the approval text (target file enumeration + task_id + the explicit statement "user-approved via the Lead") into the worker pane via `{{FQ}}send_keys`, following the greeting send. The worker verifies the presence of this approval input before editing, and if it is absent, refuses to edit and requests it from the Lead (fixed handshake to prevent deadlock / empty type). For scope boundaries, background (2-layer guard), approval text template, and required worker brief wording, refer to [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 as the primary source.
 
 ### On message receipt from a Worker
 
@@ -322,7 +316,7 @@ worker -> Secretary peer message
 
 ### Worker monitoring and intervention judgment (executed by the Lead)
 
-After dispatch, periodically check that the Worker has not entered a deep-dive or excessive-verification loop. **Intervention triggers** (if any one or more applies, check the situation with `mcp__org-broker__inspect_pane`):
+After dispatch, periodically check that the Worker has not entered a deep-dive or excessive-verification loop. **Intervention triggers** (if any one or more applies, check the situation with `{{FQ}}inspect_pane`):
 
 - More than 30 minutes elapsed on the same task, and entering the same phase (implementation / review / verification) for the 3rd time or later
 - Silent for more than 1 hour with no progress report (not waiting for input either, and no progress log being emitted)
