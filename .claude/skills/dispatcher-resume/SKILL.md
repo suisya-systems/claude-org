@@ -17,12 +17,12 @@ allowed-tools:
   - Bash(py -3 -c:*)
   - Bash(ls:*)
   - Bash(mv:*)
-  - mcp__org-broker__set_summary
-  - mcp__org-broker__list_panes
-  - mcp__org-broker__set_pane_identity
-  - mcp__org-broker__list_peers
-  - mcp__org-broker__check_messages
-  - mcp__org-broker__send_message
+  - mcp__renga-peers__set_summary
+  - mcp__renga-peers__list_panes
+  - mcp__renga-peers__set_pane_identity
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__check_messages
+  - mcp__renga-peers__send_message
 ---
 
 # dispatcher-resume: bring the Dispatcher back
@@ -31,14 +31,6 @@ Read `.state/dispatcher-handover.md` written by `/dispatcher-handover` and
 restore the Dispatcher's minimum self-awareness (its standing as an org
 member, in-flight dispatches, workers under monitoring), then resume the
 `/loop 3m` worker monitoring loop.
-
-> **Transport (dual-rail) - default `broker` / opt-in `renga`**: This file (and each skill) writes its peer-message / pane operations as `mcp__org-broker__*`, so with **`ORG_TRANSPORT` unset = default `broker`** you can follow the prose as-is. Under `ORG_TRANSPORT=renga` (opt-in, revertible) the MCP server name becomes `renga-peers`, and the **fully-qualified names mechanically rewrite from `mcp__org-broker__*` to `mcp__renga-peers__*`** (the argument shape and semantics are identical, so the operation logic does not change). Only the following three points differ between the rails:
->
-> - **Receive model (default = push-primary = `claude/channel` / pull fallback)**: Default broker is designed as **push-primary** (runtime push-first 0.1.24+, design SoT in transport-lab `docs/design/broker-native-roles.md` §9): each pane's co-resident **channel sidecar** (`server:org-broker-channel`) claims the broker queue at ~1s intervals and pushes by injecting bodies into idle sessions via `notifications/claude/channel` (a "receive then immediately respond" moment arises). Worker acks (`to_id="worker-{task_id}"`), retro-gate acks (`to_id="dispatcher"`), and the dispatcher-handover path all use the same tool names (`mcp__org-broker__*`) for `send_message` / `check_messages` / `send_keys` / `inspect_pane`. **Pull is the fallback layer**: when the sidecar is absent / unhealthy (heartbeat timeout flips `delivery_mode=PULL`) / on channel-unsupported panes (codex pull-peer) / when claude.ai login is missing, each role actively `check_messages` at its own cadence (per-role cadence: worker = turn boundary / bounded `/loop` after completion; dispatcher = `/loop 3m`; secretary = top-of-turn). The existing "if a nudge arrives, then `check_messages`" prose is **not retracted** and should be read as this fallback cadence. Under `ORG_TRANSPORT=renga` (opt-in), worker reports and dispatcher responses are pushed in-band as `<channel source="renga-peers" ...>` (renga's in-band push and broker push-primary share the same immediate-response moment). On contract surface, push-primary is **ratified** under Surface 8 + push-primary amendment (2026-06-15, S3; pull retained as fallback; renga unchanged).
-> - **Spawn ritual (default = folder-trust approval + dev-channel sidecar approval, two-step)**: When spawning child panes, default broker injects `--mcp-config <broker>` and machine-approves Claude Code's **folder-trust prompt** via `send_keys(enter=true)`, **and in addition** loads the channel sidecar via `--dangerously-load-development-channels server:org-broker-channel` for push-primary and machine-approves the dev-channel approval prompt (spawn-flow 3-3b) via `send_keys(enter=true)` (the two-step approval = folder-trust + dev-channel; see [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2 / 3-3b; design in broker-native-roles.md §9.5). Under `ORG_TRANSPORT=renga` (opt-in), it injects `--dangerously-load-development-channels server:renga-peers` and Enter-approves "Load development channel?" - a single step. **Note: the attention watcher is a transport-neutral CLI pane and is exempt from both folder-trust and dev-channel two-step approval** (do not drag it into the spawn-ritual flip).
-> - **Error branches (default = broker extended codes included)**: Default broker may return broker-specific `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` / `[unknown_tool]` in addition to shared codes (`pane_not_found` / `last_pane` / `invalid-params`, Surface 6) (unknown codes are escalated via the default branch). Under `ORG_TRANSPORT=renga`, the broker-specific codes do not occur; only shared codes + renga-specific codes apply.
->
-> The contract SoT is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, ratified 2026-06-14) + the trailing "Ratified amendment (2026-06-15): push-primary delivery" (S3; **broker push-primary is the contract default**, pull retained as structural fallback). Design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary) / `docs/design/ja-migration-plan.md` §5, §8. **Opt-in `renga` is not removed; it is retained as an always-available fallback** (the revert safety net). Running broker is the default operational path.
 
 > **Preconditions**:
 > - The Worker / Secretary / Curator panes are still alive from the previous
@@ -57,16 +49,24 @@ member, in-flight dispatches, workers under monitoring), then resume the
 > - If the handover file does not exist or is too old, point at `/org-start`
 >   and stop.
 
+> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical). Only the transport-dependent points are noted in broker form:
+>
+> - **Receive model (push-primary = `claude/channel` / pull fallback)**: under renga, worker → dispatcher peer messages are pushed in-band. Broker has been **redesigned to push-primary** (runtime push-first 0.1.24+, transport-lab `docs/design/broker-native-roles.md` §9): the per-pane channel sidecar (`server:org-broker-channel`) injects the body into the idle session via `notifications/claude/channel`. **Pull is the fallback layer**: when the sidecar is absent / unhealthy / channel-incapable, the Dispatcher actively `check_messages` (broker: `mcp__org-broker__check_messages`) each `/loop 3m` cycle (the per-role dispatcher cadence in the §9.6 reading-substitution table; Step 5's drain of stranded messages from the previous session follows the same logic. A nudge can be a trigger, but it does not wake an idle session, so an active poll is the canonical reception path. The existing "see the nudge → `check_messages`" prose is **not retracted** and is read as this fallback cadence — §9.6). **The `/loop 3m` monitoring loop itself resumes even under push-primary** — it depends on `poll_events` (lifecycle cursor; broker: `mcp__org-broker__poll_events`), and Step 2's `check_messages` functions as a fallback drain when push fails.
+> - **Spawn rite (folder-trust approval + dev-channel sidecar approval re-introduced)**: resume does not spawn, so approvals are unused; but on broker, the spawn-time flow (in org-start / org-delegate) machine-approves the `--mcp-config <broker>` **folder-trust prompt** **in addition to** the dev-channel approval for the `--dangerously-load-development-channels server:org-broker-channel` channel sidecar (the re-introduced spawn-flow 3-3b) for push-primary (additive over ratified §5/§8.5; design broker-native-roles.md §9.5).
+> - **Error branching (broker additional codes)**: on top of the renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md).
+>
+> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (ratified 2026-06-14; the push-primary additive amendment S3 is ratified 2026-06-15, with existing ratified text unchanged); the design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary redesign) / `docs/design/ja-migration-plan.md` §5.2(ii) / §8. Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+
 ## Step 0: confirm your identity
 
-1. Use `mcp__org-broker__set_summary` to set "Dispatcher: monitoring (resumed)".
-2. Use `mcp__org-broker__list_panes` to check the focused pane's name/role:
+1. Use `mcp__renga-peers__set_summary` to set "Dispatcher: monitoring (resumed)".
+2. Use `mcp__renga-peers__list_panes` to check the focused pane's name/role:
    - Expected: `name == "dispatcher"` and `role == "dispatcher"`
    - If mismatched, repair with
-     `mcp__org-broker__set_pane_identity(target="focused", name="dispatcher", role="dispatcher")`
+     `mcp__renga-peers__set_pane_identity(target="focused", name="dispatcher", role="dispatcher")`
 3. Get your own `pane_id` from `list_panes` (the id where `focused: true`).
 4. Get the `peer_id` for `name == "dispatcher"` from
-   `mcp__org-broker__list_peers`.
+   `mcp__renga-peers__list_peers`.
 
 ## Step 1: read the handover file
 
@@ -144,7 +144,7 @@ Secretary** for a decision (do not respawn or change status on your own).
 
 ## Step 4: pane liveness check
 
-Call `mcp__org-broker__list_peers` again and confirm that the worker
+Call `mcp__renga-peers__list_peers` again and confirm that the worker
 names recorded in the handover still exist. If any are gone, notify the
 Secretary with `WORKER_PANE_EXITED: worker-{task_id} (missing at resume
 time)`. Reconciliation is the Secretary's responsibility.
@@ -173,13 +173,19 @@ Evaluate the following **in this order**:
 /loop 3m
 ```
 
-- On the first cycle of the monitoring loop, `mcp__org-broker__poll_events`
+- On the first cycle of the monitoring loop, `mcp__renga-peers__poll_events`
   resumes from the previous cursor (the moment the previous session ended)
   in `.state/dispatcher-event-cursor.txt`. This preserves the semantics that
   "any `pane_exited` that arrived while the pane was closed is still
   guaranteed to be picked up at the next poll" (renga 0.5.7+ cursor spec).
-- On the first cycle, `mcp__org-broker__check_messages` drains any
-  worker → dispatcher peer messages queued during the previous session.
+- On the first cycle, `mcp__renga-peers__check_messages` drains any
+  worker → dispatcher peer messages queued during the previous session
+  (broker = `mcp__org-broker__check_messages`. Broker has been redesigned
+  to push-primary, but any messages that piled up during `/clear`, when the
+  channel sidecar could not inject them, remain in the queue, so the resume
+  first-cycle `check_messages` fallback drain still recovers them without
+  loss — only the tool name changes; the drain logic is identical. §9.6 /
+  §9.3 lease-reap).
 - `.state/dispatcher/worker-idle-state.json` retains the previous session's
   `idle_streak_cycles`, so stall-detection continuity is preserved as well.
 
