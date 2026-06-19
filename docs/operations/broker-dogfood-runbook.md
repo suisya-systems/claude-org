@@ -1,39 +1,39 @@
-# broker dogfood 運用 runbook
+# broker dogfood operations runbook
 
-`claude-org-runtime broker serve` は、renga-peers の代替となる **pure-backend 輸送層 (`org-broker`)** の daemon である。localhost の HTTP MCP サーバー + queue store + ナッジ配達を 1 プロセスで提供し、terminal adapter (tmux / WezTerm) を介して子ペインへナッジを注入する。本ドキュメントは Epic #6 Issue G(#515) の **本番 ja を `ORG_TRANSPORT=broker` で実走する前段**として、broker daemon の起動・停止・ライフサイクル・切戻しを運用手順に落としたものである。
+`claude-org-runtime broker serve` is the daemon for the **pure-backend transport layer (`org-broker`)** that replaces renga-peers. It provides a localhost HTTP MCP server + queue store + nudge delivery in a single process, and injects nudges into child panes via a terminal adapter (tmux / WezTerm). This document captures the startup, shutdown, lifecycle, and rollback procedures for the broker daemon as **the precursor to running production ja with `ORG_TRANSPORT=broker`** under Epic #6 Issue G (#515).
 
-設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5（ja 統合シーム）/ §5.5（併存・切戻し）/ §8 Issue G（dogfood ゲート）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、提案・批准待ち）。輸送両系の窓口運用差は [`CLAUDE.md`](../../CLAUDE.md)「輸送層（transport）両系」、spawn 儀式は [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b を参照。
+The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5 (ja integration seam) / §5.5 (coexistence / rollback) / §8 Issue G (dogfood gate). The contract source of truth is [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed / awaiting ratification). For the secretary-side operational differences between the two transports, see [`CLAUDE.md`](../../CLAUDE.md) "Transport (two systems)". For the spawn ritual, see [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b.
 
-> **スコープと不可触制約**: 本 runbook は「実走を可能にする手順書」であり、**本番 ja の broker 実走（org-start ハイジャック）は後日のトラック 3（ユーザー hands-on）で行う**。本書の手順はすべて **テスト用 state-dir（`.state/broker/` ではない別ディレクトリ）** で daemon を起動・停止し、本番 `.state/` を汚さない前提で書く。**既定 `renga` は削除せず opt-in fallback として常時有効**（切戻しの安全装置）。
+> **Scope and untouchable constraints**: This runbook is a "procedure to enable real runs", and **the broker live run of production ja (org-start hijack) will be done later in Track 3 (user hands-on)**. All procedures in this document start and stop the daemon under a **test state-dir (a separate directory, not `.state/broker/`)** and are written on the premise of not polluting the production `.state/`. **The default `renga` is not removed and remains permanently active as an opt-in fallback** (a safety net for rollback).
 
-> **検証ステータス（2026-06-11、runtime 0.1.17 / tmux 3.2a / WSL2）**: 本書の起動・停止・ライフサイクル・dry-run の各コマンドは worker worktree 環境で実機検証済み。生ログの要点は各節に埋め込む。
+> **Verification status (2026-06-11, runtime 0.1.17 / tmux 3.2a / WSL2)**: All the startup, shutdown, lifecycle, and dry-run commands in this document were verified on a worker worktree environment with real hardware. Key points from the raw logs are embedded in each section.
 
 ---
 
-## 1. 役割と前提
+## 1. Role and prerequisites
 
-- **入力 / 制御**:
-  - 環境変数 `ORG_TRANSPORT`（`renga` | `broker`、未設定 = 既定 `renga`）。daemon 自体は flag を読まないが、ja 側の生成器（§4）が flag に従って broker 面 allowlist を出す。
-  - CLI 引数（`--port` / `--host` / `--state-dir` / `--backend` / `--no-nudge`、§2.1）。
-- **出力 / 副作用**:
-  - localhost HTTP MCP エンドポイント（既定 `http://127.0.0.1:48720/mcp`）。
-  - queue store + JSONL journal（`<state-dir>/queue.jsonl`、既定 state-dir = `.state/broker`）。
-  - 子ペインへのナッジ注入（terminal adapter 経由、`--no-nudge` で無効化）。
-- **依存方向（一方向）**: `broker → terminal / dispatcher.choose_split`。**claude-org-ja は broker を import しない**（flag 既定 renga で不活性）。
-- **観察性（重要）**: tmux backend では broker が spawn する子ペイン（ディスパッチャー・ワーカー）が **detached な独立セッション**として起動し、デフォルトでは画面に出ない（窓口は logical pane で人間の手元 terminal に残る）。走行中の子ペインを read-only で覗く attach 導線は §8 を参照。
-- **CLI 名の注意（重要）**: 起動コマンドは **`claude-org-runtime broker serve`**（top-level CLI のサブコマンド）。`claude-org-runtime-broker` は CLI の `prog` 名（`--help` のヘッダ表記）であって **console_script は存在しない**。`python -m claude_org_runtime.broker serve` でも等価に起動できる。
+- **Inputs / control**:
+  - Environment variable `ORG_TRANSPORT` (`renga` | `broker`, unset = default `renga`). The daemon itself does not read the flag, but the ja-side generator (§4) follows the flag and emits the broker surface allowlist.
+  - CLI arguments (`--port` / `--host` / `--state-dir` / `--backend` / `--no-nudge`, §2.1).
+- **Outputs / side effects**:
+  - localhost HTTP MCP endpoint (default `http://127.0.0.1:48720/mcp`).
+  - queue store + JSONL journal (`<state-dir>/queue.jsonl`, default state-dir = `.state/broker`).
+  - nudge injection into child panes (via the terminal adapter, disabled with `--no-nudge`).
+- **Dependency direction (one-way)**: `broker → terminal / dispatcher.choose_split`. **claude-org-ja does not import broker** (inactive at the renga default flag).
+- **Observability (important)**: With the tmux backend, the child panes that broker spawns (dispatcher / workers) start as **detached, independent sessions** and do not appear on the screen by default (the secretary stays as a logical pane on the human's local terminal). For the attach path to peek at running child panes read-only, see §8.
+- **CLI name caveat (important)**: The startup command is **`claude-org-runtime broker serve`** (a top-level CLI subcommand). `claude-org-runtime-broker` is the CLI's `prog` name (the header notation in `--help`) and **no such console_script exists**. `python -m claude_org_runtime.broker serve` is an equivalent invocation.
 
 ```
 $ claude-org-runtime broker --help
 usage: claude-org-runtime broker [-h] {serve} ...
-    serve     org-broker daemon を localhost で起動する (Ctrl+C で停止)。
+    serve     Start the org-broker daemon on localhost (Ctrl+C to stop).
 ```
 
 ---
 
-## 2. broker daemon 起動の実機確認
+## 2. Real-hardware verification of broker daemon startup
 
-### 2.1 `serve` のオプション
+### 2.1 `serve` options
 
 ```
 $ claude-org-runtime broker serve --help
@@ -42,15 +42,15 @@ usage: claude-org-runtime broker serve [-h] [--port PORT] [--host HOST]
                                        [--backend {wezterm,tmux}] [--no-nudge]
 ```
 
-| オプション | 既定 | 意味 |
+| Option | Default | Meaning |
 |---|---|---|
-| `--port` | `48720`（`DEFAULT_PORT`） | localhost bind ポート。`0` で ephemeral（OS 採番、起動ログの `listening on` に実ポートが出る）。 |
-| `--host` | `127.0.0.1` | bind host。設計上 localhost 専用。 |
-| `--state-dir` | `.state/broker`（`DEFAULT_STATE_DIR`、CWD 相対） | `queue.jsonl` の書込先。**検証時は必ず別ディレクトリを渡す**（§2.3 / §7）。 |
-| `--backend` | OS 自動選択（POSIX=`tmux` / Windows=`wezterm`） | terminal adapter。`VALID_BACKENDS = (wezterm, tmux)`。`--no-nudge` 時は無視。 |
-| `--no-nudge` | （無効） | terminal adapter を生成せずナッジ配達を切る（**queue のみ**）。backend 非依存で疎通だけ見たいときに使う。 |
+| `--port` | `48720` (`DEFAULT_PORT`) | localhost bind port. `0` means ephemeral (OS-assigned; the actual port appears in the `listening on` line of the startup log). |
+| `--host` | `127.0.0.1` | bind host. Localhost only by design. |
+| `--state-dir` | `.state/broker` (`DEFAULT_STATE_DIR`, CWD-relative) | Where `queue.jsonl` is written. **For verification, always pass a separate directory** (§2.3 / §7). |
+| `--backend` | auto-selected by OS (POSIX=`tmux` / Windows=`wezterm`) | terminal adapter. `VALID_BACKENDS = (wezterm, tmux)`. Ignored when `--no-nudge` is set. |
+| `--no-nudge` | (disabled) | Do not construct a terminal adapter; disable nudge delivery (**queue only**). Use this when you only want to check end-to-end connectivity, independent of the backend. |
 
-`serve` は前景でブロックする（`Ctrl+C` / `SIGINT` で停止）。起動時に手動検証用の token を 1 本発行し、`--mcp-config` に渡す JSON を標準出力に表示する:
+`serve` blocks in the foreground (stops on `Ctrl+C` / `SIGINT`). At startup it issues one token for manual verification and prints the JSON to pass to `--mcp-config` on stdout:
 
 ```
 org-broker listening on http://127.0.0.1:48803/mcp
@@ -59,152 +59,146 @@ manual test token: <token>
 mcp-config: {"mcpServers": {"org-broker": {"type": "http", "url": "...", "headers": {"Authorization": "Bearer <token>"}}}}
 ```
 
-### 2.2 起動 / 停止コマンド（本番形）
+### 2.2 Startup / stop commands (production form)
 
-本番 ja での起動（トラック 3、ユーザー hands-on）の形は次のとおり。**本節はコマンド形の提示で、本書の検証では §2.3 のテスト用 state-dir 版だけを実行する**。
+The startup form for production ja (Track 3, user hands-on) is the following. **This section presents the command form only; in this document's verification we execute only the test state-dir variant in §2.3.**
 
 ```bash
-# 起動（既定 state-dir = .state/broker、tmux backend 自動選択）
+# Start (default state-dir = .state/broker, tmux backend auto-selected)
 claude-org-runtime broker serve
 
-# 停止（起動形態で場合分け）:
-#   - 前景 serve（このシェルでブロック中）: Ctrl+C（SIGINT）。graceful 停止経路 =
-#     stop() が走り journal 末尾に broker_stopped が 1 行残る。
-#   - 背景 daemon（nohup ... & 等で起動）: SIGTERM を送る:
-#       kill -TERM <pid>
-#     背景 daemon に SIGINT（kill -INT）は効かずプロセスが残存する
-#     （2026-06-13 切戻しドリルで 2 回再現）。背景は SIGTERM で止める。
-#     ただし SIGTERM は stop() を経由しないため broker_stopped は emit されない。
-#     背景停止の確認は「プロセス消滅 + 未読突合」で行う（§5(4)/(5)）。
+# Stop: Ctrl+C (SIGINT) on the foreground serve. The journal records one line of broker_stopped.
+# If started in the background, send SIGINT to the PID:
+#   kill -INT <pid>
 ```
 
-### 2.3 テスト用 state-dir での起動→疎通→停止（本番 `.state` 不可侵の実証手順）
+### 2.3 Test state-dir startup -> connectivity -> shutdown (procedure proving production `.state` is untouched)
 
-検証は **本番 `.state/broker/` を絶対に触らない**。一時ディレクトリを `--state-dir` に渡し、`queue.jsonl` がそのテストパスにのみ作られることを確認する。
+Verification **must never touch production `.state/broker/`**. Pass a temporary directory to `--state-dir` and confirm that `queue.jsonl` is created only under that test path.
 
-> **cwd drift 注意（必須）**: `--state-dir` の既定は **CWD 相対** `.state/broker`。worker worktree と canonical な claude-org root では `.state/` が別物なので、相対パスを直接叩くと「どの `.state` を見ているか」が曖昧になり、誤った不可侵チェック / 本番 `.state` 汚染を招く。本書では **canonical root を絶対パス変数 `CANON_ROOT` で固定し、テスト state-dir も repo 外の絶対パス変数 `TEST_STATE` で固定**して、相対 `.state/broker` を素手で叩かない。
+> **cwd drift caveat (mandatory)**: The default for `--state-dir` is **CWD-relative** `.state/broker`. A worker worktree and the canonical claude-org root have different `.state/`, so hitting the relative path bare makes "which `.state` am I looking at?" ambiguous and risks a wrong untouchability check / pollution of production `.state`. In this document we **pin the canonical root as an absolute path variable `CANON_ROOT`, and pin the test state-dir as an absolute path variable `TEST_STATE` outside the repo**, and never hit relative `.state/broker` bare-handed.
 
 ```bash
-# 0) 前提変数を固定（相対パスを素手で叩かない）
-CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # 本番 .state/broker を持つ canonical root（環境に合わせる）
-TEST_STATE=/tmp/claude/broker-smoke-A               # テスト用 state-dir（必ず repo 外の絶対パス）
+# 0) Pin the prerequisite variables (do not hit relative paths bare)
+CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root with production .state/broker (adjust to your env)
+TEST_STATE=/tmp/claude/broker-smoke-A               # test state-dir (must be an absolute path outside the repo)
 
-# 1) テスト用 state-dir を用意（親ディレクトリ作成 + 既存ログ混入を避けるため未使用パスを使う）
+# 1) Prepare the test state-dir (create parent dir + use an unused path to avoid mixing existing logs)
 mkdir -p "$TEST_STATE"
-test -e "$TEST_STATE/queue.jsonl" && echo "WARN: 既存 queue.jsonl あり。別パスを使うか退避してから検証する" 
+test -e "$TEST_STATE/queue.jsonl" && echo "WARN: existing queue.jsonl found. Use a different path or move it aside before verifying"
 
-# 2) 起動（--no-nudge で backend 非依存に疎通だけ確認。-u で stdout を即時 flush）
+# 2) Start (use --no-nudge to verify connectivity backend-independently. -u flushes stdout immediately)
 python3 -u -m claude_org_runtime.broker serve \
     --state-dir "$TEST_STATE" --port 48799 --no-nudge
 ```
 
-別ターミナル（または driver スクリプト）から、起動ログに出た token で HTTP MCP を叩く:
+From a separate terminal (or a driver script), hit the HTTP MCP with the token shown in the startup log:
 
-| ステップ | 期待 |
+| Step | Expectation |
 |---|---|
-| `initialize` | `serverInfo = {"name": "org-broker", "version": "0.1.0"}` + `Mcp-Session-Id` ヘッダ採番 |
-| `tools/list`（worker token） | `["check_messages", "list_peers", "send_message", "set_summary"]` の **messaging 4 面のみ**（tier gating、§3.4） |
-| `tools/call send_message`（自分宛） | `{"ok": true, "delivered_to": "manual-test"}` |
-| `tools/call check_messages` | 直前に送った `hello broker` を at-most-once で drain |
+| `initialize` | `serverInfo = {"name": "org-broker", "version": "0.1.0"}` + `Mcp-Session-Id` header assigned |
+| `tools/list` (worker token) | `["check_messages", "list_peers", "send_message", "set_summary"]` -- the **messaging 4 surface only** (tier gating, §3.4) |
+| `tools/call send_message` (to self) | `{"ok": true, "delivered_to": "manual-test"}` |
+| `tools/call check_messages` | At-most-once drain of the `hello broker` you just sent |
 
-停止は serve に `SIGINT` を送る。**clean shutdown なら exit code 0**。
+Stop by sending `SIGINT` to serve. **Clean shutdown returns exit code 0.**
 
-**`.state` 不可侵の確認（必須）**: 検証後に本番 `.state/broker/` が生成されていないことを確認する。queue は渡したテストパスにのみ書かれる。
+**Untouchability check on `.state` (mandatory)**: After verification, confirm that production `.state/broker/` was not created. The queue is written only to the test path you passed.
 
 ```bash
-# queue は TEST_STATE 配下にだけ存在する
+# The queue exists only under TEST_STATE
 ls "$TEST_STATE/queue.jsonl"
-# 本番側（canonical root の絶対パス）が未生成であること。相対 .state/broker は使わない
-test -e "$CANON_ROOT/.state/broker" && echo "NG: 本番 .state/broker が汚れた" || echo "OK: 本番 .state は不変"
-# 現在の worktree 直下にも検証ゴミが落ちていないこと（CWD 相対既定の取り違え防止）
-test -e "$PWD/.state/broker" && echo "NG: worktree 直下に .state/broker が生成" || echo "OK: worktree 直下も不変"
+# Production (absolute path under canonical root) must not be generated. Do not use relative .state/broker.
+test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker was polluted" || echo "OK: production .state unchanged"
+# Make sure no verification debris was left directly under the current worktree either (prevents CWD-relative default mix-ups)
+test -e "$PWD/.state/broker" && echo "NG: .state/broker was created directly under the worktree" || echo "OK: worktree root unchanged"
 ```
 
-> **検証ログ（2026-06-11、実機）**: `--no-nudge` / `--backend tmux` の両系で `initialize → tools/list → send_message → check_messages` 往復が成功し、`SIGINT` で **exit 0**。`tools/list` は worker tier で messaging 4 面のみ。本番 `.state/broker/` は未生成（テストパスにのみ `queue.jsonl`）。tmux backend は live tmux server なしでも adapter が遅延生成され、起動・停止が成立する（ナッジを実際に注入する子ペインが無いので messaging probe は skip）。
+> **Verification log (2026-06-11, real hardware)**: Both `--no-nudge` and `--backend tmux` succeeded for the `initialize -> tools/list -> send_message -> check_messages` round trip and **exited with code 0** on `SIGINT`. `tools/list` returned the messaging 4 surface only on a worker tier. Production `.state/broker/` was not generated (`queue.jsonl` only under the test path). The tmux backend's adapter is lazily constructed and start / stop succeeds even without a live tmux server (the messaging probe is skipped because there is no child pane to actually inject nudges into).
 
 ---
 
-## 3. start / stop / token / queue ライフサイクル
+## 3. start / stop / token / queue lifecycle
 
-broker の内部状態遷移は `claude_org_runtime/broker/` の `server` / `store` / `tokens` / `surface` に分かれる。運用上把握すべき流れは次の 4 つ。
+The broker's internal state transitions are split across `server` / `store` / `tokens` / `surface` under `claude_org_runtime/broker/`. There are four operationally important flows.
 
-### 3.1 token 発行（`tokens.py`）
+### 3.1 Token issuance (`tokens.py`)
 
-- spawn 時に **per-agent token** を 1 本発行する（`issue_token`、`secrets.token_urlsafe(32)`）。token ↔ `AgentBind`（`agent_id` / `name` / `role` / `auth_role` / `pane_id` / `cwd` / `kind`）。
-- **`role`（表示専用、`set_pane_identity` で可変）と `auth_role`（不変の権限 tier、発行時確定）を分離**している。tier gating は `auth_role` のみで決め、表示 role の自己申告では昇格できない。spawn 子の `auth_role` は呼出元 tier で上限を切る（`capped_auth_role`）。
-- `mcp_config_for(token)` が `--mcp-config` に渡す JSON を生成する（token を static header `Authorization: Bearer <token>` に埋める。env 参照 `${VAR}` は使わない）。
-- journal: `token_issued`。
+- At spawn time, one **per-agent token** is issued (`issue_token`, `secrets.token_urlsafe(32)`). token <-> `AgentBind` (`agent_id` / `name` / `role` / `auth_role` / `pane_id` / `cwd` / `kind`).
+- **`role` (display-only, mutable via `set_pane_identity`) and `auth_role` (immutable permission tier, fixed at issuance) are separated**. Tier gating uses `auth_role` only, and self-claimed display role cannot promote. The `auth_role` of a spawn child is capped by the caller's tier (`capped_auth_role`).
+- `mcp_config_for(token)` generates the JSON to pass to `--mcp-config` (it embeds the token in a static `Authorization: Bearer <token>` header; env references `${VAR}` are not used).
+- journal: `token_issued`.
 
-### 3.2 登録（`server.py` の HTTP handler）
+### 3.2 Registration (HTTP handler in `server.py`)
 
-- 子ペインの Claude / Codex が `initialize`（MCP）に到達した時点で `AgentBind.registered = True` になる（`registered_at` 記録）。**登録済み bind のみが配送先**になる（未接続 / DELETE 済み client への配送を防ぐ）。
-- journal: `agent_registered`。
+- When the Claude / Codex in a child pane reaches `initialize` (MCP), `AgentBind.registered` becomes `True` (`registered_at` recorded). **Only registered binds are delivery targets** (prevents delivery to unconnected / DELETE-d clients).
+- journal: `agent_registered`.
 
-### 3.3 queue store + ナッジ配達（`store.py` / `server.py`）
+### 3.3 Queue store + nudge delivery (`store.py` / `server.py`)
 
-- `send_message`（`enqueue`）は **token 由来の帰属**で entry を作る（自己申告不可）。宛先の registered 確認と queue append を**同一ロックスコープ**で原子的に行い、その後にロック外で `_journal` と `_trigger_nudge` を呼ぶ（queue 永続化と PTY 注入を結合させない / 非再入 Lock の二重取得デッドロック回避）。
-- ナッジ配達は **定型 1 行のみ PTY 経由**で注入し、本文は通さない（受信側は `check_messages` で pull 取得 = push→pull モデル）。adapter 不通や対象未着のときは `nudge_defer_interval`（既定 2.0s）× `nudge_defer_max_tries`（既定 30）まで再試行する。
-- `check_messages`（`drain`）は **at-most-once** で queue を空にして返す。
-- journal: `message_enqueued` → `nudge_sent` / `nudge_deferred` / `nudge_failed` → `queue_drained`。
+- `send_message` (`enqueue`) creates an entry with **token-derived attribution** (self-claim is not allowed). The destination-registered check and queue append happen atomically in the **same lock scope**, then `_journal` and `_trigger_nudge` are called outside the lock (decoupling queue persistence from PTY injection / avoiding double-acquire deadlock on a non-reentrant Lock).
+- Nudge delivery injects **only a fixed 1-line payload via PTY** and does not carry the body (the receiver uses `check_messages` to pull = push -> pull model). On adapter failure or non-arrival, it retries up to `nudge_defer_interval` (default 2.0s) x `nudge_defer_max_tries` (default 30).
+- `check_messages` (`drain`) returns by emptying the queue **at-most-once**.
+- journal: `message_enqueued` -> `nudge_sent` / `nudge_deferred` / `nudge_failed` -> `queue_drained`.
 
-### 3.4 tier gating（`surface.py`）
+### 3.4 Tier gating (`surface.py`)
 
-公開面は `auth_role` で**構造的に**変わる（default-deny allowlist）。`tools/list` に出ないツールは呼んでも `[tool_not_authorized]` で弾かれる（allowlist は二重防御の片側）。
+The public surface **changes structurally** by `auth_role` (default-deny allowlist). A tool not listed in `tools/list` is rejected with `[tool_not_authorized]` even if called (the allowlist is one half of double defense).
 
-| auth_role tier | 公開面 |
+| auth_role tier | Public surface |
 |---|---|
-| worker / curator / 未知 | messaging 4（`send_message` / `check_messages` / `list_peers` / `set_summary`） |
-| dispatcher | messaging 4 + ops（`list_panes` / `inspect_pane` / `send_keys` / `poll_events` / `close_pane` / `set_pane_identity` / `spawn_claude_pane` / `spawn_codex_pane`） |
-| secretary | dispatcher の面 + `spawn_pane`（secretary 専用） |
+| worker / curator / unknown | messaging 4 (`send_message` / `check_messages` / `list_peers` / `set_summary`) |
+| dispatcher | messaging 4 + ops (`list_panes` / `inspect_pane` / `send_keys` / `poll_events` / `close_pane` / `set_pane_identity` / `spawn_claude_pane` / `spawn_codex_pane`) |
+| secretary | dispatcher's surface + `spawn_pane` (secretary-only) |
 
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。初期 surface = 移植 12 面 + `spawn_codex_pane` = 13 面。
+> `new_tab` / `focus_pane` are **not in** the broker surface (intentional exclusion). Initial surface = 12 ported faces + `spawn_codex_pane` = 13 faces.
 
-### 3.5 停止 / 失効
+### 3.5 Shutdown / revocation
 
-- graceful 停止（`stop()` 経由）: `stop()` が HTTP server を shutdown + close し、journal に `broker_stopped` を残す。**`broker_stopped` は `stop()` が走る graceful 停止経路（前景 serve への SIGINT / Ctrl-C）でのみ emit される**。背景 daemon を `kill -TERM` で止めた場合は `stop()` を経由しないため `broker_stopped` は残らない（停止確認はプロセス消滅 + 未読突合で行う、§5(4)/(5)）。なお背景 daemon に SIGINT（`kill -INT`）は効かずプロセスが残存する（2026-06-13 切戻しドリルで 2 回再現）。
-- session 終了（MCP `DELETE`）: 当該 bind の `session_id` を失効させ、`registered = False` に落とす（切断済み client を `list_peers` / 配送先に残さない）。journal: `session_closed`。
-- pane クローズ（`close_pane`）: adapter で kill 後、registry pop と token revoke を 1 ロックスコープで原子的に行う。journal: `pane_closed` + event `pane_exited`。
+- daemon shutdown: `stop()` shuts down + closes the HTTP server and writes `broker_stopped` to the journal.
+- session end (MCP `DELETE`): the bind's `session_id` is invalidated and `registered = False` (so a disconnected client is not left in `list_peers` / delivery targets). journal: `session_closed`.
+- pane close (`close_pane`): after killing via the adapter, registry pop and token revoke happen atomically in one lock scope. journal: `pane_closed` + event `pane_exited`.
 
-### 3.6 journal イベント一覧（`queue.jsonl`）
+### 3.6 Journal event list (`queue.jsonl`)
 
-`<state-dir>/queue.jsonl` に 1 行 1 JSON で追記される。運用での観測点:
+Appended one JSON per line to `<state-dir>/queue.jsonl`. Operational observation points:
 
 ```
-broker_started → token_issued → agent_registered → message_enqueued
-  → nudge_sent / nudge_deferred / nudge_failed → queue_drained
-  → session_closed / pane_closed → broker_stopped
+broker_started -> token_issued -> agent_registered -> message_enqueued
+  -> nudge_sent / nudge_deferred / nudge_failed -> queue_drained
+  -> session_closed / pane_closed -> broker_stopped
 ```
 
-> **検証ログ（実機、messaging 往復）**: `broker_started → token_issued → agent_registered → message_enqueued(chars=12) → queue_drained(count=1) → broker_stopped` を 1 サイクルで確認。
+> **Verification log (real hardware, messaging round trip)**: Confirmed `broker_started -> token_issued -> agent_registered -> message_enqueued(chars=12) -> queue_drained(count=1) -> broker_stopped` in one cycle.
 
-### 3.7 broker 追加エラーコード
+### 3.7 broker additional error codes
 
-renga コードに加え broker は次を返しうる。窓口 / ディスパッチャーは未知コードを default-branch で escalate に流す（[`CLAUDE.md`](../../CLAUDE.md)「エラー分岐」）。
+In addition to the renga codes, broker can return the following. The secretary / dispatcher routes unknown codes to escalation via the default branch (see [`CLAUDE.md`](../../CLAUDE.md) "Error branches").
 
-| コード | 契機 |
+| Code | Trigger |
 |---|---|
-| `[token_invalid]` | Bearer token が bind 表に無い / revoked（HTTP 401、JSON-RPC -32001） |
-| `[session_invalid]` | `initialize` 前に他メソッドを呼んだ |
-| `[tool_not_authorized]` | auth_role tier の公開面外のツールを呼んだ |
-| `[no_backend]` | terminal adapter 不在（`--no-nudge` 起動）で pane 操作を呼んだ（= adapter_unavailable） |
-| `[nudge_failed]` | ナッジ注入が defer 上限まで届かなかった |
-| `[peer_not_found]` | `send_message` の宛先が registered な bind に無い |
-| `[name_taken]` | pane name の重複 |
+| `[token_invalid]` | Bearer token is not in the bind table / revoked (HTTP 401, JSON-RPC -32001) |
+| `[session_invalid]` | A method other than `initialize` was called first |
+| `[tool_not_authorized]` | A tool outside the auth_role tier's public surface was called |
+| `[no_backend]` | Pane operation called while the terminal adapter is absent (`--no-nudge` startup) (= adapter_unavailable) |
+| `[nudge_failed]` | Nudge injection did not arrive within the defer cap |
+| `[peer_not_found]` | `send_message` destination is not in a registered bind |
+| `[name_taken]` | pane name duplicated |
 
 ---
 
-## 4. `ORG_TRANSPORT=broker` での settings 再生成 dry-run
+## 4. Settings regeneration dry-run with `ORG_TRANSPORT=broker`
 
-Epic #6 D/E で入った **transport descriptor 駆動の生成器**を `ORG_TRANSPORT=broker` で dry-run し、broker 面 allowlist が出ることを確認する。**実ファイルは書かない**。
+Dry-run the **transport-descriptor-driven generator** that landed in Epic #6 D/E with `ORG_TRANSPORT=broker` and confirm that the broker surface allowlist comes out. **No real files are written.**
 
-### 4.1 単一 SoT（descriptor）
+### 4.1 Single SoT (descriptor)
 
-ja 側の transport アクセサ [`tools/transport.py`](../../tools/transport.py) は runtime の transport surface descriptor（`claude_org_runtime.transport`）を唯一の SoT として consume する（ハードコードしない）。解決順は **explicit 引数 > `ORG_TRANSPORT` env > 既定 `renga`**。allowlist 生成は `claude_org_runtime.settings.generator.transport_allowlist(role, transport=...)` 経由。
+The ja-side transport accessor [`tools/transport.py`](../../tools/transport.py) consumes the runtime's transport surface descriptor (`claude_org_runtime.transport`) as its only SoT (no hard-coding). Resolution order is **explicit argument > `ORG_TRANSPORT` env > default `renga`**. Allowlist generation goes through `claude_org_runtime.settings.generator.transport_allowlist(role, transport=...)`.
 
-### 4.2 role 別 allowlist の dry-run
+### 4.2 Per-role allowlist dry-run
 
 ```bash
-# 既定 renga（無設定）と broker の射影を role 別に比較（read-only、書込み無し）
+# Compare the projection of default renga (unset) vs broker per role (read-only, no writes)
 for role in worker curator dispatcher secretary; do
   echo "--- $role renga(default) ---"
   python3 -c "from claude_org_runtime.settings.generator import transport_allowlist as t; print(t('$role'))"
@@ -213,23 +207,23 @@ for role in worker curator dispatcher secretary; do
 done
 ```
 
-| role | renga（既定） | broker（`ORG_TRANSPORT=broker`） |
+| role | renga (default) | broker (`ORG_TRANSPORT=broker`) |
 |---|---|---|
-| worker / curator | `mcp__renga-peers__*` 14 面 | `mcp__org-broker__*` messaging 4 |
-| dispatcher | `mcp__renga-peers__*` 14 面 | messaging 4 + ops 8（`spawn_pane` を含まない） |
-| secretary | `mcp__renga-peers__*` 14 面 | messaging 4 + ops + `spawn_pane` + `spawn_codex_pane`（13） |
+| worker / curator | `mcp__renga-peers__*` 14 surfaces | `mcp__org-broker__*` messaging 4 |
+| dispatcher | `mcp__renga-peers__*` 14 surfaces | messaging 4 + ops 8 (does not include `spawn_pane`) |
+| secretary | `mcp__renga-peers__*` 14 surfaces | messaging 4 + ops + `spawn_pane` + `spawn_codex_pane` (13) |
 
-> renga 既定は全ロール同一 surface（14 面）を allowlist で絞るモデル。broker は role tier を**構造的に**遮断するため、allowlist は二重防御の片側になる（安全側）。
+> The renga default is a model where the same surface (14 faces) for all roles is narrowed by the allowlist. broker **structurally** gates by role tier, so the allowlist becomes one half of double defense (safe side).
 
-### 4.3 `~/.claude/settings.json` の user_common allowlist 再生成 dry-run
+### 4.3 `~/.claude/settings.json` user_common allowlist regeneration dry-run
 
-[`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist` は user_common（`~/.claude/settings.json`）の MCP `permissions.allow` を active transport へ射影する。**検証では実 `~/.claude/settings.json` を触らないよう `--user-common-settings-path` でテスト用パスに向け、`--dry-run` を付ける**。
+[`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist` projects the user_common (`~/.claude/settings.json`) MCP `permissions.allow` onto the active transport. **For verification, point `--user-common-settings-path` at a test path so the real `~/.claude/settings.json` is not touched, and pass `--dry-run`.**
 
 ```bash
-# テスト用 settings（renga エントリ入り）を用意して dry-run
-TEST_SET=/tmp/claude/usercommon-settings.json   # 実 ~/.claude/settings.json ではない
+# Prepare a test settings file (with renga entries) and dry-run
+TEST_SET=/tmp/claude/usercommon-settings.json   # NOT the real ~/.claude/settings.json
 
-# renga messaging エントリ入りのテスト settings を作る（空/不存在だと drop renga の期待出力にならない）
+# Make a test settings file with renga messaging entries (empty / missing would not produce the expected drop-renga output)
 mkdir -p "$(dirname "$TEST_SET")"
 cat > "$TEST_SET" <<'JSON'
 {
@@ -245,144 +239,128 @@ cat > "$TEST_SET" <<'JSON'
 }
 JSON
 
-# 既定 renga: strict no-op（ファイルは一切触らない）
+# Default renga: strict no-op (does not touch the file at all)
 python3 tools/org_setup_prune.py --user-common-allowlist --dry-run \
     --user-common-settings-path "$TEST_SET"
 
-# broker: renga-peers を drop、org-broker messaging tier を保証（dry-run は表示のみ）
+# broker: drop renga-peers, guarantee org-broker messaging tier (dry-run is display only)
 ORG_TRANSPORT=broker python3 tools/org_setup_prune.py --user-common-allowlist --dry-run \
     --user-common-settings-path "$TEST_SET"
 ```
 
-期待出力:
+Expected output:
 
 ```
-# renga（既定）
-[org_setup_prune] user_common allowlist: transport=renga (既定); no-op — ~/.claude/settings.json は不変 ...
+# renga (default)
+[org_setup_prune] user_common allowlist: transport=renga (default); no-op -- ~/.claude/settings.json unchanged ...
 
 # broker
 === user_common allowlist (transport=broker): /tmp/claude/usercommon-settings.json ===
-  - mcp__renga-peers__send_message      （以下 renga messaging を drop）
-  + mcp__org-broker__send_message       （以下 org-broker messaging を add）
+  - mcp__renga-peers__send_message      (renga messaging dropped below)
+  + mcp__org-broker__send_message       (org-broker messaging added below)
   ...
 ```
 
-> **検証ログ（実機）**: 既定 renga は strict no-op（テストファイル 1 byte も不変）。`ORG_TRANSPORT=broker` で renga messaging 4 → org-broker messaging 4 の差分を dry-run 表示。**`--dry-run` のため実書込みゼロ**（テストファイル内容の不変を確認済み）。`Bash(...)` 等の非 MCP エントリは順序を保って残る。
+> **Verification log (real hardware)**: Default renga was a strict no-op (the test file was unchanged down to the byte). With `ORG_TRANSPORT=broker`, the diff renga messaging 4 -> org-broker messaging 4 was shown via dry-run. **Because of `--dry-run`, zero real writes** (the test file's contents were confirmed unchanged). Non-MCP entries such as `Bash(...)` are preserved in order.
 
 ---
 
-## 5. 切戻し 5 条件の具体コマンド化（SoT §5.5）
+## 5. Concretizing the 5 rollback conditions (SoT §5.5)
 
-`ORG_TRANSPORT=broker` → `renga` への完全な切戻しは、flag 戻しだけでは**実行中の broker-spawned ペインが即座には復帰しない**（`--mcp-config` / pull 前提の prose を抱えたまま）。SoT §5.5 の **5 完了条件**を順に実行する。
+A complete rollback from `ORG_TRANSPORT=broker` -> `renga` is **not immediately restored just by flipping the flag** for running broker-spawned panes (they still hold `--mcp-config` / pull-premised prose). Execute the **5 completion conditions** of SoT §5.5 in order.
 
-> **前提変数（cwd drift 回避）**: 以下のコマンドは相対 `.state/broker` を素手で叩かない。daemon が `serve --state-dir` で実際に使った state-dir を絶対パス変数で固定し、canonical root も明示する。本番反映（トラック 3）では `BROKER_STATE` が本番 `.state/broker` を指す。
+> **Prerequisite variables (cwd-drift avoidance)**: The commands below do not hit relative `.state/broker` bare. Pin the state-dir that the daemon actually used in `serve --state-dir` to an absolute path variable, and also pin the canonical root. In production reflection (Track 3), `BROKER_STATE` points at the production `.state/broker`.
 >
 > ```bash
-> CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root（環境に合わせる）
-> BROKER_STATE="$CANON_ROOT/.state/broker"            # daemon が serve 時に渡した --state-dir
+> CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root (adjust to your env)
+> BROKER_STATE="$CANON_ROOT/.state/broker"            # the --state-dir the daemon was given at serve
 > ```
 
-### (1) flag 戻し
+### (1) Flag rollback
 
 ```bash
-# env を renga（既定）へ戻す。次に spawn される pane から renga に向く。
+# Roll env back to renga (default). Newly spawned panes point at renga.
 unset ORG_TRANSPORT
-# 永続シェル設定に書いていた場合はそこからも除去する:
+# If you persisted it in shell settings, remove it from there too:
 #   grep -rn "ORG_TRANSPORT" ~/.bashrc ~/.zshrc ~/.profile
 ```
 
-**チェック**: `python3 -c "from claude_org_runtime.transport import resolve_transport as r; print(r())"` が `renga` を返す。
+**Check**: `python3 -c "from claude_org_runtime.transport import resolve_transport as r; print(r())"` returns `renga`.
 
-### (2) 生成物の再生成（renga allowlist へ）
+### (2) Regenerate generated artifacts (back to the renga allowlist)
 
-flag が renga に戻れば**生成器（role 別 `settings.local.json`）は恒等（bit 等価）**に戻る。生成物を実際に再生成して renga 面に戻す。
+Once the flag is back to renga, **the generator (per-role `settings.local.json`) is identity (bit-equivalent)**. Actually regenerate the artifacts to revert to the renga surface.
 
 ```bash
-# まず dry-run で差分確認（broker 面が残っていれば renga へ戻す差分が出る）
+# First check the diff with a dry-run (the diff back to renga shows up if broker surfaces remain)
 python3 tools/org_setup_prune.py --all --dry-run
 
-# 問題なければ適用（renga allowlist を書き戻す。.bak が残る）
+# If there are no issues, apply it (writes back the renga allowlist; .bak is left behind)
 python3 tools/org_setup_prune.py --all
 ```
 
-**user_common（`~/.claude/settings.json`）は別扱い（重要）**: `--user-common-allowlist` は **renga モードでは完全 no-op**（renga allowlist の SoT は org-setup スキル + permissions.md であってこのツールではないため、ファイルに一切触れない）。したがって dogfood で broker を適用済み（`mcp__org-broker__*` が user_common に入っている）の場合、`--user-common-allowlist --dry-run` を renga で回しても **broker 面は戻らない**。user_common は以下のいずれかで明示的に戻す:
+**user_common (`~/.claude/settings.json`) is handled separately (important)**: `--user-common-allowlist` is a **complete no-op in renga mode** (because the SoT for the renga allowlist is the org-setup skill + permissions.md, not this tool, the file is not touched at all). So if you have applied broker via dogfood (and `mcp__org-broker__*` is in user_common), running `--user-common-allowlist --dry-run` in renga will **not roll back the broker surface**. Roll back user_common explicitly via one of the following:
 
 ```bash
-# 方法 A（推奨）: broker 適用時に作られた .bak を復元する
-#   backup 命名は settings.json.bak.<YYYYMMDD-HHMMSS>（backup_path）
-ls -t ~/.claude/settings.json.bak.* 2>/dev/null | head     # 直近の backup を確認
-# cp <確認した .bak> ~/.claude/settings.json               # 内容を目視確認のうえ復元
+# Method A (recommended): restore the .bak created when broker was applied
+#   backup naming is settings.json.bak.<YYYYMMDD-HHMMSS> (backup_path)
+ls -t ~/.claude/settings.json.bak.* 2>/dev/null | head     # check the most recent backup
+# cp <.bak you verified> ~/.claude/settings.json           # visually confirm content and restore
 
-# 方法 B: backup が無い場合は messaging 面を手動 swap（org-broker → renga-peers）
-#   ~/.claude/settings.json の permissions.allow 内
-#   "mcp__org-broker__{send_message,check_messages,list_peers,set_summary}" を
-#   "mcp__renga-peers__..." に置換する（非 MCP エントリは触らない）
+# Method B: if no backup exists, swap the messaging surface manually (org-broker -> renga-peers)
+#   In permissions.allow of ~/.claude/settings.json
+#   Replace "mcp__org-broker__{send_message,check_messages,list_peers,set_summary}"
+#   with "mcp__renga-peers__..." (do not touch non-MCP entries)
 ```
 
-**チェック**: role 別 `settings.local.json` と **user_common（`~/.claude/settings.json`）の両方**に `mcp__org-broker__*` が残っていないこと。
+**Check**: confirm `mcp__org-broker__*` does not remain in **both** the per-role `settings.local.json` and **user_common (`~/.claude/settings.json`)**.
 
 ```bash
-# repo 配下の role 別 settings。glob (*/.claude/) は hidden role dir
-# (.dispatcher/.claude/ / .curator/.claude/ 等) を拾わず、zsh では no-match で
-# grep 自体が走らず誤って OK になる。glob を使わず repo root から再帰 grep する
-# (grep -r は hidden dir も降りる)。settings*.json に限定して誤検出を避ける。
+# Per-role settings under the repo. A glob (*/.claude/) does not pick up hidden role dirs
+# (.dispatcher/.claude/ / .curator/.claude/ etc.), and in zsh no-match means grep itself
+# does not run and may wrongly report OK. Avoid globs; recursively grep from the repo root
+# (grep -r descends into hidden dirs too). Restrict to settings*.json to avoid false hits.
 if grep -rl --include="settings*.json" "mcp__org-broker__" . 2>/dev/null | grep -q .; then
-  echo "NG: repo 側に broker 面が残存:"; grep -rl --include="settings*.json" "mcp__org-broker__" . 2>/dev/null
+  echo "NG: broker surface remains on the repo side:"; grep -rl --include="settings*.json" "mcp__org-broker__" . 2>/dev/null
 else
-  echo "OK: repo 側 broker 面なし"
+  echo "OK: no broker surface on the repo side"
 fi
-# user_common（ホームの settings.json）も忘れず確認する
-grep -l "mcp__org-broker__" ~/.claude/settings.json 2>/dev/null && echo "NG: user_common に broker 面が残存" || echo "OK: user_common broker 面なし"
+# Don't forget to check user_common (home settings.json)
+grep -l "mcp__org-broker__" ~/.claude/settings.json 2>/dev/null && echo "NG: broker surface remains in user_common" || echo "OK: no broker surface in user_common"
 ```
 
-### (3) active な broker ペインの respawn（renga 経路で再起動）
+### (3) Respawn the active broker panes (restart via the renga route)
 
-実行中の broker-spawned ペインは flag 戻しでは復帰しない。renga 経路で suspend/resume または respawn する。
+Running broker-spawned panes do not come back with just a flag rollback. Suspend / resume or respawn via the renga route.
 
 ```bash
-# 現状の broker ペインを把握（renga 窓口/ディスパッチャーから）
-#   mcp__renga-peers__list_panes  でペイン一覧を確認
-# broker token を抱えたペインを順に close → renga 経路で再 spawn（org-delegate の通常委譲フロー）
-# pane control は dispatcher/secretary に閉じるため、messaging を先に renga へ戻してから pane を後追いする（§5.5 の 2 段）。
+# Identify the current broker panes (from the renga secretary / dispatcher)
+#   mcp__renga-peers__list_panes  to confirm the pane list
+# Close each pane that holds a broker token in turn -> respawn via the renga route (the normal delegation flow of org-delegate)
+# Pane control is restricted to dispatcher/secretary, so swap messaging back to renga first, then follow up with panes (the 2 stages of §5.5).
 ```
 
-**チェック**: `list_peers` / `list_panes` に broker bind のペインが残っていない。
+**Check**: no panes with broker binds remain in `list_peers` / `list_panes`.
 
-### (4) broker daemon の停止順序（残ペイン revoke → daemon stop）
+### (4) Broker daemon shutdown order (revoke remaining panes -> daemon stop)
 
-**順序が重要**: 先に残ペインを revoke（close）して配送先から外し、最後に daemon を止める。
-
-**停止シグナルは起動形態で場合分けする（2026-06-13 切戻しドリルの実測反映）**: 前景 serve は Ctrl-C（SIGINT）で graceful に止まり `broker_stopped` を emit するが、`nohup ... &` 等で背景起動した daemon に **SIGINT（`kill -INT`）は効かずプロセスが残存する**（ドリルで 2 回再現）。背景 daemon は **SIGTERM（`kill -TERM`）** で止める。ただし SIGTERM は `stop()` を経由しないため `broker_stopped` は emit されず、journal 末尾は `broker_started` / `token_issued` 等のままになる。したがって停止確認手段も経路ごとに分ける。
+**Order matters**: first revoke (close) the remaining panes to remove them from delivery targets, then finally stop the daemon.
 
 ```bash
-# 1) 残っている broker ペインを close（token revoke される。close_pane の journal: pane_closed）
-#    renga/dispatcher から各 broker ペインを close_pane する。
-# 2) すべて revoke したら daemon を停止（起動形態で場合分け）:
-#    - 前景 serve（このシェルでブロック中）: このコマンドは実行せず Ctrl-C（SIGINT）を打つ。graceful 停止。
-#    - 背景 daemon（nohup ... & 等）: SIGTERM を送る。SIGINT（kill -INT）は効かない。
-kill -TERM <broker_pid>   # 背景 daemon の停止。前景 serve なら代わりに Ctrl-C を打つ
-# 3) 停止確認（経路で手段が異なる）:
-#    a) graceful 停止（前景 SIGINT / Ctrl-C）した場合のみ journal 末尾に broker_stopped が残る:
+# 1) Close any remaining broker panes (this revokes the token; close_pane journal: pane_closed)
+#    Use close_pane from renga / dispatcher for each broker pane.
+# 2) Once all are revoked, stop the daemon (SIGINT to the foreground serve, or)
+kill -INT <broker_pid>
+# 3) Confirm broker_stopped is recorded at the end of the journal
 tail -n 3 "$BROKER_STATE/queue.jsonl"
-#    b) SIGTERM（背景 daemon）で止めた場合は broker_stopped が emit されないので、
-#       プロセス消滅 + 未読突合で確認する（§5(5) の未読突合スクリプトと整合）。
-#       SIGTERM 直後は終了処理中で誤判定しうるため短い timeout loop で消滅を待つ:
-for i in $(seq 1 10); do
-  kill -0 <broker_pid> 2>/dev/null || { echo "OK: daemon プロセス消滅"; break; }
-  sleep 1
-done
-kill -0 <broker_pid> 2>/dev/null && echo "NG: daemon がまだ生きている"
-#       未読突合（enqueued vs drained）は §5(5) のスクリプトを実行する（ここでは重複させない）。
 ```
 
-> **runtime follow-up 候補（実装はこのタスクのスコープ外）**: runtime 側の SIGTERM ハンドラが SIGTERM 停止でも `broker_stopped` を emit するようになれば、停止確認を「broker_stopped を確認」に統一でき経路の場合分けが不要になる。本 runbook は手順の明文化に留め、runtime 実装は別 Issue 化を検討する。
-
-### (5) 旧 token / queue store の破棄確認（`.state/broker/` の未読・bind 残存なし）
+### (5) Confirm old token / queue store disposal (no unread / no bind remnants in `.state/broker/`)
 
 ```bash
-# 未読（enqueue されたが drain で消されていない message）が残っていないか journal を突合する。
-# queue_drained は count=N を持つので「イベント件数」ではなく N の総和で比較する（複数 drain の誤判定回避）。
-BROKER_STATE="${BROKER_STATE:?BROKER_STATE を先に固定する（§5 前提変数）}" \
+# Reconcile that no unread (enqueued but not drained) messages remain via the journal.
+# queue_drained has count=N, so compare on the sum of N rather than "event count" (avoids misjudging multi-drain).
+BROKER_STATE="${BROKER_STATE:?Pin BROKER_STATE first (§5 prerequisite variables)}" \
 python3 - <<'PY'
 import json, os
 p = os.path.join(os.environ["BROKER_STATE"], "queue.jsonl")
@@ -391,142 +369,142 @@ try:
     for line in open(p, encoding="utf-8"):
         rec = json.loads(line); ev = rec.get("event")
         if ev == "message_enqueued": enq += 1
-        if ev == "queue_drained": drained_msgs += int(rec.get("count", 0))  # N を合算
+        if ev == "queue_drained": drained_msgs += int(rec.get("count", 0))  # sum N
 except FileNotFoundError:
-    print("OK: queue.jsonl が無い（破棄済み）"); raise SystemExit
+    print("OK: queue.jsonl is gone (already disposed)"); raise SystemExit
 unread = enq - drained_msgs
 print(f"enqueued={enq} drained_msgs={drained_msgs} unread={unread}")
-print("OK: 未読なし" if unread <= 0 else f"NG: 未読 {unread} 件が残存（daemon 停止前に drain される必要）")
+print("OK: no unread" if unread <= 0 else f"NG: {unread} unread remain (must be drained before stopping the daemon)")
 PY
 
-# token / bind はプロセス内 in-memory（daemon 停止で消える。永続化されない）。
-# queue store ファイルを破棄して跡を残さない（rm 不可環境では truncate / アーカイブ）:
-#   mv "$BROKER_STATE" "$BROKER_STATE.archived-$(date +%Y%m%d)"   # または運用ルールに従い削除
+# Token / bind are in-memory in the process (disappear when the daemon stops; not persisted).
+# Dispose of the queue store file so no traces remain (in environments where rm is not allowed, truncate / archive):
+#   mv "$BROKER_STATE" "$BROKER_STATE.archived-$(date +%Y%m%d)"   # or delete per operational rules
 ```
 
-> **token / bind の永続性**: `AgentBind` は daemon プロセスの in-memory のみ（journal には `token_issued` の事実は残るが token 値・bind 表は永続化されない）。daemon を停止すれば bind は消える。残るのは `queue.jsonl`（journal + 未 drain message）だけなので、(5) はこのファイルの未読突合と破棄に閉じる。
+> **Token / bind persistence**: `AgentBind` is only in-memory in the daemon process (`token_issued` as an event remains in the journal, but token values and the bind table are not persisted). Stopping the daemon erases binds. What remains is only `queue.jsonl` (journal + undrained messages), so (5) is closed by reconciling unread in this file and disposing of it.
 
 ---
 
-## 6. 課金中立 attestation の取り方
+## 6. How to take the cost-neutral attestation
 
-broker が spawn する全エージェントが **対話 TUI（ヘッドレス不可）**であることを実 argv で確認する。これは課金中立（API 課金が走る `claude -p` / `codex exec` 等の非対話起動をしていない）の証跡になる。
+Confirm with real argv that every agent broker spawns is an **interactive TUI (no headless)**. This serves as evidence of cost neutrality (no non-interactive startup like `claude -p` / `codex exec` that incurs API billing).
 
-### 6.1 多層防御の構造（spawn 時の guard）
+### 6.1 Defense-in-depth structure (spawn-time guard)
 
-broker の課金中立は **spawn 時の default-deny allowlist** で構造的に保証されている（`surface.py`）:
+Broker's cost neutrality is structurally guaranteed by **spawn-time default-deny allowlist** (`surface.py`):
 
-- `build_claude_argv` / `build_codex_argv` が対話 TUI 用 flag のみ許可し、`_guard_interactive_claude_argv` / `_guard_interactive_codex_argv` で **allowlist 外 token（flag 後サブコマンド / bare positional / `--` / 未知 flag / headless flag）を一律拒否**する。
-- claude 側 headless blacklist: `-p` / `--print` / `--headless` / `--output-format` / `--input-format` 等。codex 側はサブコマンド（`exec` / `review` / `*-server` / `apply` / `sandbox` 等）が bare positional として落ちる。
-- 値を取る flag は arity を持たせ（値位置の headless flag も二段で弾く）、`argv[0]` は basename 判定（絶対パス起動を false-reject しない）。
+- `build_claude_argv` / `build_codex_argv` allow only interactive TUI flags, and `_guard_interactive_claude_argv` / `_guard_interactive_codex_argv` **uniformly reject tokens outside the allowlist (post-flag subcommands / bare positionals / `--` / unknown flags / headless flags)**.
+- Claude headless blacklist: `-p` / `--print` / `--headless` / `--output-format` / `--input-format`, etc. On the codex side, subcommands (`exec` / `review` / `*-server` / `apply` / `sandbox`, etc.) fall through as bare positionals.
+- Flags that take a value have arity (a headless flag in the value position is also blocked at the second stage), and `argv[0]` is judged by basename (so absolute-path invocations are not false-rejected).
 
-### 6.2 実 argv 検査（runtime attestation）
+### 6.2 Real argv inspection (runtime attestation)
 
-本番ホスト（broker ペインが live なセッション）で、実際に走っている argv を ps で検査する。**ヘッドレス flag / サブコマンドが 1 つも無いこと**を確認する。
+On the production host (a session with live broker panes), inspect the actually running argv with ps. **Confirm that no headless flag / subcommand is present.**
 
-**broker-spawned ペインに対象を絞る**のが要点。ホスト上には本 attestation と無関係な headless 実行（CI / 手動 `claude -p` 等）が並走しうるので、全 claude/codex を無差別に grep すると false positive を拾い、逆に対象識別漏れも起きる。broker が spawn したプロセスは argv に **`--mcp-config` で broker の MCP config（`org-broker` を含む）を抱える**ので、これで母集合を絞る。
+The key is to **scope to broker-spawned panes**. The host may have unrelated headless executions in parallel (CI / manual `claude -p` etc.), so an indiscriminate grep over all claude/codex picks up false positives and conversely misses target identification. Broker-spawned processes have **`--mcp-config` carrying broker's MCP config (which includes `org-broker`)** in their argv; use that to narrow the population.
 
 ```bash
-# 1) broker-spawned に限定して argv を列挙（--mcp-config に org-broker を含むものだけ）
+# 1) Enumerate argv scoped to broker-spawned (only those whose --mcp-config includes org-broker)
 ps -eo pid,args | grep -iE "(^| )(claude|codex)( |$)" | grep -v grep \
   | grep -- "--mcp-config" | grep -i "org-broker"
 
-# 2) 課金中立の negative check: 上で絞った broker ペインの argv に headless / exec 系が無いこと
+# 2) Cost-neutral negative check: argv of the broker panes scoped above contains no headless / exec-family
 ps -eo args | grep -iE "(^| )(claude|codex)( |$)" | grep -v grep \
   | grep -- "--mcp-config" | grep -i "org-broker" \
   | grep -nE -- "-p( |$)|--print|--headless|--output-format|--input-format| exec | review |--mcp-server" \
-  && echo "NG: broker ペインに headless/exec flag を検出（課金が走る起動）" \
-  || echo "OK: broker ペインに headless/exec flag なし（対話 TUI = 課金中立）"
+  && echo "NG: headless/exec flag detected on a broker pane (billable startup)" \
+  || echo "OK: no headless/exec flag on broker panes (interactive TUI = cost-neutral)"
 
-# 3) 母集合の突合（任意・推奨）: list_panes の broker bind ペイン数と (1) の件数が一致することを確認
-#    （ディスパッチャー/窓口の list_panes と pid を突合し、識別漏れ・余剰を検出する）
+# 3) Population cross-check (optional, recommended): confirm that the broker-bind pane count from list_panes matches the count from (1)
+#    (Cross-check pids against the dispatcher / secretary's list_panes to detect missing / surplus identification)
 ```
 
-期待: 各 broker ペインの argv が `--mcp-config <broker>` / `--model` / `--permission-mode` 等の **対話 flag のみ**で構成され、negative check が `OK` を返す。
+Expected: each broker pane's argv is composed only of **interactive flags** such as `--mcp-config <broker>` / `--model` / `--permission-mode`, and the negative check returns `OK`.
 
-> **注意**: ps の検査は **broker ペインが live なホストセッション**で行う（PID namespace を分離した sandbox 内からは実ペインが見えない）。spawn 時の guard（§6.1）が一次防御、ps による runtime attestation が二次確認という二段で課金中立を担保する。`--mcp-config` でのフィルタは broker ペインの構造的特徴に基づく一次絞り込みであり、厳密性が要るときは (3) の `list_panes` 突合で母集合の過不足を閉じる。
+> **Caution**: The ps inspection must be done on the **host session where the broker panes are live** (the actual panes are not visible from inside a sandbox with a separated PID namespace). The spawn-time guard (§6.1) is the primary defense and the runtime attestation via ps is the secondary check, securing cost neutrality in two stages. The `--mcp-config` filter is the primary narrowing based on the structural feature of broker panes; when strictness is required, close the gap on the population with the `list_panes` cross-check in (3).
 
 ---
 
-## 7. 検証ゴミの cleanup（条件 (5) の dogfooding）
+## 7. Cleanup of verification debris (dogfooding condition (5))
 
-本 runbook の検証で作ったテスト state は **repo 外のテスト用ディレクトリ**に閉じており、本番 `.state/broker/` は生成しない。検証後は §5(5) の手順を**テストパスに対して**実行し、跡を残さない。
+The test state created by this runbook's verification is closed to a **test directory outside the repo**, and production `.state/broker/` is not generated. After verification, run the procedure in §5(5) **against the test path** and leave no trace.
 
 ```bash
-CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root（環境に合わせる）
+CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root (adjust to your env)
 
-# 検証で使ったテスト state-dir を確認（repo 外であること）
+# Confirm the test state-dir used in verification (must be outside the repo)
 ls -d /tmp/claude/broker-smoke-* /tmp/claude/usercommon-settings.json 2>/dev/null
 
-# journal の未読突合（§5(5) のスクリプトを BROKER_STATE=テストパスに向けて実行）→ 問題なければ破棄
-# （/tmp 配下は ephemeral。運用ルールに従いアーカイブまたは削除）
+# Reconcile journal unread (run the §5(5) script against BROKER_STATE=test path) -> dispose if OK
+# (/tmp is ephemeral. Archive or delete per operational rules.)
 
-# 本番 .state/broker が未生成であることの最終確認（canonical root の絶対パス + 現 worktree 直下の両方）
-test -e "$CANON_ROOT/.state/broker" && echo "NG: 本番 .state/broker が存在" || echo "OK: 本番 .state は不変"
-test -e "$PWD/.state/broker" && echo "NG: worktree 直下に .state/broker が存在" || echo "OK: worktree 直下も不変"
+# Final confirmation that production .state/broker has not been created (both canonical root absolute path and current worktree root)
+test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker exists" || echo "OK: production .state unchanged"
+test -e "$PWD/.state/broker" && echo "NG: .state/broker exists directly under the worktree" || echo "OK: worktree root unchanged"
 ```
 
 ---
 
-## 8. 観察性 — 走行中の org を覗く（attach 導線）
+## 8. Observability -- peek at a running org (attach path)
 
-broker（tmux backend）は **spawn する子ペイン（ディスパッチャー・ワーカー）** を専用 socket 上の **detached な独立 tmux セッション**として起動する。renga の「同一タブ内の可視 split ペイン」と違い、これら子ペインはデフォルトでは人間の画面に出ないため、「ワーカーが何人動いていて、どれが止まっているか」が視界に入る *ambient awareness*（何もしなくても全体がなんとなく見える状態）が静かに失われる。既存の俯瞰手段だけではこの体験は埋まらない:
+Broker (tmux backend) starts the **child panes it spawns (dispatcher / workers)** as **detached, independent tmux sessions** on a dedicated socket. Unlike renga's "visible split panes in the same tab", these child panes do not appear on the human screen by default, and *ambient awareness* -- "how many workers are running and which ones are stuck" being visible without any effort -- is quietly lost. The existing overview means cannot fill this experience by themselves:
 
-| 手段 | 提供するもの | 足りないもの |
+| Means | Provides | Missing |
 |---|---|---|
-| ダッシュボード（`localhost` の状態 UI） | `state.db` ベースの状態俯瞰（worker 一覧・遷移・activity） | 各ペインの**生画面**ではない |
-| attention watcher（[`attention-watch.md`](attention-watch.md)） | 異常・gate 時の push 通知 | 「健全時に眺めて安心する」常時観察ではない |
-| **tmux attach（本節）** | **broker-spawned 子ペイン（ディスパッチャー・ワーカー）の生画面** | 下記のとおり現状は per-session attach（単一セッション化は §8.2 の将来形） |
+| Dashboard (`localhost` status UI) | `state.db`-based status overview (worker list, transitions, activity) | Not the **raw screen** of each pane |
+| attention watcher ([`attention-watch.md`](attention-watch.md)) | Push notifications on anomalies / gates | Not the kind of "watch when healthy and be reassured" continuous observation |
+| **tmux attach (this section)** | **Raw screen of broker-spawned child panes (dispatcher / workers)** | Currently per-session attach as noted below (single-session is the future form in §8.2) |
 
-本節は走行中の broker org を **read-only で覗く attach 導線**を示す。**この導線は tmux backend（POSIX / WSL2）固有**である。WezTerm backend（Windows、`isolated_session=False`）は各ペインを GUI ウィンドウとして spawn するため画面は元から可視で、attach は不要。
+This section shows the **read-only attach path to peek at the running broker org**. **This path is tmux-backend (POSIX / WSL2) specific**. The WezTerm backend (Windows, `isolated_session=False`) spawns each pane as a GUI window so the screen is visible from the start and attach is not needed.
 
-> **対象範囲（重要）**: attach で見えるのは **broker が `adapter.spawn` した子ペイン（ディスパッチャー・ワーカー）** のみ。**窓口（root secretary）は adapter 実ペインを持たない logical pane**（bookkeeping entry。`register_logical_pane`、`claude_org_runtime/broker/server.py`）であり、org を起動した人間の手元 terminal でそのまま動く（spike socket には現れない）。したがって本導線が埋めるのは「ワーカー群 / ディスパッチャーの生画面が見えない」ギャップであって、窓口は元々人間の眼前にある。
+> **Scope (important)**: What attach lets you see is **only the child panes that broker `adapter.spawn`-ed (dispatcher / workers)**. **The secretary (root secretary) is a logical pane that does not have a real adapter pane** (a bookkeeping entry, `register_logical_pane`, `claude_org_runtime/broker/server.py`), and it runs as-is on the human's local terminal that started the org (it does not appear on the spike socket). So what this path fills is the "workers / dispatcher raw screens are not visible" gap; the secretary is in front of the human to begin with.
 
-### 8.1 現状 — 独立セッションへの attach（runtime terminal adapter）
+### 8.1 Today -- attach to an independent session (runtime terminal adapter)
 
-現行 runtime の terminal adapter（tmux、`claude_org_runtime.terminal.tmux`）は、broker が spawn する子ペイン（ディスパッチャー・ワーカー）を**専用 socket `claude-org-spike` 上の独立 detached セッション**として作る（セッション名 `spike-<pid>-<連番>`、`isolated_session = True`）。既存 tmux サーバー（renga 等）とは socket 分離されているため、観察には socket 名 `-L claude-org-spike` の明示が要る。
+The current runtime terminal adapter (tmux, `claude_org_runtime.terminal.tmux`) creates the child panes broker spawns (dispatcher / workers) as **independent detached sessions on a dedicated socket `claude-org-spike`** (session name `spike-<pid>-<seq>`, `isolated_session = True`). It is socket-separated from existing tmux servers (renga etc.), so observation requires the explicit socket name `-L claude-org-spike`.
 
 ```bash
-# 1) 現存する broker セッションを一覧（読み取りのみ。socket 明示が必須）
+# 1) List the broker sessions that exist (read-only. Explicit socket is mandatory)
 tmux -L claude-org-spike list-sessions
-#   例:  spike-12345-1: 1 windows (created ...)   ← 各行が 1 子ペイン（連番は 1 始まり）
+#   Example:  spike-12345-1: 1 windows (created ...)   <- each line is one child pane (seq starts at 1)
 
-# 2) 覗きたいセッションへ read-only で attach（-r が read-only。誤打鍵で worker を壊さない）
+# 2) Attach read-only to the session you want to peek at (-r is read-only. Won't break a worker on stray keys)
 tmux -L claude-org-spike attach -r -t spike-12345-1
 ```
 
-attach 後の操作（prefix は既定 `Ctrl-b`）:
+Post-attach controls (prefix defaults to `Ctrl-b`):
 
-| 操作 | キー | 用途 |
+| Action | Key | Use |
 |---|---|---|
-| detach（観察をやめて抜ける） | `Ctrl-b` → `d` | セッションは生かしたまま離脱（プロセスに影響しない） |
-| 別セッションへ切替 | `Ctrl-b` → `s` | セッション一覧から選択。**現状は per-session なので全体を見るには切替が要る** |
+| Detach (stop observing and leave) | `Ctrl-b` -> `d` | Leave with the session still alive (does not affect the process) |
+| Switch to another session | `Ctrl-b` -> `s` | Pick from the session list. **Today is per-session, so seeing the whole picture requires switching** |
 
-> **read-only `-r` を既定にする理由**: 独立セッションへの attach は worker の生 TUI に直接つながる。`-r` なしで attach すると観察中の打鍵が worker セッションに入りうる（介入は窓口/ディスパッチャーの `send_keys` 経路に閉じる設計のため、人間の手 attach は観察に限定する）。
+> **Reason `-r` (read-only) is the default**: Attaching to the independent session connects directly to the worker's live TUI. Without `-r`, keystrokes during observation can land in the worker session (interventions are designed to be confined to the secretary/dispatcher `send_keys` route, so a human-hand attach is restricted to observation).
 
-> **検証ログ（2026-06-13、runtime 0.1.22）**: socket 名 `claude-org-spike` / セッション名 `spike-<pid>-<連番>` / `isolated_session = True` は `claude_org_runtime/terminal/tmux.py`（`SPIKE_SOCKET` 定数・`_new_session_name`）を実機で確認。`list-sessions`（複数セッション列挙）/ `attach -r`（read-only flag の受理）/ `kill-server`（後始末）の各コマンド形は scratch socket で疎通確認済み（実 broker org への attach は対話ブロックのため本検証では未実施）。
+> **Verification log (2026-06-13, runtime 0.1.22)**: Socket name `claude-org-spike` / session name `spike-<pid>-<seq>` / `isolated_session = True` were confirmed in `claude_org_runtime/terminal/tmux.py` (the `SPIKE_SOCKET` constant / `_new_session_name`) on real hardware. The command shapes `list-sessions` (multi-session enumeration) / `attach -r` (read-only flag acceptance) / `kill-server` (cleanup) were end-to-end-tested on a scratch socket (attach against a real broker org was not done in this verification due to interactive blocking).
 
-### 8.2 将来 — 単一セッション化で `attach` 一発（transport-lab 設計、未 land）
+### 8.2 Future -- one-shot `attach` via single-session (transport-lab design, not yet landed)
 
-transport-lab `docs/design/broker-native-roles.md` §3.4（defect 4 対処）が、tmux adapter を **単一 `claude-org` セッション内の複数ペイン/ウィンドウ**構成へ再構成する設計を確定済み。land 後は次の 1 コマンドで broker-managed なペイン群（ディスパッチャー・ワーカー）が一望でき、標準ペイン nav（`Ctrl-b` 矢印）が効くため §8.1 の per-session 切替が不要になる:
+transport-lab `docs/design/broker-native-roles.md` §3.4 (defect 4 mitigation) has confirmed a design that restructures the tmux adapter into a **multi-pane/window composition within a single `claude-org` session**. After it lands, the following one command lets you see the broker-managed panes (dispatcher / workers) at a glance, and standard pane nav (`Ctrl-b` arrow keys) works, so the per-session switching of §8.1 becomes unnecessary:
 
 ```bash
-tmux attach -r -t claude-org   # 単一セッション化（§3.4 / R1）後の導線（-r=read-only）。socket -L の指定も不要になる
+tmux attach -r -t claude-org   # Path after single-session-ization (§3.4 / R1) (-r = read-only). Socket -L specification also becomes unnecessary.
 ```
 
-- これは **runtime の terminal adapter（`claude_org_runtime/terminal/`）の変更**であり、ja は runtime の pin bump で consume する（ja 側の本 runbook 手順ではない）。**現行 runtime（独立セッション）では §8.1 が唯一の attach 導線**。
-- ペイン死は差分 reconcile が処理する設計のため、単一セッション化のトレードオフ（session 級障害が全ペインに波及）は観察性の常時便益が上回る、と §3.4 が結論している。
-- 観察性ギャップ対応として検討された observer 専用コマンド（broker-managed ペインの read-only タイル表示）/ ダッシュボードへのペイン生画面タイル表示は、単一セッション化後の `attach -r -t claude-org`（read-only）が同等の俯瞰を与えるため重複となり、本 runbook では採らない（要否は単一セッション化後の実運用で再判断）。
+- This is a **change to the runtime's terminal adapter (`claude_org_runtime/terminal/`)**, and ja consumes it via a runtime pin bump (not a procedure of this runbook on the ja side). **In the current runtime (independent sessions), §8.1 is the only attach path.**
+- Pane death is handled by differential reconcile by design, and §3.4 concludes that the constant benefit of observability outweighs the trade-off of single-session-ization (session-level failures spreading to all panes).
+- An observer-dedicated command (read-only tile display of broker-managed panes) / pane raw-screen tile display on the dashboard, considered for the observability gap, become redundant because `attach -r -t claude-org` (read-only) after single-session-ization provides equivalent overview, so this runbook does not adopt them (necessity is reassessed in real operation after single-session-ization).
 
 ---
 
-## 9. 関連
+## 9. Related
 
-- 設計 SoT: transport-lab `docs/design/ja-migration-plan.md` §5（統合シーム）/ §5.5（併存・切戻し）/ §8 Issue G（dogfood ゲート）
-- 契約: [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、提案・批准待ち）
-- 輸送両系の窓口運用差: [`CLAUDE.md`](../../CLAUDE.md)「輸送層（transport）両系」
-- spawn 儀式（dev-channel 承認 → folder-trust 承認）: [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b
-- transport アクセサ（ja 側単一シーム）: [`tools/transport.py`](../../tools/transport.py)
-- user_common allowlist 射影: [`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist`
-- attention watcher の運用文体: [`attention-watch.md`](attention-watch.md)
-- 観察性の単一セッション化設計（§8.2 の将来形）: transport-lab `docs/design/broker-native-roles.md` §3.4（defect 4 — 独立 tmux セッション問題）
+- Design SoT: transport-lab `docs/design/ja-migration-plan.md` §5 (integration seam) / §5.5 (coexistence / rollback) / §8 Issue G (dogfood gate)
+- Contract: [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed / awaiting ratification)
+- Secretary-side operational difference between the two transports: [`CLAUDE.md`](../../CLAUDE.md) "Transport (two systems)"
+- Spawn ritual (dev-channel approval -> folder-trust approval): [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b
+- Transport accessor (ja-side single seam): [`tools/transport.py`](../../tools/transport.py)
+- user_common allowlist projection: [`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist`
+- attention watcher operational tone: [`attention-watch.md`](attention-watch.md)
+- Observability single-session design (the future form of §8.2): transport-lab `docs/design/broker-native-roles.md` §3.4 (defect 4 -- independent tmux session problem)
