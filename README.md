@@ -125,7 +125,7 @@ For pinning a specific version (`CLAUDE_ORG_REF`), the manual steps, and details
 | **Headless agent loops (`claude -p` / Agent SDK farm)** | Configurations that run agents at scale in parallel and on automated loops via headless execution | claude-org runs **every agent as an interactive TUI**, does not adopt headless metered billing, and **keeps running inside your fixed-plan quota** (billing-neutral; for the 2026-06-15 billing split, see the first pillar) |
 | **Claude Code Subagents / Agent Teams (official)** | Anthropic's official "lead / teammate" hierarchy + automatic memory + hooks | claude-org is an operations layer on top of the official offering. It **coexists rather than competes**. It adds what the official offering does not provide: "enforced per-task working-directory boundaries," "schema-driven config drift detection," "a refinement pipeline from raw learnings to organized knowledge," and "threshold-driven on-demand automatic curation" |
 | **Claude-based coordination platforms such as ccswarm / Ruflo / oh-my-claudecode** | Fixed role pool + oriented toward large-scale parallelism | claude-org **generates the working directory and `CLAUDE.md` fresh for each task** (it does not keep a prebuilt role pool). It is quality-first with 3 to 5 Workers (the opposite direction from farm-style systems) |
-| **tmux / zellij + manual prompt splitting** | General-purpose terminal multiplexers + human-operated pane management | claude-org provides **P2P messaging between panes + structured pane creation + suspend/resume of state** through a dedicated MCP server (`renga-peers`). Its core value is what manual operation lacks: "role contracts," "automatic knowledge curation," and "role-specific permission distribution" |
+| **tmux / zellij + manual prompt splitting** | General-purpose terminal multiplexers + human-operated pane management | claude-org provides **P2P messaging between panes + structured pane creation + suspend/resume of state** through a dedicated MCP server (`renga-peers`) (dual transport: the default `renga` assumes a single tab, while the opt-in `broker` also supports detached operation). Its core value is what manual operation lacks: "role contracts," "automatic knowledge curation," and "role-specific permission distribution" |
 
 → For a more detailed 16-axis comparison (including CrewAI / LangGraph / AutoGen / Agent Zero / OpenSpace, etc.), see [`docs/oss-comparison.md`](docs/oss-comparison.md).
 
@@ -167,12 +167,12 @@ flowchart TB
   </tr>
 </table>
 
-- **Secretary**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting. Operational responsibilities are split internally into three skills ([`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)). When the Secretary session's context grows long, dump state with [`/secretary-handover`](.claude/skills/secretary-handover/SKILL.md), then recover with [`/secretary-resume`](.claude/skills/secretary-resume/SKILL.md) after `/clear` (refreshing only the Secretary while leaving the Dispatcher / Worker panes alive)
-- **Dispatcher**: Relays pane launches and instruction delivery, minimizing the time the Secretary is blocked
-- **Curator**: Launched on demand by the Dispatcher at a worker close where accumulated raw learnings exceed a threshold. Runs the refinement into organized knowledge and skill / process improvement proposals once, then is automatically closed
-- **Worker**: Handles implementation work. Within the per-task working-directory boundary, it autonomously works through commit (pull request creation stays on the Secretary side), and records raw learnings after completion
+- **Secretary — the only one the human talks to**: Handles task breakdown, delegation decisions, and result reporting; does not perform implementation work itself. Operational responsibilities are split internally into three skills ([`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)). Even when context grows large, you can swap out only the Secretary without stopping the organization via [`/secretary-handover`](.claude/skills/secretary-handover/SKILL.md) → `/clear` → [`/secretary-resume`](.claude/skills/secretary-resume/SKILL.md) (the Dispatcher and Worker panes stay alive)
+- **Dispatcher — so neither the human nor the Secretary has to wait**: Takes over pane launches and instruction delivery, minimizing the time the Secretary is blocked
+- **Curator — so learnings turn into assets on their own**: Launched on demand by the Dispatcher at a worker close where accumulated raw learnings exceed a threshold; runs the refinement into organized knowledge plus skill / process improvement proposals once and then is automatically closed
+- **Worker — where the actual implementation work is confined**: Within the per-task working-directory boundary, it autonomously works through commit (pull request creation stays on the Secretary side), and records raw learnings after completion
 
-All panes run within the same tab (`new_tab`, which opens a separate tab, is not used in organizational operations).
+All panes run within the same tab (`new_tab`, which opens a separate tab, is not used in organizational operations). This presupposes the default `renga` transport; the opt-in `broker` also supports detached operation.
 
 ---
 
@@ -192,11 +192,9 @@ For details, the remaining seven items (PTY layer / cross-`--add-dir` / HTTP exp
 
 ## Skill list
 
-Skills are divided into three groups by prefix. `/org-*` are for operating the organizational runtime (daily operations that directly handle panes, Workers, and state); `/skill-*` are meta-operations on the skill system itself (decisions about creating / organizing skills); `/secretary-*` are operations specific to handing off context within the Secretary session (refreshing only the Secretary while keeping the whole organization running). When you add a new skill, follow this prefix convention.
+Skills are divided into three groups by prefix. `/org-*` are for day-to-day organizational operations (startup, dispatch, suspension, retrospectives); `/secretary-*` are for context handover that refreshes only the Secretary without stopping the organization; `/skill-*` are meta-operations on the skill system itself (creation → inventory). New skills should follow this prefix convention as well.
 
 ### Organizational runtime operations (`/org-*`)
-
-Used for day-to-day organizational operations such as startup, dispatch, suspension, and retrospectives.
 
 | Skill | Purpose |
 |---|---|
@@ -213,8 +211,6 @@ Used for day-to-day organizational operations such as startup, dispatch, suspens
 
 ### Secretary session management (`/secretary-*`)
 
-A paired set of skills used to refresh only the Secretary, without stopping the whole organization, when the Secretary Claude's context grows long.
-
 | Skill | Purpose |
 |---|---|
 | `/secretary-handover` | Dump the Secretary's in-flight work and organizational state to `.state/secretary-handover.md` (leaving the Dispatcher / Worker panes alive) |
@@ -222,7 +218,7 @@ A paired set of skills used to refresh only the Secretary, without stopping the 
 
 ### Skill-system meta-operations (`/skill-*`)
 
-Used for decisions about creating and organizing skills themselves. They form a self-improving loop in the order generation (eligibility-check) → inventory (audit).
+They form a self-improving loop in the order generation (eligibility-check) → inventory (audit).
 
 | Skill | Purpose |
 |---|---|
