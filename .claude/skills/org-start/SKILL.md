@@ -16,6 +16,7 @@ allowed-tools:
   - Bash(py -3 tools/check_runtime_version.py:*)
   - Bash(python3 tools/check_runtime_version.py:*)
   - mcp__renga-peers__*
+  - mcp__org-broker__* # mechanical replacement target when ORG_TRANSPORT=broker (opt-in)
 ---
 
 # org-start: starting the org
@@ -50,25 +51,49 @@ The first skill to run after Claude Code launches. Performs previous-state resto
 > was retired in M4.
 > If the DB is missing, build it with `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`.
 
+> **Transport (transport) two systems — default `renga` / opt-in `broker`**: the `mcp__renga-peers__*` calls in this skill are written for **default `renga`** (`ORG_TRANSPORT` unset) and you can follow them as-is (default behavior is unchanged). With `ORG_TRANSPORT=broker` (opt-in, revertible), the MCP server name becomes `org-broker`, and the **fully qualified tool names are mechanically replaced from `mcp__renga-peers__*` to `mcp__org-broker__*`** (argument shapes and semantics are identical, so the logic of the procedure does not change). Only the points where the procedure differs by transport are annotated with the broker variant:
+>
+> - **Receive model (push -> pull)**: in renga, dispatcher / worker messages are pushed in-band as `<channel source="renga-peers" ...>`. In broker, **only a pane-local nudge is emitted**, and the body must be pulled via `check_messages` (in broker, `mcp__org-broker__check_messages`) (in broker all peers use pull delivery = `receive_mode` constant `"poll"`. The only change is "when you see a nudge, call `check_messages`"; aside from tool names, the steps are isomorphic).
+> - **Spawn ritual (dev-channel approval -> folder-trust approval)**: renga's `spawn_claude_pane` injects `--dangerously-load-development-channels server:renga-peers` and the "Load development channel?" prompt is approved via Enter (Block D-1). broker injects `--mcp-config <broker>`, and the approval prompt changes to Claude Code's **folder-trust prompt** (also mechanically approved via `send_keys(enter=true)`; the procedure shape is isomorphic).
+> - **Error branches (broker additional codes)**: in addition to renga codes (`[split_refused]` / `[pane_not_found]` / `[cwd_invalid]` etc.), broker can return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes escalate via the default branch). For the list, see the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md).
+>
+> `new_tab` / `focus_pane` are **not** in the broker surface (intentionally excluded; this flow does not use them anyway). The contract SoT is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed and awaiting ratification); the design SoT is the transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). broker live operation (dogfood) is in the Epic #6 Issue G scope and is not the default path of this skill.
+
 ## Step 0: initialization
 
-1. Set your own summary via `mcp__renga-peers__set_summary`: "Secretary: Lead".
-   - Required so that worker / dispatcher / curator can discover the Lead via `mcp__renga-peers__list_peers`.
-2. Verify `renga-peers` MCP connectivity: call `mcp__renga-peers__list_panes`.
-   - If a response comes back without error, MCP is enabled. From here on, proceed on the premise that renga-peers MCP tools are usable.
-   - If an error returns / the tool is not registered, ask the user to run `renga mcp install` and
-     pause execution of the Skill (have them retry after MCP is installed). See the README's
-     "Installation" section for details.
+0. **Transport determination (first sub-step — perform BEFORE any MCP call)**: check the `ORG_TRANSPORT` environment variable to fix the MCP server name used by subsequent steps:
+   ```bash
+   echo "${ORG_TRANSPORT:-renga}"
+   ```
+   - `renga` (default, including unset): use `mcp__renga-peers__*` as written in this skill.
+   - `broker`: **decide here, before entering any MCP call**, that for the rest of the procedure (the remaining sub-steps of Step 0 through Block D, including failure modes), tools will be invoked as `mcp__org-broker__*` (the mechanical replacement noted at the top of the file). If you skip this determination in a broker environment and hit `mcp__renga-peers__*` first, you only notice on the first wasted round-trip via the `"RENGA_PANE_ID not set — Claude Code was not launched by renga"` error.
+1. Set your own summary via `mcp__renga-peers__set_summary` (in broker, `mcp__org-broker__set_summary`): "Secretary: Lead".
+   - Required so that worker / dispatcher / curator can discover the Lead via `list_peers`.
+2. Verify messaging MCP connectivity: call `mcp__renga-peers__list_panes` (in broker,
+   `mcp__org-broker__list_panes`).
+   - If a response comes back without error, MCP is enabled. From here on, proceed on the premise that the messaging MCP tools are usable.
+   - If an error returns / the tool is not registered, pause execution of the Skill and prompt the
+     user with a transport-specific recovery (have them retry after install):
+     - renga: prompt the user to run `renga mcp install`. See the README's "Installation"
+       section for details.
+     - broker: `renga mcp install` is a renga-only recovery and does not apply. Ask the
+       user to check the broker daemon's startup status and the broker config passed
+       via `--mcp-config`.
 3. **Verify and auto-recover the secretary pane identity**:
-   - From the result of `mcp__renga-peers__list_panes`, identify the pane with `focused=true` (= yourself).
+   - From the result of `mcp__renga-peers__list_panes` (in broker, `mcp__org-broker__list_panes`), identify the pane with `focused=true` (= yourself).
    - Expected: `name == "secretary"` and `role == "secretary"`.
    - **If mismatched** — started via a route other than `renga --layout ops` / attached to an existing session that was launched from the old ops.toml, etc.:
-     1. Call `mcp__renga-peers__set_pane_identity(target="focused", name="secretary", role="secretary")` to auto-repair.
+     1. Call `mcp__renga-peers__set_pane_identity(target="focused", name="secretary", role="secretary")` to auto-repair (in broker, use `mcp__org-broker__set_pane_identity`, but since `target="focused"` cannot be resolved, specify the id of your own pane — identified from `list_panes` — as `target`).
      2. On success, log a warning in the events table and continue (`bash tools/journal_append.sh secretary_identity_restored note=auto_recovered`).
      3. Failure branches:
-        - `name_in_use` error: another existing pane is occupying `secretary`. Report the situation to the user and present the options "continue current session by making all workers send to `to_id="{numeric_pane_id}"`" / "persistent fix: `/org-suspend` -> exit -> relaunch with `renga --layout ops`".
+        - `name_in_use` (in broker, `name_taken`) error: another existing pane is occupying `secretary`. Report the situation to the user and present the options "continue current session by making all workers send to `to_id="{numeric_pane_id}"`" / "persistent fix: `/org-suspend` -> exit -> relaunch with `renga --layout ops`".
         - `name_invalid` / other: report the cause to the user.
    - **If matched**: continue as is.
+   - **broker (`ORG_TRANSPORT=broker`) case**: the secretary's own pane record may not exist, and `list_panes` may not contain a `focused=true` pane / `set_pane_identity(target="focused", ...)` may return `[pane_not_found] no pane for target 'focused'`. **As soon as either occurs, do not retry the mismatch recovery above; proceed to this branch.** If `mcp__org-broker__list_peers` confirms your own agent registration (`name="secretary"` and `role="secretary"`), **identity verification is considered satisfied and you may continue** (broker's `send_message` routing is established by peer registration and does not require the secretary's pane record).
+     > **broker logical-entry note**: in broker, `list_panes` may show entries with all-zero geometry (w=0 h=0) and `kind` null. These are not necessarily leftovers; they may be **logical entries with no adapter body (human-driven logical panes)**. The typical case is the bookkeeping entry of the root secretary (Lead) itself. Handling is as follows:
+     > - `inspect_pane` fails due to absence of an adapter (observes socket close). Do not call it for investigation.
+     > - `close_pane` is **rejected** with `[logical_pane] cannot close a human-driven logical pane`. Do not assume it is a leftover and attempt close.
+     > - If the entry's `name` / `role` remain different from the expected values (`secretary` / `secretary`), e.g., leftovers from manual tests, **rename-repair** with `mcp__org-broker__set_pane_identity(target="<that entry's id>", name="secretary", role="secretary")` and continue. In broker, `target="focused"` cannot be resolved, so you must specify that entry's id.
 4. Read `workers_dir` from `registry/org-config.md` and verify the worker directories exist.
    If any exist, report the list to the user (absolutely do not delete).
    **Forbidden**: worker directories may contain past deliverables or reusable projects, so
@@ -76,7 +101,7 @@ The first skill to run after Claude Code launches. Performs previous-state resto
 
 ## Steps 1-3: parallel startup phase
 
-> **Issue #410 / Stage B**: As soon as Step 0 (all four sub-steps: set_summary / MCP connectivity / identity verification / workers_dir verification) is complete, fire the `spawn_claude_pane` for the dispatcher, and in parallel with waiting for Claude to boot (~30-60s), run Block B (DB read of previous state) / Block C (dashboard server startup). The goal is to compress wall-clock time from ~3 minutes (when run serially) down to ~35s.
+> **Issue #410 / Stage B**: As soon as Step 0 (all five sub-steps: transport determination / set_summary / MCP connectivity / identity verification / workers_dir verification) is complete, fire the `spawn_claude_pane` for the dispatcher, and in parallel with waiting for Claude to boot (~30-60s), run Block B (DB read of previous state) / Block C (dashboard server startup). The goal is to compress wall-clock time from ~3 minutes (when run serially) down to ~35s.
 >
 > **Execution model**: the Secretary fires the following three blocks (A/B/C) and finally joins at block D. Block A is I/O bound (renga MCP responses take a few hundred ms; after that we are just waiting on Claude's boot, which is a separate process), so wall-clock fully overlaps with B/C.
 
@@ -136,6 +161,8 @@ In parallel with Block A's spawn firing. The dashboard server is a separate proc
 3. Inform the user:
    "Dashboard started -> http://localhost:8099".
 
+> **sandbox note (avoiding false negatives)**: Claude Code's Bash sandbox is isolated by network / process namespaces, so running this Block's resident startup / connectivity checks inside the sandbox produces misjudgments. Even when the host-side server is correctly listening on port 8099, inside the sandbox `curl` returns `000`, the port is not visible to `ss`, and `pgrep` / `kill -0` cannot observe the host process (it is misjudged as "startup failure" and falls into a restart loop). Furthermore, processes started inside the sandbox via `nohup ... &` do not persist past command termination. **Run the server startup (step 2) and connectivity checks (step 1 or `curl` / `ss` / `pgrep` / `kill -0` etc.) outside the sandbox** (in Claude Code's Bash tool, attach `dangerouslyDisableSandbox: true`, or use `run_in_background` for host execution).
+
 ### Block C2: claude-org-runtime version drift detection (Issue #472)
 
 In parallel with Block A's spawn firing. Compare the installed version of `claude-org-runtime` to the latest on PyPI, and if there is drift, attach a one-line warning to the Step 4 startup-complete report. No auto-upgrade; notification only. **Do not hard-code version numbers in either this file or the script — use only values dynamically obtained via importlib.metadata and the PyPI JSON API** (to avoid the description going stale every time runtime releases).
@@ -180,6 +207,7 @@ After Block A's spawn succeeds, Claude is booting in the dispatcher pane.
    - Enter is written to the PTY as CR (0x0D).
    - Without approval, the `server:renga-peers` channel is not enabled and `send_message` channel pushes do not arrive.
    - Depending on boot speed, sending Enter before the prompt is displayed may become a no-op. If the next list_peers poll does not confirm peer registration, resend Enter.
+   - **broker (`ORG_TRANSPORT=broker`) case**: what `spawn_claude_pane` injects is not `--dangerously-load-development-channels` but `--mcp-config <broker>`. The first prompt is no longer "Load development channel?" but Claude Code's **folder-trust prompt**, but the approval procedure is isomorphic: mechanically approve via `mcp__org-broker__send_keys(target="dispatcher", enter=true)`. Without approval, the broker token bind does not complete and the next `list_peers` wait times out the same way.
 2. **Poll list_peers and confirm the dispatcher's peer registration**:
    ```
    mcp__renga-peers__list_peers
