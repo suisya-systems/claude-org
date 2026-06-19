@@ -82,6 +82,18 @@ Implementation guideline:
 
 Background: in a past probe task, the actual oauth_token from `cat ~/.config/gh/hosts.yml` was leaked to the dispatcher's stdout. Probe-class tasks have "reads themselves" as the attack surface, so the switch to testbed must be enforced as a pre-execution gate.
 
+## Editing generated prose (files that have a source)
+
+When the edit target includes prose files (`.md`, etc.) under `.dispatcher/` or `.claude/skills/`, **before you start editing, empirically check whether the file is a generated artifact (an output rendered automatically from a source)**. Editing the generated artifact directly causes the change to be overwritten by the next render and silently lost (drift).
+
+Implementation guideline:
+1. **At task start, empirically check whether the file is generated**: run `grep <path-of-edit-target> tools/skill_src/manifest.json`. If it hits an `output` entry in the manifest, the file is a generated artifact (has a source). If it does not hit, the file is hand-maintained and can be edited directly.
+2. **If generated, edit the source**: when there is a hit, edit the corresponding `source` (the `.md.in` / fragment side). Do not edit the generated artifact itself (the `output`-side `.md`).
+3. **Re-render from the source**: after editing, run `python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json` (without `--check`) to re-render the generated artifact (the `output`-side `.md`), and **commit both the source and the generated artifact** (`--check` only verifies and does not rewrite the output, so skipping the re-render leaves the artifact stale).
+4. **Confirm zero drift**: finally, run `python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json --check` and confirm that source and generated artifact agree (zero drift, exit 0) before submitting the completion report. Note that omitting `--manifest` results in "nothing to do" — nothing is checked and the gate exits 0 as a no-op.
+
+Background: there have been multiple past incidents where directly editing generated prose caused drift against the source. Re-rendering from the source and verifying with `--check` prevents recurrence.
+
 ## Codex self-review procedure
 
 Follow the **"verification depth" line that is always included** in the dispatch instructions (`full` or `minimal`). If the value is missing or unclear, do not decide on your own — confirm with the Secretary (`secretary`).
