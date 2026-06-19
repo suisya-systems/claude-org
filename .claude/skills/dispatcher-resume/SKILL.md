@@ -49,13 +49,73 @@ member, in-flight dispatches, workers under monitoring), then resume the
 > - If the handover file does not exist or is too old, point at `/org-start`
 >   and stop.
 
-> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical). Only the transport-dependent points are noted in broker form:
->
-> - **Receive model (push → pull)**: under renga, worker → dispatcher peer messages are pushed in-band. Under broker, only a pane-local nudge fires, and the body must be pulled via `check_messages` (broker: `mcp__org-broker__check_messages`). Step 5's drain of messages stranded from the previous session has the same logic under broker, only the tool name changes. `poll_events` (lifecycle cursor) keeps the same cursor semantics under broker, just as `mcp__org-broker__poll_events`.
-> - **Spawn rite (dev-channel approval → folder-trust approval)**: resume does not spawn, so the approval step is unused; but on broker, the spawn-time approval (in org-start / org-delegate) shifts from dev-channel to the Claude Code **folder-trust prompt**.
-> - **Error branching (broker additional codes)**: on top of the renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md).
->
-> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (proposed, awaiting ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+## Before Step 0: residual loop reservation / stale re-fire guard (cut off duplicate startup early)
+
+`/dispatcher-resume` is a **one-shot that consumes the handover exactly once**
+(Step 7 renames `.state/dispatcher-handover.md` to `.consumed.md`). But if the
+`/loop 3m` reservation started in Step 5 — due to a past bug or a manual
+operation — holds `/dispatcher-resume` itself as its iteration target, this
+skill re-fires on every monitoring cycle. Cut off such **stale re-fire /
+duplicate startup** before entering Step 0 (background on the permanent fix:
+[`knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md`](../../../knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md)).
+
+1. Judge the live / consumed handover state on an **existence basis** (do not
+   depend on a timestamp comparison against `now`. Aligns with the rule in
+   `.dispatcher/CLAUDE.md` that the cold-start vs resume branch only looks at
+   the live `.md`):
+   ```bash
+   python3 -c "
+   import os
+   md = '../.state/dispatcher-handover.md'
+   cm = '../.state/dispatcher-handover.consumed.md'
+   if os.path.exists(md):
+       print('resume')            # canonical resume: live handover present
+   elif os.path.exists(cm):
+       print('already_consumed')  # already consumed: suspect residual loop / duplicate startup
+   else:
+       print('no_handover')       # no handover ever: real cold-start candidate
+   "
+   ```
+2. **`already_consumed` (no live `.md`, `.consumed.md` present)**: a resume
+   invocation with no live handover but `.consumed.md` still there. This is
+   either "(i) re-fire / duplicate startup from a residual loop reservation
+   left by a successful prior resume (org is healthy, monitoring loop is
+   running)" or "(ii) an erroneous invocation in a situation that actually
+   requires cold-start (org is down)". **Falling through to no-op based on
+   existence alone permanently hides the cold-start guidance in (ii)**, so
+   branch by observing whether the monitoring targets are actually live:
+   - Use `mcp__renga-peers__list_panes` / `mcp__renga-peers__list_peers` to
+     check **whether monitoring targets are live**: at least one active
+     worker pane (`role == "worker"`) exists, or
+     `.state/dispatcher/curate-inflight.json` exists (= a state in which the
+     monitoring loop ought to be running).
+   - **(i) monitoring targets are live = stale re-fire / duplicate startup**:
+     the org is healthy and cold-start is not required. **Do not send**
+     `DISPATCHER_RESUME_FAILED` (do not emit a spurious `/org-start`
+     guidance), and exit early without proceeding past Step 1. **Do not
+     leave the residual reservation dangling**: if there is a sign that the
+     monitoring `/loop` is holding `/dispatcher-resume` as its iteration
+     target, explicitly re-arm the loop with the Step 5 monitoring-only
+     directive (the `/loop 3m ...` form that obeys INVARIANT(loop-prompt))
+     to overwrite the reservation (no duplicate startup = converge to a
+     single loop). If a monitoring directive is already running, this cycle
+     is a **no-op heartbeat** (emit nothing). Either branch must not leave
+     the reservation held by the skill itself. Record the fact of the
+     re-fire to the journal:
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed \
+         source=dispatcher_resume worker=dispatcher kind=stale_loop_refire confidence=n/a \
+         note=handover_already_consumed
+     ```
+   - **(ii) no monitoring targets = erroneous invocation that actually needs
+     cold-start**: not a stale re-fire. Do not fall over to no-op; **fall
+     through to Step 1's "no handover file" branch and emit
+     `DISPATCHER_RESUME_FAILED` → cold-start guidance** (do not hide the
+     cold-start guidance).
+3. **`resume` (live `.md` present)**: proceed to Step 0 as usual.
+4. **`no_handover` (neither live `.md` nor `.consumed.md`)**: proceed to
+   Step 0 → Step 1 as usual, and fall through to Step 1's "no handover file"
+   branch, dropping into `DISPATCHER_RESUME_FAILED` → cold-start guidance.
 
 ## Step 0: confirm your identity
 
@@ -82,14 +142,7 @@ level up.
      DISPATCHER_RESUME_FAILED: handover file not found.
      Cold-start the Dispatcher with /org-start.
      ```
-2. Look at frontmatter `created_at` to judge freshness. `created_at` is
-   written in deterministic UTC
-   ([`/dispatcher-handover`](../dispatcher-handover/SKILL.md)), so **also
-   obtain the comparison `now` in deterministic UTC**
-   (`date -u +%Y-%m-%dT%H:%M:%SZ`; on PowerShell
-   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`).
-   Taking `now` as a local (JST) time skews `now - created_at` by ~9 hours
-   and misjudges freshness near the 24h / 7d boundaries:
+2. Look at frontmatter `created_at` to judge freshness:
    - Within 24h → adopt as-is
    - 24h < … ≤ 7d → warn the Secretary ("handover is stale; continuing anyway")
    - More than 7d → do not adopt; recommend switching to `/org-start` and stop
@@ -165,26 +218,31 @@ Evaluate the following **in this order**:
    `.state/dispatcher/curate-inflight.json` is absent (e.g., the previous
    session was cut off right after spawn, before the inflight write), do
    not leave the curator untracked: **regenerate** the inflight record with
-   `started_at = <deterministic UTC>` / `reasons: []` / `extended: false` /
-   `last_inspect_hash: null` / `last_inspect_ts: null`.
-   Paste the output of **`date -u +%Y-%m-%dT%H:%M:%SZ`** (on PowerShell:
-   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`) directly
-   for `started_at`, and **do not hand-write a local (JST) time tagged with
-   `Z`** (if the regenerated `started_at` becomes a future timestamp, Step 5.3's
-   `now - started_at` goes negative and the curator is orphaned forever. The
-   canonical source for deterministic acquisition is
-   [`.dispatcher/references/pane-close.md` 5-3](../../../.dispatcher/references/pane-close.md)).
-   All subsequent judgments use this post-regeneration state (= this case
-   always satisfies the resume condition in 2).
+   `started_at = now` / `reasons: []` / `extended: false` /
+   `last_inspect_hash: null` / `last_inspect_ts: null`. All subsequent
+   judgments use this post-regeneration state (= this case always satisfies
+   the resume condition in 2).
 2. **`/loop 3m` resume condition**: if the handover's
    `active_worker_count > 0`, the active worker dirs in state.db are
    non-empty, **or `curate-inflight.json` exists** (including one
    regenerated in 1; completion monitoring of an on-demand curate is part
    of the handover — `.dispatcher/references/worker-monitoring.md`
-   Step 5.3), resume worker monitoring with `/loop 3m`:
+   Step 5.3), resume worker monitoring with `/loop 3m` by passing the
+   monitoring-only directive below (**do not omit the prompt**):
+
+<!--
+INVARIANT(loop-prompt): Do not pass this skill itself (`/dispatcher-resume`)
+or any other slash command as the prompt argument to `/loop`. Starting
+`/loop` with the prompt omitted from within the skill's execution turn lets
+the active slash command be captured as the iteration target, causing this
+skill to self-recurse every 3 minutes (the 2026-06-19 incident; details in
+knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md). Always pass
+the monitoring-only natural-language directive explicitly.
+tests/test_dispatcher_resume_loop_invariant.py pins this invariant.
+-->
 
 ```
-/loop 3m
+/loop 3m Run exactly one cycle of "monitoring loop 1 cycle" from references/worker-monitoring.md (relative to the Dispatcher cwd .dispatcher/) — poll_events → check_messages → list_panes → inspect_pane → stall / relay-gap / pane_output evaluation. Only notify the Secretary on cycles where anomaly / stall / relay-gap / pane_exited is detected; if nothing is detected, emit nothing (do not write a per-cycle status summary or any natural-language status description). Keep cadence at 3 minutes or longer; do not shorten. Do not include slash commands or this skill itself as iteration targets.
 ```
 
 - On the first cycle of the monitoring loop, `mcp__renga-peers__poll_events`
@@ -193,10 +251,7 @@ Evaluate the following **in this order**:
   "any `pane_exited` that arrived while the pane was closed is still
   guaranteed to be picked up at the next poll" (renga 0.5.7+ cursor spec).
 - On the first cycle, `mcp__renga-peers__check_messages` drains any
-  worker → dispatcher peer messages queued during the previous session
-  (broker = `mcp__org-broker__check_messages`. broker delivers to all peers
-  via pull from the start, so there is no push→pull difference, only the tool
-  name changes).
+  worker → dispatcher peer messages queued during the previous session.
 - `.state/dispatcher/worker-idle-state.json` retains the previous session's
   `idle_streak_cycles`, so stall-detection continuity is preserved as well.
 
@@ -268,3 +323,8 @@ bash ../tools/journal_append.sh dispatcher_resumed \
   decision)
 - Split the atomic update across multiple writes (it must always complete
   within a single `StateWriter.transaction()` block)
+- Start Step 5's `/loop 3m` with the prompt omitted, or pass
+  `/dispatcher-resume` (this skill itself) or any other slash command as
+  `/loop`'s iteration target (the skill will self-recurse every 3 minutes;
+  always pass the monitoring-only directive explicitly. See Step 5's
+  INVARIANT(loop-prompt))
