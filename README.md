@@ -226,6 +226,7 @@ Used for decisions about creating and organizing skills themselves. They form a 
 | [`docs/non-goals.md`](docs/non-goals.md) | Details of intentionally excluded features (all 12 items) |
 | [`docs/oss-comparison.md`](docs/oss-comparison.md) | Comparison report with related projects (16 axes) |
 | [`docs/operations/attention-watch.md`](docs/operations/attention-watch.md) | Operational guide for the attention watcher (per-OS backend / config / troubleshooting) |
+| [`docs/operations/dispatcher-view.md`](docs/operations/dispatcher-view.md) | Procedure for keeping the dispatcher continuously visible next to the secretary (WezTerm / tmux) |
 | [`docs/verification.md`](docs/verification.md) | Test procedures, verification results, attack vector × defense layer matrix ([§12](docs/verification.md#security-matrix)) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution guide |
 
