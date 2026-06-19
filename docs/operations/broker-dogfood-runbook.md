@@ -1,31 +1,32 @@
 # broker dogfood operations runbook
 
-`claude-org-runtime broker serve` is the daemon for the **pure-backend transport (`org-broker`)** that replaces renga-peers. It provides a localhost HTTP MCP server + queue store + nudge delivery in a single process, and injects nudges into child panes through the terminal adapter (tmux / WezTerm). This document is the **precursor to running production ja with `ORG_TRANSPORT=broker`** under Epic #6 Issue G (#515): it captures the broker daemon's start / stop / lifecycle / rollback as operational procedures.
+`claude-org-runtime broker serve` is the daemon for the **pure-backend transport layer (`org-broker`)** that replaces renga-peers. It provides a localhost HTTP MCP server + queue store + nudge delivery in a single process, and injects nudges into child panes via a terminal adapter (tmux / WezTerm). This document captures the startup, shutdown, lifecycle, and rollback procedures for the broker daemon as **the precursor to running production ja with `ORG_TRANSPORT=broker`** under Epic #6 Issue G (#515).
 
-The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5 (ja integration seam) / §5.5 (coexistence & rollback) / §8 Issue G (dogfood gate). The contract SoT is [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed / awaiting ratification). For the secretary's operational differences between the two transports see [`CLAUDE.md`](../../CLAUDE.md) "transport (transport) both systems"; for the spawn ritual see [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b.
+The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5 (ja integration seam) / §5.5 (coexistence / rollback) / §8 Issue G (dogfood gate). The contract source of truth is [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed / awaiting ratification). For the secretary-side operational differences between the two transports, see [`CLAUDE.md`](../../CLAUDE.md) "Transport (two systems)". For the spawn ritual, see [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b.
 
-> **Scope and untouchable constraints**: this runbook is "the procedure that makes a live run possible"; the **actual broker live run on production ja (org-start hijack) is performed later in track 3 (user hands-on)**. Every procedure here starts and stops the daemon under a **test state-dir (some directory other than `.state/broker/`)**, on the premise of never polluting production `.state/`. **The default `renga` is not removed and remains permanently available as an opt-in fallback** (the safety device for rollback).
+> **Scope and untouchable constraints**: This runbook is a "procedure to enable real runs", and **the broker live run of production ja (org-start hijack) will be done later in Track 3 (user hands-on)**. All procedures in this document start and stop the daemon under a **test state-dir (a separate directory, not `.state/broker/`)** and are written on the premise of not polluting the production `.state/`. **The default `renga` is not removed and remains permanently active as an opt-in fallback** (a safety net for rollback).
 
-> **Verification status (2026-06-11, runtime 0.1.17 / tmux 3.2a / WSL2)**: every start / stop / lifecycle / dry-run command in this document has been verified on real hardware in a worker worktree environment. The key points of the raw logs are embedded in each section.
+> **Verification status (2026-06-11, runtime 0.1.17 / tmux 3.2a / WSL2)**: All the startup, shutdown, lifecycle, and dry-run commands in this document were verified on a worker worktree environment with real hardware. Key points from the raw logs are embedded in each section.
 
 ---
 
 ## 1. Role and prerequisites
 
 - **Inputs / control**:
-  - Environment variable `ORG_TRANSPORT` (`renga` | `broker`, unset = default `renga`). The daemon itself does not read the flag, but the ja-side generator (§4) emits the broker-face allowlist according to the flag.
+  - Environment variable `ORG_TRANSPORT` (`renga` | `broker`, unset = default `renga`). The daemon itself does not read the flag, but the ja-side generator (§4) follows the flag and emits the broker surface allowlist.
   - CLI arguments (`--port` / `--host` / `--state-dir` / `--backend` / `--no-nudge`, §2.1).
 - **Outputs / side effects**:
   - localhost HTTP MCP endpoint (default `http://127.0.0.1:48720/mcp`).
   - queue store + JSONL journal (`<state-dir>/queue.jsonl`, default state-dir = `.state/broker`).
-  - Nudge injection into child panes (via terminal adapter, disabled by `--no-nudge`).
-- **Dependency direction (one-way)**: `broker -> terminal / dispatcher.choose_split`. **claude-org-ja does not import broker** (inactive when the flag default is renga).
-- **CLI name note (important)**: the launch command is **`claude-org-runtime broker serve`** (a subcommand of the top-level CLI). `claude-org-runtime-broker` is the CLI's `prog` name (the header text in `--help`); **no console_script of that name exists**. `python -m claude_org_runtime.broker serve` launches equivalently.
+  - nudge injection into child panes (via the terminal adapter, disabled with `--no-nudge`).
+- **Dependency direction (one-way)**: `broker → terminal / dispatcher.choose_split`. **claude-org-ja does not import broker** (inactive at the renga default flag).
+- **Observability (important)**: With the tmux backend, the child panes that broker spawns (dispatcher / workers) start as **detached, independent sessions** and do not appear on the screen by default (the secretary stays as a logical pane on the human's local terminal). For the attach path to peek at running child panes read-only, see §8.
+- **CLI name caveat (important)**: The startup command is **`claude-org-runtime broker serve`** (a top-level CLI subcommand). `claude-org-runtime-broker` is the CLI's `prog` name (the header notation in `--help`) and **no such console_script exists**. `python -m claude_org_runtime.broker serve` is an equivalent invocation.
 
 ```
 $ claude-org-runtime broker --help
 usage: claude-org-runtime broker [-h] {serve} ...
-    serve     org-broker daemon を localhost で起動する (Ctrl+C で停止)。
+    serve     Start the org-broker daemon on localhost (Ctrl+C to stop).
 ```
 
 ---
@@ -43,13 +44,13 @@ usage: claude-org-runtime broker serve [-h] [--port PORT] [--host HOST]
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--port` | `48720` (`DEFAULT_PORT`) | localhost bind port. `0` for ephemeral (OS-assigned; the actual port appears in the startup log's `listening on`). |
-| `--host` | `127.0.0.1` | bind host. localhost-only by design. |
-| `--state-dir` | `.state/broker` (`DEFAULT_STATE_DIR`, relative to CWD) | Write location for `queue.jsonl`. **Always pass a different directory during verification** (§2.3 / §7). |
-| `--backend` | OS auto-selected (POSIX=`tmux` / Windows=`wezterm`) | terminal adapter. `VALID_BACKENDS = (wezterm, tmux)`. Ignored when `--no-nudge`. |
-| `--no-nudge` | (disabled) | Skip creating the terminal adapter and cut nudge delivery (**queue only**). Use when you want to check connectivity only, independent of backend. |
+| `--port` | `48720` (`DEFAULT_PORT`) | localhost bind port. `0` means ephemeral (OS-assigned; the actual port appears in the `listening on` line of the startup log). |
+| `--host` | `127.0.0.1` | bind host. Localhost only by design. |
+| `--state-dir` | `.state/broker` (`DEFAULT_STATE_DIR`, CWD-relative) | Where `queue.jsonl` is written. **For verification, always pass a separate directory** (§2.3 / §7). |
+| `--backend` | auto-selected by OS (POSIX=`tmux` / Windows=`wezterm`) | terminal adapter. `VALID_BACKENDS = (wezterm, tmux)`. Ignored when `--no-nudge` is set. |
+| `--no-nudge` | (disabled) | Do not construct a terminal adapter; disable nudge delivery (**queue only**). Use this when you only want to check end-to-end connectivity, independent of the backend. |
 
-`serve` blocks in the foreground (stop with `Ctrl+C` / `SIGINT`). At startup it issues a single token for manual verification and prints the JSON to pass to `--mcp-config` on stdout:
+`serve` blocks in the foreground (stops on `Ctrl+C` / `SIGINT`). At startup it issues one token for manual verification and prints the JSON to pass to `--mcp-config` on stdout:
 
 ```
 org-broker listening on http://127.0.0.1:48803/mcp
@@ -58,109 +59,109 @@ manual test token: <token>
 mcp-config: {"mcpServers": {"org-broker": {"type": "http", "url": "...", "headers": {"Authorization": "Bearer <token>"}}}}
 ```
 
-### 2.2 Start / stop commands (production form)
+### 2.2 Startup / stop commands (production form)
 
-The form for production ja startup (track 3, user hands-on) is as follows. **This section is a presentation of the command form; this document's verification only runs the test state-dir version from §2.3.**
+The startup form for production ja (Track 3, user hands-on) is the following. **This section presents the command form only; in this document's verification we execute only the test state-dir variant in §2.3.**
 
 ```bash
 # Start (default state-dir = .state/broker, tmux backend auto-selected)
 claude-org-runtime broker serve
 
-# Stop: Ctrl+C (SIGINT) to the foreground serve. One line of broker_stopped is left in the journal.
-# If launched in the background, send SIGINT to the PID:
+# Stop: Ctrl+C (SIGINT) on the foreground serve. The journal records one line of broker_stopped.
+# If started in the background, send SIGINT to the PID:
 #   kill -INT <pid>
 ```
 
-### 2.3 Test state-dir startup -> connectivity -> stop (proof procedure that production `.state` is untouchable)
+### 2.3 Test state-dir startup -> connectivity -> shutdown (procedure proving production `.state` is untouched)
 
-Verification **must never touch production `.state/broker/`**. Pass a temporary directory to `--state-dir` and confirm that `queue.jsonl` is created only at that test path.
+Verification **must never touch production `.state/broker/`**. Pass a temporary directory to `--state-dir` and confirm that `queue.jsonl` is created only under that test path.
 
-> **cwd drift note (mandatory)**: `--state-dir`'s default is **CWD-relative** `.state/broker`. Because `.state/` differs between worker worktrees and the canonical claude-org root, hitting the relative path bare makes "which `.state` are we looking at" ambiguous and invites mistaken untouchable checks / production `.state` pollution. In this document we **pin the canonical root with an absolute-path variable `CANON_ROOT` and pin the test state-dir with an absolute-path variable `TEST_STATE` outside the repo**, and never hit relative `.state/broker` bare-handed.
+> **cwd drift caveat (mandatory)**: The default for `--state-dir` is **CWD-relative** `.state/broker`. A worker worktree and the canonical claude-org root have different `.state/`, so hitting the relative path bare makes "which `.state` am I looking at?" ambiguous and risks a wrong untouchability check / pollution of production `.state`. In this document we **pin the canonical root as an absolute path variable `CANON_ROOT`, and pin the test state-dir as an absolute path variable `TEST_STATE` outside the repo**, and never hit relative `.state/broker` bare-handed.
 
 ```bash
-# 0) Pin prerequisite variables (do not hit relative paths bare-handed)
-CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root holding production .state/broker (adjust to environment)
+# 0) Pin the prerequisite variables (do not hit relative paths bare)
+CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root with production .state/broker (adjust to your env)
 TEST_STATE=/tmp/claude/broker-smoke-A               # test state-dir (must be an absolute path outside the repo)
 
-# 1) Prepare the test state-dir (create parent dir + use an unused path to avoid mixing with existing logs)
+# 1) Prepare the test state-dir (create parent dir + use an unused path to avoid mixing existing logs)
 mkdir -p "$TEST_STATE"
 test -e "$TEST_STATE/queue.jsonl" && echo "WARN: existing queue.jsonl found. Use a different path or move it aside before verifying"
 
-# 2) Start (--no-nudge verifies connectivity only, independent of backend. -u flushes stdout immediately)
+# 2) Start (use --no-nudge to verify connectivity backend-independently. -u flushes stdout immediately)
 python3 -u -m claude_org_runtime.broker serve \
     --state-dir "$TEST_STATE" --port 48799 --no-nudge
 ```
 
-From another terminal (or a driver script), hit the HTTP MCP with the token shown in the startup log:
+From a separate terminal (or a driver script), hit the HTTP MCP with the token shown in the startup log:
 
-| Step | Expected |
+| Step | Expectation |
 |---|---|
 | `initialize` | `serverInfo = {"name": "org-broker", "version": "0.1.0"}` + `Mcp-Session-Id` header assigned |
-| `tools/list` (worker token) | **messaging 4 only**: `["check_messages", "list_peers", "send_message", "set_summary"]` (tier gating, §3.4) |
-| `tools/call send_message` (self-addressed) | `{"ok": true, "delivered_to": "manual-test"}` |
-| `tools/call check_messages` | The `hello broker` sent just before is drained at-most-once |
+| `tools/list` (worker token) | `["check_messages", "list_peers", "send_message", "set_summary"]` -- the **messaging 4 surface only** (tier gating, §3.4) |
+| `tools/call send_message` (to self) | `{"ok": true, "delivered_to": "manual-test"}` |
+| `tools/call check_messages` | At-most-once drain of the `hello broker` you just sent |
 
-Stop by sending `SIGINT` to serve. **Clean shutdown -> exit code 0.**
+Stop by sending `SIGINT` to serve. **Clean shutdown returns exit code 0.**
 
-**Confirming `.state` untouchability (mandatory)**: after verification, confirm that production `.state/broker/` has not been generated. The queue is written only to the test path that was passed.
+**Untouchability check on `.state` (mandatory)**: After verification, confirm that production `.state/broker/` was not created. The queue is written only to the test path you passed.
 
 ```bash
 # The queue exists only under TEST_STATE
 ls "$TEST_STATE/queue.jsonl"
-# The production side (absolute path under canonical root) must be ungenerated. Do not use relative .state/broker
-test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker was polluted" || echo "OK: production .state is unchanged"
-# Also confirm no test debris was dropped directly under the current worktree (prevents mix-up with CWD-relative default)
-test -e "$PWD/.state/broker" && echo "NG: .state/broker was generated directly under worktree" || echo "OK: directly under worktree is also unchanged"
+# Production (absolute path under canonical root) must not be generated. Do not use relative .state/broker.
+test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker was polluted" || echo "OK: production .state unchanged"
+# Make sure no verification debris was left directly under the current worktree either (prevents CWD-relative default mix-ups)
+test -e "$PWD/.state/broker" && echo "NG: .state/broker was created directly under the worktree" || echo "OK: worktree root unchanged"
 ```
 
-> **Verification log (2026-06-11, real hardware)**: with both `--no-nudge` and `--backend tmux`, the round-trip `initialize -> tools/list -> send_message -> check_messages` succeeds and `SIGINT` yields **exit 0**. `tools/list` shows only the messaging 4 at worker tier. Production `.state/broker/` is not generated (`queue.jsonl` only at the test path). The tmux backend works even without a live tmux server: the adapter is lazily created and start / stop succeed (the messaging probe is skipped because no child pane exists to actually inject a nudge into).
+> **Verification log (2026-06-11, real hardware)**: Both `--no-nudge` and `--backend tmux` succeeded for the `initialize -> tools/list -> send_message -> check_messages` round trip and **exited with code 0** on `SIGINT`. `tools/list` returned the messaging 4 surface only on a worker tier. Production `.state/broker/` was not generated (`queue.jsonl` only under the test path). The tmux backend's adapter is lazily constructed and start / stop succeeds even without a live tmux server (the messaging probe is skipped because there is no child pane to actually inject nudges into).
 
 ---
 
 ## 3. start / stop / token / queue lifecycle
 
-broker's internal state transitions are split across `server` / `store` / `tokens` / `surface` under `claude_org_runtime/broker/`. The four operationally relevant flows are:
+The broker's internal state transitions are split across `server` / `store` / `tokens` / `surface` under `claude_org_runtime/broker/`. There are four operationally important flows.
 
-### 3.1 token issuance (`tokens.py`)
+### 3.1 Token issuance (`tokens.py`)
 
-- At spawn time a **per-agent token** is issued (`issue_token`, `secrets.token_urlsafe(32)`). token <-> `AgentBind` (`agent_id` / `name` / `role` / `auth_role` / `pane_id` / `cwd` / `kind`).
-- **`role` (display-only, mutable via `set_pane_identity`) is separated from `auth_role` (immutable permission tier, fixed at issuance)**. Tier gating is decided by `auth_role` only; the self-declared display `role` cannot promote. A spawned child's `auth_role` is capped at the caller's tier (`capped_auth_role`).
-- `mcp_config_for(token)` generates the JSON to pass to `--mcp-config` (embeds the token into the static header `Authorization: Bearer <token>`; env references `${VAR}` are not used).
+- At spawn time, one **per-agent token** is issued (`issue_token`, `secrets.token_urlsafe(32)`). token <-> `AgentBind` (`agent_id` / `name` / `role` / `auth_role` / `pane_id` / `cwd` / `kind`).
+- **`role` (display-only, mutable via `set_pane_identity`) and `auth_role` (immutable permission tier, fixed at issuance) are separated**. Tier gating uses `auth_role` only, and self-claimed display role cannot promote. The `auth_role` of a spawn child is capped by the caller's tier (`capped_auth_role`).
+- `mcp_config_for(token)` generates the JSON to pass to `--mcp-config` (it embeds the token in a static `Authorization: Bearer <token>` header; env references `${VAR}` are not used).
 - journal: `token_issued`.
 
 ### 3.2 Registration (HTTP handler in `server.py`)
 
-- When the child pane's Claude / Codex reaches `initialize` (MCP), `AgentBind.registered = True` (`registered_at` recorded). **Only registered binds become delivery targets** (preventing delivery to unconnected / DELETE-d clients).
+- When the Claude / Codex in a child pane reaches `initialize` (MCP), `AgentBind.registered` becomes `True` (`registered_at` recorded). **Only registered binds are delivery targets** (prevents delivery to unconnected / DELETE-d clients).
 - journal: `agent_registered`.
 
-### 3.3 queue store + nudge delivery (`store.py` / `server.py`)
+### 3.3 Queue store + nudge delivery (`store.py` / `server.py`)
 
-- `send_message` (`enqueue`) creates the entry with **token-derived attribution** (self-declaration not allowed). The recipient's registered check and queue append are done atomically **within the same lock scope**; only afterwards, outside the lock, are `_journal` and `_trigger_nudge` called (decoupling queue persistence from PTY injection / avoiding double-acquire deadlock of the non-reentrant Lock).
-- Nudge delivery **injects only a fixed one-liner via PTY** and does not pass the body (the receiver pulls with `check_messages` = push -> pull model). When the adapter is unreachable or the target has not arrived, retries up to `nudge_defer_interval` (default 2.0s) x `nudge_defer_max_tries` (default 30).
-- `check_messages` (`drain`) empties the queue **at-most-once** and returns.
+- `send_message` (`enqueue`) creates an entry with **token-derived attribution** (self-claim is not allowed). The destination-registered check and queue append happen atomically in the **same lock scope**, then `_journal` and `_trigger_nudge` are called outside the lock (decoupling queue persistence from PTY injection / avoiding double-acquire deadlock on a non-reentrant Lock).
+- Nudge delivery injects **only a fixed 1-line payload via PTY** and does not carry the body (the receiver uses `check_messages` to pull = push -> pull model). On adapter failure or non-arrival, it retries up to `nudge_defer_interval` (default 2.0s) x `nudge_defer_max_tries` (default 30).
+- `check_messages` (`drain`) returns by emptying the queue **at-most-once**.
 - journal: `message_enqueued` -> `nudge_sent` / `nudge_deferred` / `nudge_failed` -> `queue_drained`.
 
-### 3.4 tier gating (`surface.py`)
+### 3.4 Tier gating (`surface.py`)
 
-The public surface **structurally** varies by `auth_role` (default-deny allowlist). Tools that do not appear in `tools/list` are rejected with `[tool_not_authorized]` even if called (the allowlist is one side of double defense).
+The public surface **changes structurally** by `auth_role` (default-deny allowlist). A tool not listed in `tools/list` is rejected with `[tool_not_authorized]` even if called (the allowlist is one half of double defense).
 
 | auth_role tier | Public surface |
 |---|---|
 | worker / curator / unknown | messaging 4 (`send_message` / `check_messages` / `list_peers` / `set_summary`) |
 | dispatcher | messaging 4 + ops (`list_panes` / `inspect_pane` / `send_keys` / `poll_events` / `close_pane` / `set_pane_identity` / `spawn_claude_pane` / `spawn_codex_pane`) |
-| secretary | dispatcher's surface + `spawn_pane` (secretary-exclusive) |
+| secretary | dispatcher's surface + `spawn_pane` (secretary-only) |
 
-> `new_tab` / `focus_pane` are **not** on the broker surface (deliberate exclusion). Initial surface = 12 ported tools + `spawn_codex_pane` = 13 tools.
+> `new_tab` / `focus_pane` are **not in** the broker surface (intentional exclusion). Initial surface = 12 ported faces + `spawn_codex_pane` = 13 faces.
 
-### 3.5 Stop / invalidation
+### 3.5 Shutdown / revocation
 
-- daemon stop: `stop()` shuts down + closes the HTTP server and leaves `broker_stopped` in the journal.
-- session end (MCP `DELETE`): invalidates the bind's `session_id` and drops `registered = False` (does not leave a disconnected client in `list_peers` / as a delivery target). journal: `session_closed`.
-- pane close (`close_pane`): after the adapter kills, the registry pop and token revoke are performed atomically in one lock scope. journal: `pane_closed` + event `pane_exited`.
+- daemon shutdown: `stop()` shuts down + closes the HTTP server and writes `broker_stopped` to the journal.
+- session end (MCP `DELETE`): the bind's `session_id` is invalidated and `registered = False` (so a disconnected client is not left in `list_peers` / delivery targets). journal: `session_closed`.
+- pane close (`close_pane`): after killing via the adapter, registry pop and token revoke happen atomically in one lock scope. journal: `pane_closed` + event `pane_exited`.
 
-### 3.6 journal event list (`queue.jsonl`)
+### 3.6 Journal event list (`queue.jsonl`)
 
-`<state-dir>/queue.jsonl` is appended one JSON per line. The observation points in operations:
+Appended one JSON per line to `<state-dir>/queue.jsonl`. Operational observation points:
 
 ```
 broker_started -> token_issued -> agent_registered -> message_enqueued
@@ -168,36 +169,36 @@ broker_started -> token_issued -> agent_registered -> message_enqueued
   -> session_closed / pane_closed -> broker_stopped
 ```
 
-> **Verification log (real hardware, messaging round-trip)**: confirmed `broker_started -> token_issued -> agent_registered -> message_enqueued(chars=12) -> queue_drained(count=1) -> broker_stopped` in one cycle.
+> **Verification log (real hardware, messaging round trip)**: Confirmed `broker_started -> token_issued -> agent_registered -> message_enqueued(chars=12) -> queue_drained(count=1) -> broker_stopped` in one cycle.
 
 ### 3.7 broker additional error codes
 
-In addition to the renga codes, broker can return the following. The secretary / dispatcher routes unknown codes through the default branch to escalation ([`CLAUDE.md`](../../CLAUDE.md) "error branches").
+In addition to the renga codes, broker can return the following. The secretary / dispatcher routes unknown codes to escalation via the default branch (see [`CLAUDE.md`](../../CLAUDE.md) "Error branches").
 
 | Code | Trigger |
 |---|---|
-| `[token_invalid]` | Bearer token not in bind table / revoked (HTTP 401, JSON-RPC -32001) |
-| `[session_invalid]` | Called another method before `initialize` |
-| `[tool_not_authorized]` | Called a tool outside the auth_role tier's public surface |
-| `[no_backend]` | Called a pane operation without the terminal adapter (`--no-nudge` startup) (= adapter_unavailable) |
+| `[token_invalid]` | Bearer token is not in the bind table / revoked (HTTP 401, JSON-RPC -32001) |
+| `[session_invalid]` | A method other than `initialize` was called first |
+| `[tool_not_authorized]` | A tool outside the auth_role tier's public surface was called |
+| `[no_backend]` | Pane operation called while the terminal adapter is absent (`--no-nudge` startup) (= adapter_unavailable) |
 | `[nudge_failed]` | Nudge injection did not arrive within the defer cap |
-| `[peer_not_found]` | `send_message` destination is not a registered bind |
-| `[name_taken]` | pane name duplicate |
+| `[peer_not_found]` | `send_message` destination is not in a registered bind |
+| `[name_taken]` | pane name duplicated |
 
 ---
 
-## 4. settings regeneration dry-run under `ORG_TRANSPORT=broker`
+## 4. Settings regeneration dry-run with `ORG_TRANSPORT=broker`
 
-Dry-run the **transport descriptor-driven generator** introduced in Epic #6 D/E under `ORG_TRANSPORT=broker` and confirm that the broker-face allowlist is emitted. **Do not write actual files.**
+Dry-run the **transport-descriptor-driven generator** that landed in Epic #6 D/E with `ORG_TRANSPORT=broker` and confirm that the broker surface allowlist comes out. **No real files are written.**
 
 ### 4.1 Single SoT (descriptor)
 
-The ja-side transport accessor [`tools/transport.py`](../../tools/transport.py) consumes the runtime's transport surface descriptor (`claude_org_runtime.transport`) as the single SoT (no hard-coding). Resolution order is **explicit argument > `ORG_TRANSPORT` env > default `renga`**. Allowlist generation goes through `claude_org_runtime.settings.generator.transport_allowlist(role, transport=...)`.
+The ja-side transport accessor [`tools/transport.py`](../../tools/transport.py) consumes the runtime's transport surface descriptor (`claude_org_runtime.transport`) as its only SoT (no hard-coding). Resolution order is **explicit argument > `ORG_TRANSPORT` env > default `renga`**. Allowlist generation goes through `claude_org_runtime.settings.generator.transport_allowlist(role, transport=...)`.
 
 ### 4.2 Per-role allowlist dry-run
 
 ```bash
-# Compare per-role projection of default renga (unset) vs broker (read-only, no writes)
+# Compare the projection of default renga (unset) vs broker per role (read-only, no writes)
 for role in worker curator dispatcher secretary; do
   echo "--- $role renga(default) ---"
   python3 -c "from claude_org_runtime.settings.generator import transport_allowlist as t; print(t('$role'))"
@@ -208,21 +209,21 @@ done
 
 | role | renga (default) | broker (`ORG_TRANSPORT=broker`) |
 |---|---|---|
-| worker / curator | `mcp__renga-peers__*` 14 tools | `mcp__org-broker__*` messaging 4 |
-| dispatcher | `mcp__renga-peers__*` 14 tools | messaging 4 + ops 8 (does not include `spawn_pane`) |
-| secretary | `mcp__renga-peers__*` 14 tools | messaging 4 + ops + `spawn_pane` + `spawn_codex_pane` (13) |
+| worker / curator | `mcp__renga-peers__*` 14 surfaces | `mcp__org-broker__*` messaging 4 |
+| dispatcher | `mcp__renga-peers__*` 14 surfaces | messaging 4 + ops 8 (does not include `spawn_pane`) |
+| secretary | `mcp__renga-peers__*` 14 surfaces | messaging 4 + ops + `spawn_pane` + `spawn_codex_pane` (13) |
 
-> renga default uses a model that narrows down a single surface (14 tools) shared by all roles with the allowlist. broker **structurally** blocks role tier, so the allowlist becomes one side of double defense (safe side).
+> The renga default is a model where the same surface (14 faces) for all roles is narrowed by the allowlist. broker **structurally** gates by role tier, so the allowlist becomes one half of double defense (safe side).
 
 ### 4.3 `~/.claude/settings.json` user_common allowlist regeneration dry-run
 
-[`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist` projects the MCP `permissions.allow` in user_common (`~/.claude/settings.json`) onto the active transport. **For verification, point `--user-common-settings-path` at a test path so the real `~/.claude/settings.json` is not touched, and add `--dry-run`.**
+[`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist` projects the user_common (`~/.claude/settings.json`) MCP `permissions.allow` onto the active transport. **For verification, point `--user-common-settings-path` at a test path so the real `~/.claude/settings.json` is not touched, and pass `--dry-run`.**
 
 ```bash
-# Prepare test settings (with renga entries) and dry-run
+# Prepare a test settings file (with renga entries) and dry-run
 TEST_SET=/tmp/claude/usercommon-settings.json   # NOT the real ~/.claude/settings.json
 
-# Create test settings containing renga messaging entries (an empty/missing file won't produce the drop-renga expected output)
+# Make a test settings file with renga messaging entries (empty / missing would not produce the expected drop-renga output)
 mkdir -p "$(dirname "$TEST_SET")"
 cat > "$TEST_SET" <<'JSON'
 {
@@ -242,7 +243,7 @@ JSON
 python3 tools/org_setup_prune.py --user-common-allowlist --dry-run \
     --user-common-settings-path "$TEST_SET"
 
-# broker: drops renga-peers, guarantees org-broker messaging tier (dry-run is display only)
+# broker: drop renga-peers, guarantee org-broker messaging tier (dry-run is display only)
 ORG_TRANSPORT=broker python3 tools/org_setup_prune.py --user-common-allowlist --dry-run \
     --user-common-settings-path "$TEST_SET"
 ```
@@ -251,115 +252,115 @@ Expected output:
 
 ```
 # renga (default)
-[org_setup_prune] user_common allowlist: transport=renga (default); no-op — ~/.claude/settings.json is unchanged ...
+[org_setup_prune] user_common allowlist: transport=renga (default); no-op -- ~/.claude/settings.json unchanged ...
 
 # broker
 === user_common allowlist (transport=broker): /tmp/claude/usercommon-settings.json ===
-  - mcp__renga-peers__send_message      (drops the renga messaging below)
-  + mcp__org-broker__send_message       (adds the org-broker messaging below)
+  - mcp__renga-peers__send_message      (renga messaging dropped below)
+  + mcp__org-broker__send_message       (org-broker messaging added below)
   ...
 ```
 
-> **Verification log (real hardware)**: default renga is strict no-op (the test file is unchanged down to the byte). Under `ORG_TRANSPORT=broker`, the diff renga messaging 4 -> org-broker messaging 4 is shown as a dry-run. **Zero actual writes thanks to `--dry-run`** (test file content confirmed unchanged). Non-MCP entries like `Bash(...)` are retained in order.
+> **Verification log (real hardware)**: Default renga was a strict no-op (the test file was unchanged down to the byte). With `ORG_TRANSPORT=broker`, the diff renga messaging 4 -> org-broker messaging 4 was shown via dry-run. **Because of `--dry-run`, zero real writes** (the test file's contents were confirmed unchanged). Non-MCP entries such as `Bash(...)` are preserved in order.
 
 ---
 
-## 5. Concrete commands for the 5 rollback conditions (SoT §5.5)
+## 5. Concretizing the 5 rollback conditions (SoT §5.5)
 
-A full rollback `ORG_TRANSPORT=broker` -> `renga` is **not immediately restored on broker-spawned panes already in flight** by just reverting the flag (they still carry `--mcp-config` / pull-based prose). Execute the **5 completion conditions** of SoT §5.5 in order.
+A complete rollback from `ORG_TRANSPORT=broker` -> `renga` is **not immediately restored just by flipping the flag** for running broker-spawned panes (they still hold `--mcp-config` / pull-premised prose). Execute the **5 completion conditions** of SoT §5.5 in order.
 
-> **Prerequisite variables (cwd drift avoidance)**: the commands below do not hit relative `.state/broker` bare-handed. Pin with an absolute-path variable the state-dir that the daemon actually used in `serve --state-dir`, and also clarify the canonical root. In production rollout (track 3), `BROKER_STATE` points to production `.state/broker`.
+> **Prerequisite variables (cwd-drift avoidance)**: The commands below do not hit relative `.state/broker` bare. Pin the state-dir that the daemon actually used in `serve --state-dir` to an absolute path variable, and also pin the canonical root. In production reflection (Track 3), `BROKER_STATE` points at the production `.state/broker`.
 >
 > ```bash
-> CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root (adjust to environment)
-> BROKER_STATE="$CANON_ROOT/.state/broker"            # --state-dir passed to daemon at serve time
+> CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root (adjust to your env)
+> BROKER_STATE="$CANON_ROOT/.state/broker"            # the --state-dir the daemon was given at serve
 > ```
 
 ### (1) Flag rollback
 
 ```bash
-# Revert env to renga (default). The next spawned pane points to renga.
+# Roll env back to renga (default). Newly spawned panes point at renga.
 unset ORG_TRANSPORT
-# If written into persistent shell config, remove from there as well:
+# If you persisted it in shell settings, remove it from there too:
 #   grep -rn "ORG_TRANSPORT" ~/.bashrc ~/.zshrc ~/.profile
 ```
 
 **Check**: `python3 -c "from claude_org_runtime.transport import resolve_transport as r; print(r())"` returns `renga`.
 
-### (2) Regenerate generated artifacts (back to renga allowlist)
+### (2) Regenerate generated artifacts (back to the renga allowlist)
 
-Once the flag is back to renga, **the generator (per-role `settings.local.json`) returns to identity (bit-equivalent)**. Actually regenerate the artifacts to revert to renga-face.
+Once the flag is back to renga, **the generator (per-role `settings.local.json`) is identity (bit-equivalent)**. Actually regenerate the artifacts to revert to the renga surface.
 
 ```bash
-# First check the diff with dry-run (if broker-face remains, a diff to revert to renga will appear)
+# First check the diff with a dry-run (the diff back to renga shows up if broker surfaces remain)
 python3 tools/org_setup_prune.py --all --dry-run
 
-# If fine, apply (writes back the renga allowlist; .bak is left)
+# If there are no issues, apply it (writes back the renga allowlist; .bak is left behind)
 python3 tools/org_setup_prune.py --all
 ```
 
-**user_common (`~/.claude/settings.json`) is handled separately (important)**: `--user-common-allowlist` is **a complete no-op in renga mode** (because the SoT of the renga allowlist is the org-setup skill + permissions.md, not this tool; it does not touch the file at all). Therefore, if broker was applied during dogfood (with `mcp__org-broker__*` in user_common), running `--user-common-allowlist --dry-run` under renga **will not revert the broker face**. Explicitly revert user_common via one of the following:
+**user_common (`~/.claude/settings.json`) is handled separately (important)**: `--user-common-allowlist` is a **complete no-op in renga mode** (because the SoT for the renga allowlist is the org-setup skill + permissions.md, not this tool, the file is not touched at all). So if you have applied broker via dogfood (and `mcp__org-broker__*` is in user_common), running `--user-common-allowlist --dry-run` in renga will **not roll back the broker surface**. Roll back user_common explicitly via one of the following:
 
 ```bash
 # Method A (recommended): restore the .bak created when broker was applied
 #   backup naming is settings.json.bak.<YYYYMMDD-HHMMSS> (backup_path)
 ls -t ~/.claude/settings.json.bak.* 2>/dev/null | head     # check the most recent backup
-# cp <confirmed .bak> ~/.claude/settings.json               # restore after eyeballing the content
+# cp <.bak you verified> ~/.claude/settings.json           # visually confirm content and restore
 
-# Method B: if no backup, manually swap the messaging face (org-broker -> renga-peers)
-#   In ~/.claude/settings.json permissions.allow
-#   replace "mcp__org-broker__{send_message,check_messages,list_peers,set_summary}" with
-#   "mcp__renga-peers__..." (do not touch non-MCP entries)
+# Method B: if no backup exists, swap the messaging surface manually (org-broker -> renga-peers)
+#   In permissions.allow of ~/.claude/settings.json
+#   Replace "mcp__org-broker__{send_message,check_messages,list_peers,set_summary}"
+#   with "mcp__renga-peers__..." (do not touch non-MCP entries)
 ```
 
-**Check**: confirm `mcp__org-broker__*` remains in neither per-role `settings.local.json` **nor user_common (`~/.claude/settings.json`)**.
+**Check**: confirm `mcp__org-broker__*` does not remain in **both** the per-role `settings.local.json` and **user_common (`~/.claude/settings.json`)**.
 
 ```bash
-# Per-role settings under the repo. The glob (*/.claude/) does not pick up hidden role dirs
-# (.dispatcher/.claude/ / .curator/.claude/ etc.); in zsh, no-match makes grep itself
-# not run, leading to a mistaken OK. Without glob, grep -r recursively from the repo root
-# (grep -r also descends into hidden dirs). Restrict to settings*.json to avoid false positives.
+# Per-role settings under the repo. A glob (*/.claude/) does not pick up hidden role dirs
+# (.dispatcher/.claude/ / .curator/.claude/ etc.), and in zsh no-match means grep itself
+# does not run and may wrongly report OK. Avoid globs; recursively grep from the repo root
+# (grep -r descends into hidden dirs too). Restrict to settings*.json to avoid false hits.
 if grep -rl --include="settings*.json" "mcp__org-broker__" . 2>/dev/null | grep -q .; then
-  echo "NG: broker face remains in repo side:"; grep -rl --include="settings*.json" "mcp__org-broker__" . 2>/dev/null
+  echo "NG: broker surface remains on the repo side:"; grep -rl --include="settings*.json" "mcp__org-broker__" . 2>/dev/null
 else
-  echo "OK: no broker face on repo side"
+  echo "OK: no broker surface on the repo side"
 fi
-# Do not forget to check user_common (settings.json under home)
-grep -l "mcp__org-broker__" ~/.claude/settings.json 2>/dev/null && echo "NG: broker face remains in user_common" || echo "OK: no broker face in user_common"
+# Don't forget to check user_common (home settings.json)
+grep -l "mcp__org-broker__" ~/.claude/settings.json 2>/dev/null && echo "NG: broker surface remains in user_common" || echo "OK: no broker surface in user_common"
 ```
 
-### (3) Respawn active broker panes (restart via the renga path)
+### (3) Respawn the active broker panes (restart via the renga route)
 
-Broker-spawned panes already in flight do not recover via flag rollback. suspend/resume or respawn them via the renga path.
+Running broker-spawned panes do not come back with just a flag rollback. Suspend / resume or respawn via the renga route.
 
 ```bash
-# Grasp the current broker panes (from the renga secretary / dispatcher)
-#   mcp__renga-peers__list_panes  to check the pane list
-# Close each pane carrying a broker token in turn -> respawn via the renga path (the normal org-delegate delegation flow)
-# Pane control is closed to dispatcher/secretary, so first revert messaging to renga, then follow pane afterwards (the 2-step of §5.5).
+# Identify the current broker panes (from the renga secretary / dispatcher)
+#   mcp__renga-peers__list_panes  to confirm the pane list
+# Close each pane that holds a broker token in turn -> respawn via the renga route (the normal delegation flow of org-delegate)
+# Pane control is restricted to dispatcher/secretary, so swap messaging back to renga first, then follow up with panes (the 2 stages of §5.5).
 ```
 
-**Check**: no broker-bound pane remains in `list_peers` / `list_panes`.
+**Check**: no panes with broker binds remain in `list_peers` / `list_panes`.
 
-### (4) broker daemon stop ordering (revoke remaining panes -> daemon stop)
+### (4) Broker daemon shutdown order (revoke remaining panes -> daemon stop)
 
-**Ordering matters**: first revoke (close) remaining panes so they are removed from delivery targets, then finally stop the daemon.
+**Order matters**: first revoke (close) the remaining panes to remove them from delivery targets, then finally stop the daemon.
 
 ```bash
-# 1) Close the remaining broker panes (token is revoked. close_pane journal: pane_closed)
-#    From renga/dispatcher, close_pane each broker pane.
-# 2) Once all are revoked, stop the daemon (SIGINT to foreground serve, or)
+# 1) Close any remaining broker panes (this revokes the token; close_pane journal: pane_closed)
+#    Use close_pane from renga / dispatcher for each broker pane.
+# 2) Once all are revoked, stop the daemon (SIGINT to the foreground serve, or)
 kill -INT <broker_pid>
 # 3) Confirm broker_stopped is recorded at the end of the journal
 tail -n 3 "$BROKER_STATE/queue.jsonl"
 ```
 
-### (5) Confirm disposal of old token / queue store (no unread messages / lingering binds in `.state/broker/`)
+### (5) Confirm old token / queue store disposal (no unread / no bind remnants in `.state/broker/`)
 
 ```bash
-# Verify against the journal that no unread (enqueued but never drained) messages remain.
-# queue_drained carries count=N, so compare by the sum of N rather than "event count" (avoids misjudgment from multiple drains).
-BROKER_STATE="${BROKER_STATE:?pin BROKER_STATE first (§5 prerequisite variables)}" \
+# Reconcile that no unread (enqueued but not drained) messages remain via the journal.
+# queue_drained has count=N, so compare on the sum of N rather than "event count" (avoids misjudging multi-drain).
+BROKER_STATE="${BROKER_STATE:?Pin BROKER_STATE first (§5 prerequisite variables)}" \
 python3 - <<'PY'
 import json, os
 p = os.path.join(os.environ["BROKER_STATE"], "queue.jsonl")
@@ -370,87 +371,140 @@ try:
         if ev == "message_enqueued": enq += 1
         if ev == "queue_drained": drained_msgs += int(rec.get("count", 0))  # sum N
 except FileNotFoundError:
-    print("OK: queue.jsonl absent (disposed)"); raise SystemExit
+    print("OK: queue.jsonl is gone (already disposed)"); raise SystemExit
 unread = enq - drained_msgs
 print(f"enqueued={enq} drained_msgs={drained_msgs} unread={unread}")
-print("OK: no unread" if unread <= 0 else f"NG: {unread} unread remain (must be drained before daemon stop)")
+print("OK: no unread" if unread <= 0 else f"NG: {unread} unread remain (must be drained before stopping the daemon)")
 PY
 
-# token / bind are in-process in-memory (vanish when the daemon stops; not persisted).
-# Dispose of the queue store file to leave no trace (truncate / archive in environments without rm):
-#   mv "$BROKER_STATE" "$BROKER_STATE.archived-$(date +%Y%m%d)"   # or delete per operational rule
+# Token / bind are in-memory in the process (disappear when the daemon stops; not persisted).
+# Dispose of the queue store file so no traces remain (in environments where rm is not allowed, truncate / archive):
+#   mv "$BROKER_STATE" "$BROKER_STATE.archived-$(date +%Y%m%d)"   # or delete per operational rules
 ```
 
-> **token / bind persistence**: `AgentBind` lives only in the daemon process's in-memory (the journal retains the fact of `token_issued`, but token values / bind table are not persisted). Stopping the daemon erases binds. What remains is only `queue.jsonl` (journal + undrained messages), so (5) is closed by the unread reconciliation and disposal of that file.
+> **Token / bind persistence**: `AgentBind` is only in-memory in the daemon process (`token_issued` as an event remains in the journal, but token values and the bind table are not persisted). Stopping the daemon erases binds. What remains is only `queue.jsonl` (journal + undrained messages), so (5) is closed by reconciling unread in this file and disposing of it.
 
 ---
 
-## 6. How to take the billing-neutrality attestation
+## 6. How to take the cost-neutral attestation
 
-Confirm via the actual argv that every agent broker spawns is **an interactive TUI (headless not allowed)**. This is the evidence of billing-neutrality (no non-interactive launches like `claude -p` / `codex exec` that incur API billing).
+Confirm with real argv that every agent broker spawns is an **interactive TUI (no headless)**. This serves as evidence of cost neutrality (no non-interactive startup like `claude -p` / `codex exec` that incurs API billing).
 
 ### 6.1 Defense-in-depth structure (spawn-time guard)
 
-broker's billing-neutrality is structurally guaranteed by a **spawn-time default-deny allowlist** (`surface.py`):
+Broker's cost neutrality is structurally guaranteed by **spawn-time default-deny allowlist** (`surface.py`):
 
-- `build_claude_argv` / `build_codex_argv` only allow flags for the interactive TUI, and `_guard_interactive_claude_argv` / `_guard_interactive_codex_argv` **uniformly reject tokens not on the allowlist (post-flag subcommands / bare positional / `--` / unknown flags / headless flags)**.
-- claude-side headless blacklist: `-p` / `--print` / `--headless` / `--output-format` / `--input-format` etc. On the codex side, subcommands (`exec` / `review` / `*-server` / `apply` / `sandbox` etc.) fall as bare positional.
-- Value-taking flags carry arity (value-position headless flags are rejected with the second stage). `argv[0]` is judged by basename (does not false-reject absolute-path launches).
+- `build_claude_argv` / `build_codex_argv` allow only interactive TUI flags, and `_guard_interactive_claude_argv` / `_guard_interactive_codex_argv` **uniformly reject tokens outside the allowlist (post-flag subcommands / bare positionals / `--` / unknown flags / headless flags)**.
+- Claude headless blacklist: `-p` / `--print` / `--headless` / `--output-format` / `--input-format`, etc. On the codex side, subcommands (`exec` / `review` / `*-server` / `apply` / `sandbox`, etc.) fall through as bare positionals.
+- Flags that take a value have arity (a headless flag in the value position is also blocked at the second stage), and `argv[0]` is judged by basename (so absolute-path invocations are not false-rejected).
 
-### 6.2 Actual argv inspection (runtime attestation)
+### 6.2 Real argv inspection (runtime attestation)
 
-On the production host (a session where the broker pane is live), inspect the actually running argv with ps. **Confirm that not a single headless flag / subcommand is present.**
+On the production host (a session with live broker panes), inspect the actually running argv with ps. **Confirm that no headless flag / subcommand is present.**
 
-The key is to **narrow the target to broker-spawned panes**. On the host, there may be coexisting headless executions (CI / manual `claude -p` etc.) unrelated to this attestation, so indiscriminately greping every claude/codex picks up false positives and conversely also misses targets. Processes spawned by broker carry **broker's MCP config (containing `org-broker`) in argv via `--mcp-config`**, so use that to narrow the population.
+The key is to **scope to broker-spawned panes**. The host may have unrelated headless executions in parallel (CI / manual `claude -p` etc.), so an indiscriminate grep over all claude/codex picks up false positives and conversely misses target identification. Broker-spawned processes have **`--mcp-config` carrying broker's MCP config (which includes `org-broker`)** in their argv; use that to narrow the population.
 
 ```bash
-# 1) Enumerate argv narrowed to broker-spawned only (only those whose --mcp-config contains org-broker)
+# 1) Enumerate argv scoped to broker-spawned (only those whose --mcp-config includes org-broker)
 ps -eo pid,args | grep -iE "(^| )(claude|codex)( |$)" | grep -v grep \
   | grep -- "--mcp-config" | grep -i "org-broker"
 
-# 2) Billing-neutrality negative check: confirm the broker panes narrowed above have no headless / exec series in argv
+# 2) Cost-neutral negative check: argv of the broker panes scoped above contains no headless / exec-family
 ps -eo args | grep -iE "(^| )(claude|codex)( |$)" | grep -v grep \
   | grep -- "--mcp-config" | grep -i "org-broker" \
   | grep -nE -- "-p( |$)|--print|--headless|--output-format|--input-format| exec | review |--mcp-server" \
-  && echo "NG: detected headless/exec flag in broker pane (billing-incurring launch)" \
-  || echo "OK: no headless/exec flag in broker pane (interactive TUI = billing-neutral)"
+  && echo "NG: headless/exec flag detected on a broker pane (billable startup)" \
+  || echo "OK: no headless/exec flag on broker panes (interactive TUI = cost-neutral)"
 
-# 3) Reconcile the population (optional, recommended): confirm the count from (1) matches the number of broker-bound panes in list_panes
-#    (reconcile pid against dispatcher/secretary list_panes to detect missing identification / surplus)
+# 3) Population cross-check (optional, recommended): confirm that the broker-bind pane count from list_panes matches the count from (1)
+#    (Cross-check pids against the dispatcher / secretary's list_panes to detect missing / surplus identification)
 ```
 
-Expected: each broker pane's argv is composed only of **interactive flags** like `--mcp-config <broker>` / `--model` / `--permission-mode`, and the negative check returns `OK`.
+Expected: each broker pane's argv is composed only of **interactive flags** such as `--mcp-config <broker>` / `--model` / `--permission-mode`, and the negative check returns `OK`.
 
-> **Note**: ps inspection is performed in **a host session where the broker pane is live** (the actual pane is not visible from a sandbox with PID namespace isolation). The spawn-time guard (§6.1) is the primary defense, and the runtime attestation via ps is the secondary confirmation - the two stages guarantee billing-neutrality. Filtering by `--mcp-config` is a primary narrowing based on the structural characteristic of broker panes; when strictness is required, close the population surplus/shortage by reconciling against `list_panes` in (3).
+> **Caution**: The ps inspection must be done on the **host session where the broker panes are live** (the actual panes are not visible from inside a sandbox with a separated PID namespace). The spawn-time guard (§6.1) is the primary defense and the runtime attestation via ps is the secondary check, securing cost neutrality in two stages. The `--mcp-config` filter is the primary narrowing based on the structural feature of broker panes; when strictness is required, close the gap on the population with the `list_panes` cross-check in (3).
 
 ---
 
-## 7. Cleanup of verification debris (dogfooding of condition (5))
+## 7. Cleanup of verification debris (dogfooding condition (5))
 
-The test state created by the verification in this runbook is closed within a **test directory outside the repo**, and does not generate production `.state/broker/`. After verification, execute the §5(5) procedure **against the test path** to leave no trace.
+The test state created by this runbook's verification is closed to a **test directory outside the repo**, and production `.state/broker/` is not generated. After verification, run the procedure in §5(5) **against the test path** and leave no trace.
 
 ```bash
-CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root (adjust to environment)
+CANON_ROOT=/home/happy_ryo/work/org/claude-org-ja   # canonical root (adjust to your env)
 
-# Confirm the test state-dirs used in verification (must be outside the repo)
+# Confirm the test state-dir used in verification (must be outside the repo)
 ls -d /tmp/claude/broker-smoke-* /tmp/claude/usercommon-settings.json 2>/dev/null
 
-# Reconcile unread in the journal (run the §5(5) script with BROKER_STATE pointed at the test path) -> dispose if fine
-# (/tmp is ephemeral. Archive or delete per operational rule)
+# Reconcile journal unread (run the §5(5) script against BROKER_STATE=test path) -> dispose if OK
+# (/tmp is ephemeral. Archive or delete per operational rules.)
 
-# Final confirmation that production .state/broker is ungenerated (both canonical root absolute path and directly under current worktree)
-test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker exists" || echo "OK: production .state is unchanged"
-test -e "$PWD/.state/broker" && echo "NG: .state/broker exists directly under worktree" || echo "OK: directly under worktree is also unchanged"
+# Final confirmation that production .state/broker has not been created (both canonical root absolute path and current worktree root)
+test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker exists" || echo "OK: production .state unchanged"
+test -e "$PWD/.state/broker" && echo "NG: .state/broker exists directly under the worktree" || echo "OK: worktree root unchanged"
 ```
 
 ---
 
-## 8. Related
+## 8. Observability -- peek at a running org (attach path)
 
-- Design SoT: transport-lab `docs/design/ja-migration-plan.md` §5 (integration seam) / §5.5 (coexistence & rollback) / §8 Issue G (dogfood gate)
+Broker (tmux backend) starts the **child panes it spawns (dispatcher / workers)** as **detached, independent tmux sessions** on a dedicated socket. Unlike renga's "visible split panes in the same tab", these child panes do not appear on the human screen by default, and *ambient awareness* -- "how many workers are running and which ones are stuck" being visible without any effort -- is quietly lost. The existing overview means cannot fill this experience by themselves:
+
+| Means | Provides | Missing |
+|---|---|---|
+| Dashboard (`localhost` status UI) | `state.db`-based status overview (worker list, transitions, activity) | Not the **raw screen** of each pane |
+| attention watcher ([`attention-watch.md`](attention-watch.md)) | Push notifications on anomalies / gates | Not the kind of "watch when healthy and be reassured" continuous observation |
+| **tmux attach (this section)** | **Raw screen of broker-spawned child panes (dispatcher / workers)** | Currently per-session attach as noted below (single-session is the future form in §8.2) |
+
+This section shows the **read-only attach path to peek at the running broker org**. **This path is tmux-backend (POSIX / WSL2) specific**. The WezTerm backend (Windows, `isolated_session=False`) spawns each pane as a GUI window so the screen is visible from the start and attach is not needed.
+
+> **Scope (important)**: What attach lets you see is **only the child panes that broker `adapter.spawn`-ed (dispatcher / workers)**. **The secretary (root secretary) is a logical pane that does not have a real adapter pane** (a bookkeeping entry, `register_logical_pane`, `claude_org_runtime/broker/server.py`), and it runs as-is on the human's local terminal that started the org (it does not appear on the spike socket). So what this path fills is the "workers / dispatcher raw screens are not visible" gap; the secretary is in front of the human to begin with.
+
+### 8.1 Today -- attach to an independent session (runtime terminal adapter)
+
+The current runtime terminal adapter (tmux, `claude_org_runtime.terminal.tmux`) creates the child panes broker spawns (dispatcher / workers) as **independent detached sessions on a dedicated socket `claude-org-spike`** (session name `spike-<pid>-<seq>`, `isolated_session = True`). It is socket-separated from existing tmux servers (renga etc.), so observation requires the explicit socket name `-L claude-org-spike`.
+
+```bash
+# 1) List the broker sessions that exist (read-only. Explicit socket is mandatory)
+tmux -L claude-org-spike list-sessions
+#   Example:  spike-12345-1: 1 windows (created ...)   <- each line is one child pane (seq starts at 1)
+
+# 2) Attach read-only to the session you want to peek at (-r is read-only. Won't break a worker on stray keys)
+tmux -L claude-org-spike attach -r -t spike-12345-1
+```
+
+Post-attach controls (prefix defaults to `Ctrl-b`):
+
+| Action | Key | Use |
+|---|---|---|
+| Detach (stop observing and leave) | `Ctrl-b` -> `d` | Leave with the session still alive (does not affect the process) |
+| Switch to another session | `Ctrl-b` -> `s` | Pick from the session list. **Today is per-session, so seeing the whole picture requires switching** |
+
+> **Reason `-r` (read-only) is the default**: Attaching to the independent session connects directly to the worker's live TUI. Without `-r`, keystrokes during observation can land in the worker session (interventions are designed to be confined to the secretary/dispatcher `send_keys` route, so a human-hand attach is restricted to observation).
+
+> **Verification log (2026-06-13, runtime 0.1.22)**: Socket name `claude-org-spike` / session name `spike-<pid>-<seq>` / `isolated_session = True` were confirmed in `claude_org_runtime/terminal/tmux.py` (the `SPIKE_SOCKET` constant / `_new_session_name`) on real hardware. The command shapes `list-sessions` (multi-session enumeration) / `attach -r` (read-only flag acceptance) / `kill-server` (cleanup) were end-to-end-tested on a scratch socket (attach against a real broker org was not done in this verification due to interactive blocking).
+
+### 8.2 Future -- one-shot `attach` via single-session (transport-lab design, not yet landed)
+
+transport-lab `docs/design/broker-native-roles.md` §3.4 (defect 4 mitigation) has confirmed a design that restructures the tmux adapter into a **multi-pane/window composition within a single `claude-org` session**. After it lands, the following one command lets you see the broker-managed panes (dispatcher / workers) at a glance, and standard pane nav (`Ctrl-b` arrow keys) works, so the per-session switching of §8.1 becomes unnecessary:
+
+```bash
+tmux attach -r -t claude-org   # Path after single-session-ization (§3.4 / R1) (-r = read-only). Socket -L specification also becomes unnecessary.
+```
+
+- This is a **change to the runtime's terminal adapter (`claude_org_runtime/terminal/`)**, and ja consumes it via a runtime pin bump (not a procedure of this runbook on the ja side). **In the current runtime (independent sessions), §8.1 is the only attach path.**
+- Pane death is handled by differential reconcile by design, and §3.4 concludes that the constant benefit of observability outweighs the trade-off of single-session-ization (session-level failures spreading to all panes).
+- An observer-dedicated command (read-only tile display of broker-managed panes) / pane raw-screen tile display on the dashboard, considered for the observability gap, become redundant because `attach -r -t claude-org` (read-only) after single-session-ization provides equivalent overview, so this runbook does not adopt them (necessity is reassessed in real operation after single-session-ization).
+
+---
+
+## 9. Related
+
+- Design SoT: transport-lab `docs/design/ja-migration-plan.md` §5 (integration seam) / §5.5 (coexistence / rollback) / §8 Issue G (dogfood gate)
 - Contract: [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed / awaiting ratification)
-- Secretary's operational differences between the two transports: [`CLAUDE.md`](../../CLAUDE.md) "transport (transport) both systems"
-- spawn ritual (dev-channel approval -> folder-trust approval): [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b
-- transport accessor (single ja-side seam): [`tools/transport.py`](../../tools/transport.py)
+- Secretary-side operational difference between the two transports: [`CLAUDE.md`](../../CLAUDE.md) "Transport (two systems)"
+- Spawn ritual (dev-channel approval -> folder-trust approval): [`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) 3-3b
+- Transport accessor (ja-side single seam): [`tools/transport.py`](../../tools/transport.py)
 - user_common allowlist projection: [`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) `--user-common-allowlist`
-- attention watcher operational style: [`attention-watch.md`](attention-watch.md)
+- attention watcher operational tone: [`attention-watch.md`](attention-watch.md)
+- Observability single-session design (the future form of §8.2): transport-lab `docs/design/broker-native-roles.md` §3.4 (defect 4 -- independent tmux session problem)
