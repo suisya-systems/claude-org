@@ -36,6 +36,14 @@ Delegate work to a Worker Claude. The Lead performs only task decomposition and 
 
 > **state-db cutover (M4, Issue #267 / #284)**: All writes to structured sections **must go through `StateWriter.transaction()`**. A post-commit hook auto-regenerates `.state/org-state.md` / `.state/org-state.json` from the DB, and calling `update_run_status('<task_id>', 'completed')` automatically moves `.state/workers/worker-<task_id>.md` to `.state/workers/archive/`. Direct markdown edits are detected by drift_check. The SoT for events is the DB `events` table (`tools/journal_append.sh` / `.py` already route to the DB). When the DB is missing, build it with `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`.
 
+> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical, so the procedure logic is unchanged). Only the transport-dependent points are noted in broker form:
+>
+> - **Receive model (push → pull)**: under renga, progress / completion / judgment requests from workers are pushed in-band as `<channel source="renga-peers" …>`. Under broker, **only a pane-local nudge fires**, and the body must be pulled via `check_messages` (broker: `mcp__org-broker__check_messages`) — broker delivers to all peers via pull = `receive_mode` constant `"poll"`. The Step-5 line "when a message arrives from the worker" becomes "when you see a nudge, `check_messages`", but the rest (the ack `send_message` etc.) keeps the same shape.
+> - **Spawn rite (dev-channel approval → folder-trust approval)**: worker spawn is dispatcher-exclusive ([`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)), but under broker the `--dangerously-load-development-channels` injection is replaced with `--mcp-config <broker>`, and the approval prompt shifts to the Claude Code **folder-trust prompt** (machine-approval via `send_keys(enter=true)` keeps the same shape). The `send_keys` pre-approval for root `.claude/**` self-edits (Step 5 below) also uses `mcp__org-broker__send_keys` under broker in the same procedure.
+> - **Error branching (broker additional codes)**: on top of the renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch to escalate). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md).
+>
+> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion; this flow does not use them anyway). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed/awaiting ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+
 ## Lead / Dispatcher division of roles
 
 | Step | Owner |
@@ -114,6 +122,15 @@ For detailed conditions, the execution command, and the rationale behind the wor
 ## Step 0.7 / 1 / 1.5 / 2: Generate the dispatch payload in 1 command (Issue #283)
 
 Step 0.7 (gitignore pre-check) / Step 1 (Pattern determination) / Step 1.5 (Worker directory preparation + role decision + settings generation) / Step 2 (DELEGATE body assembly) are **all handled by `tools/gen_delegate_payload.py`**. The Lead's responsibility is only task identification (Step 0), work-skill search (Step 0.5), target-file extraction, and depth judgment.
+
+### Pre-dispatch verification checks (auxiliary to Step 0.7 — Secretary runs them by hand)
+
+The following 2 items are **not** verified by `gen_delegate_payload.py`; the Secretary confirms them by hand before `preview`. **If they cannot be satisfied, the dispatch is not viable and you must not proceed to `apply`** (resolve the cause on the Secretary side or escalate to the user, then restart from Step 0):
+
+1. **Committed-base existence check**: for `--target`, **file existence is always verified**. **Line existence is verified only for delegations whose input carries line-numbered review findings or patches**. A delegation whose edit base is uncommitted live-tree state is not viable (the worker's worktree / clone is cut from the committed base and cannot see the target) — commit first and re-delegate.
+2. **Contracts grep for org-behavior changes**: for delegations that change org behavior (cadence / lifecycle / responsibility boundaries), grep `docs/contracts/` with behavior keywords (loop / cadence / curator / close, etc.) and follow the cited sources of every contract that hits (`.dispatcher/CLAUDE.md`, `.dispatcher/references/worker-monitoring.md`, etc.). **Do not place hits into `--target`** (it contaminates the edit scope); carry them in the brief via `--knowledge` / `--impl-guidance`.
+
+For the determination criteria, command examples, and the grep keyword list, see [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) §1.5 as the primary source.
 
 ### Standard flow (recommended)
 
@@ -215,6 +232,8 @@ mcp__renga-peers__send_message(
 )
 ```
 
+**Pre-approval via send_keys for `.claude/` edit tasks (root `.claude/**` self-edits only)**: when the delegation scope includes claude-org root `.claude/**` (excluding `.dispatcher/` / `.curator/`, and the worker-dir generated `.claude/settings.local.json`), the Secretary **follows up** the greeting above by typing an approval message into the worker pane via `mcp__renga-peers__send_keys` (enumerating the target files, the task_id, and explicit "user approval via the Lead" wording). The worker confirms the approval input exists before editing; if absent, it must not edit and must request the approval input from the Secretary (a fixed handshake that prevents deadlock / empty-press accidents). For the scope boundary, background (the 2-layer guard), approval-text template, and the mandatory wording for the worker brief, see [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 as the primary source.
+
 ### On message receipt from a Worker
 
 **Canonical event flow** (intermediate steps must not be skipped):
@@ -243,7 +262,7 @@ worker → Secretary peer message
 
 #### 2a. Completion report
 
-- Return ack to the worker (see the "completion report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md))
+- Return ack to the worker (see the "completion report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md); immediately on receipt, before any other state update, to prevent dead-lock)
 - **Transition the run to REVIEW via the DB** (direct markdown edits prohibited):
   ```bash
   python -c "
@@ -257,6 +276,7 @@ worker → Secretary peer message
   ```
 - Append an event to the DB events table (`bash tools/journal_append.sh ...`)
 - **Register update on dogfood pass completion (Issue #338)**: If the completed task was earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition that row's `status` from `open → consumed`. Defects are assumed to already be aggregated in the paired follow-up issue (the `dogfood_issue` column) — the format is specified in the dogfood pass worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
+- **Use the human-comprehension summary as the basis of the approval presentation and persist it (verification depth `full` only)**: A full-mode completion report includes a worker-written "human-comprehension summary" — (1) the N most important changes, (2) files / hunks that require review, (3) design decisions and rationale (schema SoT is [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)). The Lead does not read the code itself; instead it uses this summary as the basis of the approval presentation to the user (rephrasing into business language as needed). Append the received summary to the Progress Log of `.state/workers/worker-{task_id}.md` verbatim under a `Human Understanding Summary:` heading followed directly by a fenced code block (this is the source that is re-presented at merge approval; if there are multiple full completion reports, the latest block is canonical). The PR description may also include a summary. **If a full completion report omits the summary, treat it as ordinary review feedback and ask the worker in the same pane to supply it** (handled via the review-feedback procedure in [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c). This is a procedural-layer extension of the completion report format and does not change the contract (T4 `worker_completed`) transition condition. The 1-line `done:` report in minimal mode does not carry a summary
 - **Emit awaiting_user notification (Issue #28)**: Just before reporting to the human → entering an approval-wait stop, inform the attention watcher that "the Secretary is stopping while awaiting the user's judgment":
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<short context such as PR/Issue>"

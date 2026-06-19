@@ -50,6 +50,14 @@ The first skill to run after Claude Code launches. Performs previous-state resto
 > was retired in M4.
 > If the DB is missing, build it with `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`.
 
+> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical, so the procedure logic is unchanged). Only the transport-dependent points are noted in broker form:
+>
+> - **Receive model (push → pull)**: under renga, messages from dispatcher / worker are pushed in-band as `<channel source="renga-peers" …>`. Under broker, **only a pane-local nudge fires**, and the body must be pulled via `check_messages` (broker: `mcp__org-broker__check_messages`) — broker delivers to all peers via pull = `receive_mode` constant `"poll"`. It only changes to "see the nudge → `check_messages`"; the procedure stays the same shape aside from the tool name.
+> - **Spawn rite (dev-channel approval → folder-trust approval)**: renga's `spawn_claude_pane` injects `--dangerously-load-development-channels server:renga-peers` and approves "Load development channel?" with Enter (Block D-1). Broker injects `--mcp-config <broker>` instead, and the approval prompt shifts to the Claude Code **folder-trust prompt** (also machine-approved via `send_keys(enter=true)`; same procedure shape).
+> - **Error branching (broker additional codes)**: on top of renga codes (`[split_refused]` / `[pane_not_found]` / `[cwd_invalid]` etc.), broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch to escalate). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md).
+>
+> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion; this flow does not use them anyway). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed/awaiting ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+
 ## Step 0: initialization
 
 1. Set your own summary via `mcp__renga-peers__set_summary`: "Secretary: Lead".
@@ -180,6 +188,7 @@ After Block A's spawn succeeds, Claude is booting in the dispatcher pane.
    - Enter is written to the PTY as CR (0x0D).
    - Without approval, the `server:renga-peers` channel is not enabled and `send_message` channel pushes do not arrive.
    - Depending on boot speed, sending Enter before the prompt is displayed may become a no-op. If the next list_peers poll does not confirm peer registration, resend Enter.
+   - **Under broker (`ORG_TRANSPORT=broker`)**: what `spawn_claude_pane` injects is not `--dangerously-load-development-channels` but `--mcp-config <broker>`. The initial prompt shifts from "Load development channel?" to the Claude Code **folder-trust prompt**, but the approval procedure has the same shape: machine-approve via `mcp__org-broker__send_keys(target="dispatcher", enter=true)`. Without approval, the broker token bind does not complete, and the next `list_peers` wait times out in the same way.
 2. **Poll list_peers and confirm the dispatcher's peer registration**:
    ```
    mcp__renga-peers__list_peers
