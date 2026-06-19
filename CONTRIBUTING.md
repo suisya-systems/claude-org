@@ -1,6 +1,6 @@
 # Contributing to claude-org
 
-claude-org is a self-organizing multi-agent framework built on top of Claude Code. It coordinates four roles — Lead, Dispatcher, Curator, and Worker — across panes in renga, and provides an operating template for individual operators and small teams.
+claude-org is a self-organizing multi-agent framework built on top of Claude Code. It coordinates four roles — Lead, Dispatcher, Curator, and Worker — across panes on broker (default) or renga (opt-in fallback), and provides an operating template for individual operators and small teams.
 
 Because this repository is primarily a **template for personal operation**, we welcome the following contributions over net-new features:
 
@@ -18,7 +18,7 @@ Before starting development, satisfy the "Prerequisites" and "Installation" sect
 - Python 3.8+
 - Git / GitHub CLI
 
-After the initial clone, start the Lead pane with `renga --layout ops`, then **run `/org-setup` once inside Claude Code** to generate per-role `settings.local.json` files (without it you will hit a flood of permission prompts during development). See [docs/getting-started.md](docs/getting-started.md#installation) for details.
+After the initial clone, start the Lead pane with `claude-org-runtime org up` (the broker main path; to fall back to renga, set `ORG_TRANSPORT=renga` and run `renga --layout ops`), then **run `/org-setup` once inside Claude Code** to generate per-role `settings.local.json` files (without it you will hit a flood of permission prompts during development). See [docs/getting-started.md](docs/getting-started.md#installation) for details.
 
 ## Bug reports
 

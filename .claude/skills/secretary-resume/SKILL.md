@@ -40,6 +40,14 @@ recent exchanges with the human, and in-flight work.
 > - If the handover file does not exist or is too stale, guide the user
 >   to use /org-start or /org-resume instead.
 
+> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical). Only the transport-dependent points are noted in broker form:
+>
+> - **Receive model (push → pull)**: under renga, worker / dispatcher peer messages are pushed in-band. Under broker only a pane-local nudge fires, and the body must be pulled via `check_messages` (broker: `mcp__org-broker__check_messages`) (when the Lead receives messages after resume, it just changes to "see the nudge → `check_messages`").
+> - **Spawn rite (dev-channel approval → folder-trust approval)**: resume does not spawn, so approvals are unused; but on broker, the spawn-time approval (on the org-start / org-delegate side) shifts from dev-channel to the Claude Code **folder-trust prompt**.
+> - **Error branching (broker additional codes)**: on top of renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md).
+>
+> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (proposed, awaiting ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+
 ## Step 0: confirm your own identity
 
 1. Set the summary to "Secretary: front desk (resumed)" via
