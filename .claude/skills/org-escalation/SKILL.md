@@ -24,6 +24,8 @@ allowed-tools:
 
 When the Lead receives a peer message containing "approval request", "judgment escalation", "OK to continue?", "scope expansion", "proposal", "unexpected", "runbook deviation", "block", "blocker", or similar, the Lead **does not pre-approve** and escalates to the human. The Lead is a relay role, not a judgment layer.
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this skill's `mcp__renga-peers__*` calls (ack `send_message` etc.) are written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`**, judgment-escalation receipt from the worker is not an in-band push but a **pane-local nudge + `check_messages` pull** (only the receive trigger becomes "see the nudge → `check_messages`"; the ack and register-update procedures have the same shape), and errors gain the broker-specific codes (see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). See CLAUDE.md "Transport layer (transport) both systems" and [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) for details. The default-renga procedure is unchanged (broker is additive).
+
 > **Why state preservation matters**: so that a Lead restart or handoff
 > does not lose pending decisions, write to all 3 layers (Progress Log /
 > events / pending-decisions register) at the same time. Missing any
