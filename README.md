@@ -143,14 +143,16 @@ flowchart TB
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="Pane layout right after /org-start: Secretary and Dispatcher are running, with no Worker derived yet (the screenshot dates from the resident-curator era; the Curator is now launched on demand)"></td>
-    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="Pane layout in action: in addition to Secretary and Dispatcher, parallel Workers derived through task delegation are running in the same tab (the screenshot dates from the resident-curator era)"></td>
+    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="Pane layout right after /org-start: Secretary and Dispatcher are running, with no Worker derived yet"></td>
+    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="Pane layout in action: in addition to Secretary and Dispatcher, parallel Workers derived through task delegation are running in the same tab"></td>
   </tr>
   <tr>
-    <td><em>Just started: right after running <code>/org-start</code>. Secretary and Dispatcher have come up; no Worker exists yet (the screenshot dates from the resident-curator era; the Curator is now launched on demand and does not exist at this point).</em></td>
+    <td><em>Just started: right after running <code>/org-start</code>. Secretary and Dispatcher have come up; no Worker exists yet.</em></td>
     <td><em>In action with workers: the Dispatcher has derived parallel Workers via task delegation, and the four-role configuration is running.</em></td>
   </tr>
 </table>
+
+> *Both screenshots date from the resident-curator era. The Curator is now launched on demand, so it does not exist at the moment right after `/org-start`.*
 
 - **Secretary**: The only human-facing contact point. Handles task breakdown, delegation decisions, and result reporting. Operational responsibilities are split internally into three skills ([`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)). When the Secretary session's context grows long, dump state with [`/secretary-handover`](.claude/skills/secretary-handover/SKILL.md), then recover with [`/secretary-resume`](.claude/skills/secretary-resume/SKILL.md) after `/clear` (refreshing only the Secretary while leaving the Dispatcher / Worker panes alive)
 - **Dispatcher**: Relays pane launches and instruction delivery, minimizing the time the Secretary is blocked

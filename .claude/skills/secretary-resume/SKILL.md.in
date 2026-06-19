@@ -1,0 +1,147 @@
+---
+name: secretary-resume
+description: >
+  Load the handover file written by /secretary-handover and resume the
+  Secretary in a fresh session. Use it on the very first turn after /clear.
+  Trigger phrases: "resume the Secretary", "resume", "pick up from the handover".
+  This is not /org-start (Dispatcher / Curator are assumed to still be alive).
+effort: low
+allowed-tools:
+  - Read
+  - Bash(py -3 tools/journal_append.py:*)
+  - mcp__renga-peers__set_summary
+  - mcp__renga-peers__list_panes
+  - mcp__renga-peers__set_pane_identity
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__check_messages
+---
+
+# secretary-resume: bring the Secretary back
+
+Load `.state/secretary-handover.md` (written by `/secretary-handover`) and
+restore the minimum Secretary awareness — your stance as an org member,
+recent exchanges with the human, and in-flight work.
+
+{{> dual-system-header-long }}
+
+> **Preconditions**:
+> - Dispatcher / Worker panes are still alive from the previous
+>   session. Do not spawn new ones (this is not /org-start).
+> - The Curator is not resident (on-demand model). Null `curator_pane_id` /
+>   `curator_peer_id`, and the curator not appearing in the pane list, are
+>   the **normal state**.
+> - The state DB (`.state/state.db`) is reused as-is. No need to re-record
+>   pane identities.
+> - If the handover file does not exist or is too stale, guide the user
+>   to use /org-start or /org-resume instead.
+
+## Step 0: confirm your own identity
+
+1. Set the summary to "Secretary: front desk (resumed)" via
+   `{{FQ}}set_summary`.
+2. Check the focused pane's name/role with `{{FQ}}list_panes`:
+   - Expected: `name == "secretary"` and `role == "secretary"`.
+   - On mismatch, fix with
+     `{{FQ}}set_pane_identity(target="focused", name="secretary", role="secretary")`.
+
+## Step 1: load the handover file
+
+1. Check that `.state/secretary-handover.md` exists:
+   ```bash
+   ls -la .state/secretary-handover.md 2>&1
+   ```
+   - Does not exist → guide the user and stop:
+     "No handover file. Please run /org-start to bring the org up, or
+     /org-resume to pick up from a suspended state."
+2. Check freshness via the frontmatter `created_at`:
+   - Within 24 hours → use as-is.
+   - 24 hours to 7 days → warn the user ("the handover is stale, continue?").
+   - More than 7 days → do not adopt; recommend switching to `/org-start`.
+3. Read the file body. **Treat what is written as "fact" for next-session you**
+   (Step 3 will reconcile with state.db).
+
+## Step 2: re-fetch current state from state.db
+
+```bash
+python -c "
+from tools.state_db import connect
+from tools.state_db.queries import get_org_state_summary
+import json
+conn = connect('.state/state.db')
+print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))
+"
+```
+
+Verify:
+- `session.status` matches the handover frontmatter.
+- `dispatcher_pane_id` matches what the handover recorded.
+- `curator_pane_id` / `curator_peer_id` are null (**null is normal**. If
+  values remain, they may be stale values from the old scheme — report to
+  the human).
+- `active_runs[]` is consistent with the handover's "In-flight work" section.
+
+## Step 3: confirm panes are alive
+
+```
+{{FQ}}list_peers
+```
+
+- The Dispatcher name should be visible.
+- The curator is **normally not visible, and that is normal** (on-demand
+  model). If it is visible, an on-demand curate is running; leave it alone
+  (the dispatcher will close it).
+- Workers listed in the handover should still exist (see below if missing).
+
+**If anything diverges, report it to the human** (e.g., "the handover says
+worker X is in progress, but the current pane list does not show it"). Do not
+re-spawn on your own.
+
+## Step 4: brief the human
+
+Synthesize the handover and the current state.db view, and report concisely
+in this shape:
+
+```
+The Secretary is resumed.
+
+[Session]
+- Objective: <session.objective>
+- Status: <session.status>
+
+[Panes]
+- dispatcher (pane=N, peer=M)
+- curator: not resident (launched on demand)
+- workers: <task_id list>
+
+[Recent agreements / decisions]
+- ...
+
+[Pending Decisions]
+- ... ("none" if empty)
+
+[Next action]
+- ...
+
+Please advise.
+```
+
+## Step 5: keep the handover file around
+
+- Do not delete it (kept for reference in case of next-time trouble).
+- `.state/secretary-handover.prev.md` is the previous one. Do not remove
+  it even after loading the current one.
+
+## Event record
+
+```bash
+py -3 tools/journal_append.py secretary_resumed \
+    --json '{"handover_age_hours": <number>}' 2>/dev/null \
+    || echo "(journal_append unavailable; skipping)"
+```
+
+## Things not to do
+
+- Do not spawn a new Dispatcher / Curator (they are already alive).
+- Do not send SUSPEND / SHUTDOWN to workers on your own.
+- When the handover content disagrees with state.db, do not silently align
+  one to the other — always report to the human and ask for a judgment.
