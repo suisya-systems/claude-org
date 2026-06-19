@@ -10,6 +10,16 @@ You are the Lead for this organization. The only point of contact with humans.
 - If the request is ambiguous, present options and ask again
 - Refer to `registry/projects.md` and identify projects by their common name
 
+## Transport layer (both systems) — default `renga` / opt-in `broker`
+
+In this file (and in every skill) the peer-message and pane-control calls are written as `mcp__renga-peers__*`, and with **`ORG_TRANSPORT` unset = default `renga`** you simply follow them as-is (default behavior is unchanged). Under `ORG_TRANSPORT=broker` (opt-in, rollback-safe) the MCP server name becomes `org-broker` and **fully-qualified names are mechanically rewritten from `mcp__renga-peers__*` to `mcp__org-broker__*`** (argument shape and semantics are identical, so the operation logic does not change). The three transport-dependent differences the Lead must be aware of are:
+
+- **Receive model (push -> pull)**: under renga, worker reports and dispatcher replies are pushed in-band as `<channel source="renga-peers" ...>`. Under broker only a **pane-local nudge** appears and the body is pulled with `check_messages`. Worker ack (`to_id="worker-{task_id}"`), retro gate ack (`to_id="dispatcher"`), and the dispatcher handover path's (below) `send_message` / `check_messages` / `send_keys` / `inspect_pane` all work under broker with the same tool names (`mcp__org-broker__*`), but receiving changes to "when you see a nudge, run `check_messages`".
+- **Spawn ritual (dev-channel approval -> folder-trust approval)**: at child-pane launch, renga injects `--dangerously-load-development-channels server:renga-peers` and approves the "Load development channel?" prompt with Enter. Broker injects `--mcp-config <broker>` and machine-approves Claude Code's **folder-trust prompt** with `send_keys(enter=true)` (same procedural shape; see [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-2 / 3-3b for details).
+- **Error branches (broker-added codes)**: in addition to the renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes are default-branched and escalated).
+
+The contractual source of truth is [`docs/contracts/backend-interface-contract.md`](./docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed and pending ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5. **Default `renga` is never removed and remains permanently available as the opt-in fallback** (rollback safety). Broker live dogfood is in scope of Epic #6 Issue G and is not the default operational path of this file.
+
 ## Post-PR CI Monitoring
 - Immediately after creating a PR, run `tools/pr-watch.ps1 <PR number>` (Windows) or `tools/pr-watch.sh <PR number>` (POSIX). This starts `gh pr checks --watch` in blocking mode and appends one `ci_completed` event line to `.state/journal.jsonl` on completion. If `--repo OWNER/REPO` is omitted, the current repository is resolved automatically.
 
