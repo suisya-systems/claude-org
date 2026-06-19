@@ -29,7 +29,13 @@ allowed-tools:
 
 Read the raw learnings accumulated under `knowledge/raw/`, classify and consolidate them, and write them to `knowledge/curated/`.
 
-> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this skill's `mcp__renga-peers__*` calls (`send_message` to secretary / dispatcher) are written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`**, receive is not an in-band push but a **pane-local nudge + `check_messages` pull** (the CURATE_DONE direct `send_message` to the dispatcher → dispatcher-side `check_messages` wait path only changes its tool name under broker; the logic is the same), and errors gain the broker-specific codes (see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii); the contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification). The default-renga procedure is unchanged (broker is additive).
+> **Transport — both backends (default `broker` / opt-in `renga`)**: the peer-message and pane operations in this file (and across the skills) are written as `mcp__org-broker__*`. With **`ORG_TRANSPORT` unset = default `broker`**, follow them as-is. With `ORG_TRANSPORT=renga` (opt-in, revertible), the MCP server name becomes `renga-peers`, and the **fully qualified names are mechanically substituted `mcp__org-broker__*` → `mcp__renga-peers__*`** (argument shape and semantics are identical, so the operational logic does not change). The three transport-dependent differences are:
+>
+> - **Receive model (default = push-primary = `claude/channel` / pull fallback)**: the default broker is designed as **push-primary** (runtime push-first 0.1.24+; design SoT is transport-lab `docs/design/broker-native-roles.md` §9). A **channel sidecar** (`server:org-broker-channel`) co-located with each pane claims the broker queue at ~1s intervals and pushes via `notifications/claude/channel`, injecting the body into an idle session (creating the "respond as soon as it arrives" trigger). Worker ack (`to_id="worker-{task_id}"`), retro-gate ack (`to_id="dispatcher"`), and the dispatcher handover route's `send_message` / `check_messages` / `send_keys` / `inspect_pane` all work under the same tool names (`mcp__org-broker__*`). **Pull is the fallback layer**: when the sidecar is absent or unhealthy (heartbeat timeout flips to `delivery_mode=PULL`), for channel-incapable panes (codex pull-peer), or when claude.ai login is missing, each role actively `check_messages` on its own cadence (per-role cadence: worker = turn boundary / bounded `/loop` after completion; dispatcher = `/loop 3m`; secretary = at turn start; the existing "when you see a nudge, `check_messages`" prose is **not retracted** and should be read as this fallback cadence). With `ORG_TRANSPORT=renga` (opt-in), worker reports and dispatcher responses are pushed in-band as `<channel source="renga-peers" …>` (renga's in-band push and broker push-primary share the same immediate-response trigger). Contract-wise, push-primary is **ratified** on Surface 8 + push-primary amendment (2026-06-15, S3; pull is retained as fallback; renga is unchanged).
+> - **Spawn ritual (default = folder-trust approval + dev-channel sidecar approval, 2 steps)**: when spawning a child pane, the default broker injects `--mcp-config <broker>` and mechanically approves Claude Code's **folder-trust prompt** with `send_keys(enter=true)`, **and in addition**, loads the channel sidecar via `--dangerously-load-development-channels server:org-broker-channel` for push-primary and mechanically approves the dev-channel approval prompt (spawn-flow 3-3b) with `send_keys(enter=true)` (folder-trust + dev-channel = 2-step approval; details in [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2 / 3-3b, design in broker-native-roles.md §9.5). With `ORG_TRANSPORT=renga` (opt-in), it injects `--dangerously-load-development-channels server:renga-peers` and approves the "Load development channel?" prompt with Enter — 1 step. **Note: the attention watcher is a transport-independent CLI pane and is exempt from both the folder-trust and dev-channel 2-step approvals** (do not pull it into the spawn-ritual inversion).
+> - **Error branching (default = broker extended codes included)**: in addition to the shared codes (`pane_not_found` / `last_pane` / `invalid-params`, Surface 6), the default broker may return broker-specific `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` / `[unknown_tool]` (unknown codes escalate via the default branch). With `ORG_TRANSPORT=renga`, broker-specific codes never occur — only shared codes + renga-specific codes.
+>
+> The contract SoT is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, ratified 2026-06-14) + the tail "Ratified amendment (2026-06-15): push-primary delivery" (S3; **broker push-primary is the default contract**, pull is retained as structural fallback). Design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary) / `docs/design/ja-migration-plan.md` §5 and §8. **The opt-in `renga` is not deleted and is maintained as a permanently-available fallback** (the revert safety net). Broker actual-run (dogfood) is in scope for Epic #6 Issue G and is **not** the default operational route in this file (**Two-frame note on "default" (Refs #604)**: "default `broker`" here refers to the **code-default** frame — `tools/transport.py: DEFAULT_TRANSPORT` has been flipped to `broker` in runtime 0.1.28 (Epic #586), and the ja generator / `transport.resolve()` render against this code frame, so the generated surface displays it this way. There is a separate **operational-default** frame in which the operational default route is `renga`, because broker actual-run dogfood is not yet activated through Epic #6 Issue G. The two frames refer to different objects (code constant vs. operational route) and do not contradict each other. The overview is in root [`CLAUDE.md`](../../../CLAUDE.md), section "Transport — both backends".)
 
 **Launch model (on-demand)**: this skill executes exactly one cycle per activation (`/loop` is forbidden).
 Threshold judgment is consolidated into the external script [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py);
@@ -53,49 +59,6 @@ allowed-tools). When running manually from the repo root, use them as-is.
 | `work_skill_count` | 20 or more work-skills (excluding org-*) | Step 6 (fire skill-audit) |
 | `legacy_marker_sweep` | `<!-- curated -->` remnants directly under raw/ | Step 1 (migration sweep; *always runs anyway*) |
 
-### 0-A: determine the activation context (on-demand vs explicit manual) — decides Step 7's send obligation
-
-**This determination is the sole basis for whether Step 7 (completion notification) is mandatory or
-optional**. Do not loosen it with self-inferred reasoning like "it's probably manual so I can skip"
-(that is the root cause of curator orphaning = pane leaks). The judgment is grounded in **"was this
-curator instance itself spawned / driven by the dispatcher"** — do not decide by the mere existence
-of an external file (the reason is noted under (i) below).
-
-**Primary signals (instance-specific, deterministic; on-demand is confirmed if even one matches)** —
-in this case **always send** Step 7's `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` **to the
-dispatcher** (regardless of outcome, no exceptions; never re-classify as manual):
-
-- **(ii)** an activation instruction message was received from the dispatcher (peer name `dispatcher`).
-  This only happens during on-demand activation and never with a human-typed `/org-curate` (= a
-  deterministic discriminator vs manual).
-- **(iii)** the activation instruction message includes the JSON from
-  `tools/check_curate_threshold.py` (`reasons[]` / `counts`).
-
-**Auxiliary signal (a dispatcher-side marker; not sufficient alone to declare on-demand)**:
-
-- **(i)** `.state/dispatcher/curate-inflight.json` exists (from a curator pane with CWD=`.curator/`,
-  that is `../.state/dispatcher/curate-inflight.json`). This is the on-demand activation marker the
-  dispatcher writes immediately after spawn at CLOSE_PANE Step 5-3; the dispatcher waits for the
-  curator's `CURATE_*` via `check_messages` before closing the pane
-  ([`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) 5-3 /
-  [`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md#step-5-3)).
-  **This signal corroborates on-demand only when this instance is a curator pane spawned by the
-  dispatcher** (CWD=`.curator/`, pane name `curator`; = primary signals (ii)/(iii) are also present).
-  The inflight file is a global file not tied to a specific instance, so **a curator that a human
-  manually launched in another pane (secretary / repo root, CWD≠`.curator/`, no dispatcher activation
-  instruction) must not use a co-existing other on-demand curator's inflight as its own send trigger**
-  (an erroneous send risks the dispatcher closing the real, in-flight on-demand curator early —
-  addressed for a Codex Major).
-
-**Explicit manual activation** can be assumed only when **none of the primary signals (ii)/(iii)
-apply** (= no activation instruction from the dispatcher was received) AND this instance is not a
-dispatcher-spawned curator pane either, but a human directly typed `/org-curate` in a secretary-side
-pane. Only in this case may Step 7 be omitted (the dispatcher carries no pane-close responsibility).
-**If primary signals (ii)/(iii) were received, on-demand is confirmed regardless of inflight presence
-and Step 7 send is mandatory**. When in doubt (e.g., a dispatcher-spawned curator pane suspected of
-dropping a message), **err on the on-demand side and always send** (sending is harmless as information
-sharing; only not sending creates a pane leak).
-
 1. **On-demand activation via the dispatcher**: the activation instruction message contains
    the JSON from `tools/check_curate_threshold.py` (`reasons[]` / `counts`).
    Adopt it as-is (do not recompute).
@@ -106,13 +69,6 @@ sharing; only not sending creates a pane leak).
      `CURATE_SKIPPED` in Step 7 and finish
    - exit 10 (curate_needed) → adopt `reasons[]` from the stdout JSON and continue
    - exit 2 (error) → notify `CURATE_ERROR` in Step 7 and finish
-
-> **Note**: items 1 (receipt of reasons) and 0-A(iii) above only state the *source* of `reasons`;
-> they are independent of the Step 7 send-obligation decision. The send obligation is determined by
-> 0-A's **primary signals (ii)/(iii)** (= receipt of a dispatcher activation instruction). A curator
-> spawned by the dispatcher remains **on-demand** even if it falls into item 2 above (script self-runs
-> without reasons being passed in), and Step 7's send is still mandatory. Do not short-circuit to
-> "reasons not passed = manual = optional".
 
 ## Step 1: migration sweep (clean up old data) — always runs
 
@@ -209,26 +165,11 @@ Consolidated raw files are not written back to active raw; they are moved into `
    ```
    mv knowledge/raw/<entry>.md knowledge/raw/archive/<entry>.md
    ```
-   (Under the normal flow, no file of the same name exists on the archive side and the move targets a fresh path, so even with a `mv -i` alias no overwrite prompt is raised. What the alias breaks is the marker addition in the next sub-step 3, not this normal move. Exceptionally, if the same raw entry reappears or a partial recovery leaves `knowledge/raw/archive/<entry>.md` already in place, `mv -i` will issue an interactive confirmation — in that case stop, inspect the existing archive-side file, resolve the collision via rename etc., and then move.)
-3. After the move, prepend the line `<!-- curated -->` as a visual marker to the top of the archived file.
-   **Addition must be performed via the Write tool (mandatory procedure)**: Read the target archive
-   file's contents, prepend `<!-- curated -->` + a newline, and Write it back to the same path
-   (= read -> prepend -> write).
+3. After the move, append the visual marker to the top of the archived file:
+   ```
+   <!-- curated -->
+   ```
    The marker is added **to the file after it has been moved to archive**. Files under active `knowledge/raw/` are never rewritten.
-
-   > **Why not add it via the shell (preventing recurrence of the past harm: 5 broken 17-byte `.md.tmp` remnants accumulated)**:
-   > The shell-style approach of "write marker + body to `<entry>.md.tmp`, then overwrite via `mv <entry>.md.tmp <entry>.md`"
-   > breaks under two environmental factors. (1) If `mv` is aliased to `mv -i`, an **overwriting `mv` against an
-   > existing file raises an interactive confirmation, and under non-interactive execution (curator runs unattended)
-   > it gets rejected on EOF** -- the original without the marker is left in place and only the `.tmp` remains as a
-   > stray. (2) zsh's history expansion interprets the `!` inside the marker string, and writing it directly to the
-   > shell injects a `\` as in `<\!-- curated -->`.
-   > **A prepend via the Write tool uses no `mv` at all (-> avoids (1)) and never passes `!` through the shell
-   > (-> avoids (2)), severing both at once.** If you must use the shell anyway, evade the alias on overwriting `mv`
-   > via `command mv -f`, and assemble any marker string containing `!` via `chr(33)` or similar rather than writing
-   > it directly to the shell (note however that this skill's allowed-tools only permits `Bash(mv knowledge/raw/*)`
-   > family, so `command mv -f` falls into a permission prompt under unattended execution -- hence the Write tool
-   > path is the default).
 
 The fact that a file lives under archive/ is itself the "curated" signal, but the marker is also added for visual continuity. The `raw_active` count in `tools/check_curate_threshold.py` excludes archive/, so even just moving alone removes a file from the count for next time.
 
@@ -260,16 +201,6 @@ exact agreement between `tools/check_curate_threshold.py` and skill-audit Step 1
 
 ## Step 7: completion notification (always run last)
 
-**Send obligation (check this first)**: if the Step 0-A determination puts you in an **on-demand
-context (either primary signal (ii) dispatcher activation instruction / (iii) reasons JSON included,
-or, in a dispatcher-spawned curator pane, the (i) inflight corroboration), you must send one of
-`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` regardless of outcome**. Even when below_threshold
-left nothing done beyond the sweep, send `CURATE_SKIPPED` ("we did nothing, so notification is
-unnecessary" is wrong: the dispatcher is waiting on `CURATE_*` via `check_messages`; a missing send
-leaves the pane orphaned until timeout). **Omission is allowed only when Step 0-A has confirmed
-explicit manual activation**. Self-inferred shortcuts like "this is probably manual so skip" are
-forbidden.
-
 Report the cycle's outcome via **direct send to the dispatcher**. This is the trigger for
 the on-demand curator's pane close, so **the destination must be `to_id="dispatcher"`**
 (a channel broadcast or a secretary-addressed message would let the dispatcher's
@@ -289,19 +220,9 @@ The message is one of the following 3 kinds:
 - `CURATE_DONE: reasons={reasons[]} raw {n} entries → {m} themes consolidated into curated / {k} archived / {s} swept / skill-audit {fired or none}`
   — when one or more steps executed and completed normally
 - `CURATE_SKIPPED: below_threshold (counts: raw_active={n}, pending={p}, work_skill={w}, legacy_marker={l})`
-  — when below_threshold turned out true and nothing beyond the sweep was done. **In an on-demand
-  context, sending is mandatory even for this below_threshold edge per Step 0-A**. Under explicit
-  manual activation, sending is allowed but may be omitted (see below).
+  — when (e.g., on manual activation) the thresholds turned out unmet and nothing beyond the sweep was done
 - `CURATE_ERROR: {one-line summary}` — when an unrecoverable error occurred mid-cycle (include any partial completion in the one line)
 
-**Send may be omitted only under explicit manual activation (only when confirmed by Step 0-A)**: in
-a launch where a human directly typed `/org-curate` in a secretary-side pane (= **none of the primary
-signals (ii)/(iii) of Step 0-A were received**, AND **this instance is not a dispatcher-spawned
-curator pane (CWD=`.curator/`, pane name `curator`) either**), sending is optional because the
-dispatcher carries no pane-close responsibility. **The mere presence of a co-existing other on-demand
-curator's `curate-inflight.json` (i) does not make this on-demand** — that inflight is not addressed
-to this instance, so if the manual-side sends `CURATE_*` it could close the real on-demand curator
-early (do not send). It is fine to send only if the dispatcher exists among the peers and this
-instance wants to share information (harmless). Omit only when `[pane_not_found]` is returned.
-**The "omission allowed" of this paragraph does not apply in an on-demand context (primary signal
-matched or dispatcher-spawned curator pane)** — always send.
+On manual activation (a context such as the secretary pane, where the dispatcher has no
+pane-close responsibility), still send it if a dispatcher exists among the peers (harmless
+as information sharing); if `[pane_not_found]`, it may be omitted.
