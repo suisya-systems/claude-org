@@ -62,6 +62,11 @@ The default is `full`. Only for a trivial fix should the Lead choose and fill in
     - Minor / Nit findings should generally be left as-is. Document them as known limitations in the README / Issue / PR body
     - Do not use the `codex:rescue` skill (there have been hangs longer than 18 minutes; running `codex exec` directly is more stable)
   - Review instruction example: `codex exec --skip-git-repo-check "Review the diff in this branch from main. Classify findings as Blocker/Major/Minor/Nit, and for each finding include the target file:line number and rationale, concisely in Japanese"`
+  - **Canonical execution form** (Windows / worktree measured findings: `knowledge/curated/codex.md`):
+    - `codex exec --skip-git-repo-check "<prompt>" > tmp/codex-review-<task-id>-round<N>.log 2>&1 < /dev/null &` — explicitly close stdin with `< /dev/null` and write directly to a per-round log file. Do not pipe a running `codex exec` through `| tail` (buffering makes the output look empty). Change the log filename each round (if two processes write to the same file with `>`, the output gets interleaved).
+    - For completion detection, wait for **process exit** rather than the `tokens used` marker at the end of the log (example: `until ! tasklist | grep -qi codex; do sleep 10; done`. The marker can be delayed in output timing or buried among intermediate echoes).
+    - On Windows PowerShell Constrained Language Mode, codex probes frequently fail with `rejected: blocked by policy`, but codex falls back to other means and completes. **Do not misjudge frequent blocks as a review failure.**
+    - Do not call it done after reading only codex's verdict summary (e.g., "no Blockers"). After exit, check the end of the log (e.g., `tail -c 8000`; reading the full log can exceed the 256KB Read limit) for **residual-risk self-declaration** (verifications skipped due to policy blocks), manually re-run any skipped items on the worker side, and only then report "codex clean".
 
 - **minimal** (trivial fix: CI output formatting / typo / comment correction / aligning to an existing test format, etc., where the instructed changes are limited to a few lines in a single file)
   - Apply the instructed fix → `git add` → go straight to `git commit`
@@ -123,6 +128,15 @@ Example Worker instructions:
 ```
 
 If the old name / new name has not yet been finalized at the time of delegation, have the Worker operate in two stages: "detect and list target patterns → confirm with the Lead → replace".
+
+## Mandatory brief wording for delegations involving monitoring-role wait design
+
+For delegations that change waits / spawn coordination / lifecycle of a monitoring role (`/loop`-resident, periodically-polling roles such as dispatcher / curator), include the following mandatory wording **verbatim** in the "Constraints" section of the worker instructions (**do not omit it even when only 1 file changes**. For the design-review-side trigger and 3-question prompt, see [`.claude/skills/org-delegate/references/codex-design-review.md`](codex-design-review.md)):
+
+> - **Do not add a blocking wait** to a monitoring role (no sleep / busy-wait / synchronous join for completion waits)
+> - **Return immediately** after spawn and hand control back to the monitoring loop
+> - Completion-notice detection happens on the **loop's regular cycle** (the next polling pass)
+> - **The loop side manages the timeout** (the spawn caller must not wait)
 
 ## doc-audit role only: chunked transfer method for write artifacts
 
