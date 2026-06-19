@@ -35,6 +35,8 @@ mcp__renga-peers__send_message(
 )
 ```
 
+(If a full completion report omits the "human-comprehension summary", do not define a special ack for it; treat it as ordinary review feedback and ask the same pane to supply it. See [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 5 (2a) / [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) 2c for the procedure.)
+
 ### Codex self-review round-completion ack
 
 ```
