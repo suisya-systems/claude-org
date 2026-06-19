@@ -82,7 +82,14 @@ level up.
      DISPATCHER_RESUME_FAILED: handover file not found.
      Cold-start the Dispatcher with /org-start.
      ```
-2. Look at frontmatter `created_at` to judge freshness:
+2. Look at frontmatter `created_at` to judge freshness. `created_at` is
+   written in deterministic UTC
+   ([`/dispatcher-handover`](../dispatcher-handover/SKILL.md)), so **also
+   obtain the comparison `now` in deterministic UTC**
+   (`date -u +%Y-%m-%dT%H:%M:%SZ`; on PowerShell
+   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`).
+   Taking `now` as a local (JST) time skews `now - created_at` by ~9 hours
+   and misjudges freshness near the 24h / 7d boundaries:
    - Within 24h → adopt as-is
    - 24h < … ≤ 7d → warn the Secretary ("handover is stale; continuing anyway")
    - More than 7d → do not adopt; recommend switching to `/org-start` and stop
@@ -158,10 +165,17 @@ Evaluate the following **in this order**:
    `.state/dispatcher/curate-inflight.json` is absent (e.g., the previous
    session was cut off right after spawn, before the inflight write), do
    not leave the curator untracked: **regenerate** the inflight record with
-   `started_at = now` / `reasons: []` / `extended: false` /
-   `last_inspect_hash: null` / `last_inspect_ts: null`. All subsequent
-   judgments use this post-regeneration state (= this case always satisfies
-   the resume condition in 2).
+   `started_at = <deterministic UTC>` / `reasons: []` / `extended: false` /
+   `last_inspect_hash: null` / `last_inspect_ts: null`.
+   Paste the output of **`date -u +%Y-%m-%dT%H:%M:%SZ`** (on PowerShell:
+   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`) directly
+   for `started_at`, and **do not hand-write a local (JST) time tagged with
+   `Z`** (if the regenerated `started_at` becomes a future timestamp, Step 5.3's
+   `now - started_at` goes negative and the curator is orphaned forever. The
+   canonical source for deterministic acquisition is
+   [`.dispatcher/references/pane-close.md` 5-3](../../../.dispatcher/references/pane-close.md)).
+   All subsequent judgments use this post-regeneration state (= this case
+   always satisfies the resume condition in 2).
 2. **`/loop 3m` resume condition**: if the handover's
    `active_worker_count > 0`, the active worker dirs in state.db are
    non-empty, **or `curate-inflight.json` exists** (including one
