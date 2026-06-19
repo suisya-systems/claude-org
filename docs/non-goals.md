@@ -152,9 +152,12 @@ Because PreToolUse hooks in (2) remain active even in bypass mode, history-rewri
 
 **Alternative**: For monitoring from another machine or another tab, use state files (`.state/`) and the dashboard (`/org-dashboard`). If real-time external integration is required, you can design a separate MCP HTTP server alongside it, but that is outside the responsibility of claude-org itself.
 
+> **Host-local exception (proposed, 2026-06-11 / Epic #6 / ja#514, pending ratification)**: this non-goal prohibits **external exposure**; an MCP HTTP server **closed to the host only** is out of scope (an exception). The **`org-broker`** used under `ORG_TRANSPORT=broker` (opt-in) is a localhost-only HTTP MCP server bound to `127.0.0.1` — it is not externally reachable, has no TLS / network-boundary / external-auth surface, and does not break the "local-only operational discipline". Therefore broker is not the prohibited target of §12 (external exposure); it is permitted as part of the local transport layer. The default `renga-peers` (over local stdio, same-tab P2P) is unchanged, and this exception is purely an **additive** clarification that only adds broker on an opt-in basis (proposed; ratification follows the Epic #6 dogfood gate). For contractual details see [`docs/contracts/backend-interface-contract.md`](./contracts/backend-interface-contract.md) Surface 8 (§8.6).
+
 ---
 
 ## Revision history
 
 - 2026-04-27: Initial version (split out alongside the full README rewrite in Issue #107)
+- 2026-06-11: Added a host-local MCP HTTP exception note to §12 as a **proposal (pending ratification)** (Epic #6 / ja#514). Clarifies that `org-broker` (localhost-only HTTP MCP, opt-in) is out of scope of the external-exposure prohibition. The description and communication model of the default `renga-peers` are unchanged.
 ---
