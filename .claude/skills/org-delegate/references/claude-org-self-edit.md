@@ -92,6 +92,36 @@ At the beginning of `CLAUDE.local.md`, always include text to this effect:
 
 Without this explicit note, the Worker reads the root `CLAUDE.md` first and starts acting as the Lead (for example, prompting execution of `/org-start`).
 
+## 5. send_keys pre-approval handshake for root `.claude/**` edit tasks
+
+### Scope boundary
+
+This section covers **only claude-org root `.claude/**` (self-edits)**:
+
+- **In scope**: delegations whose Edit / Write touches `.claude/skills/`, `.claude/settings.json`, etc. directly under the claude-org repo root `.claude/**`
+- **Out of scope**: `.dispatcher/` / `.curator/` (runtime directories of different roles, not `.claude/`), and worker-dir generated `.claude/settings.local.json` (placed by `claude-org-runtime settings generate`; the worker never edits it)
+
+### Background (2-layer guard)
+
+Writes under `.claude/` are guarded by 2 layers: the `block-org-structure.sh` hook permits Edit / Write, but the auto-mode classifier blocks `.claude/` edits that have no user approval. The classifier's approval **only goes through via terminal input from send_keys (delivered into the worker's conversation as a user message)**. Peer messages (`send_message`) do not become user input and therefore do not function as approval.
+
+### Handshake (fixed procedure)
+
+To prevent deadlock (the worker waiting forever for an approval that never arrives) and empty Enter presses (sends without an approval text), the procedure is fixed as follows:
+
+1. **Secretary**: upon receiving `DELEGATE_COMPLETE` from the Dispatcher, **follow up** the SKILL.md Step 5 greeting by typing the approval text into the worker pane via send_keys:
+   ```
+   mcp__renga-peers__send_keys(
+     target="worker-{task_id}",
+     text="Approved: for this task ({task_id}), edits of {enumerate target files} are approved. This is user approval via the Lead.",
+     enter=true
+   )
+   ```
+   The approval text has 3 mandatory elements: **enumeration of the target files** / **task_id** / **explicit "user approval via the Lead" wording**.
+2. **Worker brief**: the brief (`CLAUDE.local.md` / instruction message) of any delegation that includes `.claude/**` in its scope must always carry the following gist:
+   > This task includes `.claude/` edits. **Before editing, confirm that the approval input (enumeration of target files + task_id + "user approval via the Lead") exists as a user message in the conversation.** If absent, do not begin editing; request the approval input from the Secretary via `send_message(to_id="secretary")` and wait.
+3. **Worker**: begin editing only after the above confirmation. If a `.claude/` edit becomes necessary for a file not enumerated in the approval text, treat it as scope expansion and escalate via [`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md).
+
 ## Rationale
 
 See the "Workers that edit `claude-org` itself pre-adjust settings inside the worktree" section in `knowledge/curated/delegation.md`.

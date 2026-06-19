@@ -109,7 +109,9 @@ After writing, still return the output YAML to the caller (the queue append is a
 This skill only decides and appends to the queue. Subsequent actions are the caller's responsibility:
 
 - **org-retro (post_retro)**:
-  - `skill_recommend` → propose to the human; on approval, create a new work-skill from work-skill-template.md.
+  - `skill_recommend` → queue append only (already done in Step 4). Do not propose to the human immediately.
+    The batch ask is performed by the Lead once pending ≥ 5
+    (primary reference: top of [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md), Issue #68 policy. Same when `/skill-audit` fires.)
   - `candidate_queue` → record only the technical knowledge under raw/.
   - `curated_only` → recording in raw/ is enough (no report needed).
 

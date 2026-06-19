@@ -146,6 +146,11 @@ When the work is done, **always** do the following:
    - What you completed.
    - Deliverables — files created, commits, PRs, etc.
    - Any remaining work or caveats.
+   - **Human-comprehension summary (required)**: So that the Lead can understand "what is about to be approved" without reading the code and use this directly in the approval presentation to the user, every completion report MUST include the following 3 items. This is the input to the `awaiting_review` (REVIEW) transition / `worker_completed` caused by the completion report, and extends the report format (the lifecycle invariants are unchanged):
+     1. **The N most important changes**: List what this task actually changed, in order of impact, N items (rough guide 3-5). Each item in 1-2 lines so that the gist is clear without opening the diff
+     2. **Files / hunks that require review**: The files (and the relevant function / hunk) that the human must read before approval. Narrow it down to "look at this part specifically", not "look at everything"
+     3. **Design decisions and rationale**: The design choices adopted and why. If there was a rejected alternative, add a 1-line note
+   - The summary is not required in minimal mode (so as not to load trivial fixes; the 1-line `done:` report under the "Codex self-review procedure" section above stays as-is).
 
 2. **Keep the pane alive after PR creation to wait for review comments**: even when the Secretary tells you that "push / PR creation is complete," do not close the pane. When PR review comments arrive on GitHub, stack the fix commits in the same pane (re-dispatching a new worker would pay the cost of rebuilding the Issue / diff / judgment boundaries). Stay in standby until you receive an explicit close instruction from the Secretary such as "you can close" / "merged."
 
@@ -178,6 +183,18 @@ On receipt of a message that starts with "SUSPEND:", interrupt work and immediat
 3. What you were about to do next.
 4. Blockers or unresolved issues.
 ```
+
+---
+
+## Conditional addendum: tasks involving monitoring-role wait design
+
+When the delegation task changes waits / spawn coordination / lifecycle of a monitoring role (`/loop`-resident, periodically-polling roles such as dispatcher / curator), append the following section **verbatim** to the generated CLAUDE.md (CLAUDE.local.md for claude-org self-edit tasks) immediately after the "Current task" section (**do not omit it even when only 1 file changes**. Same content as the mandatory brief wording in [`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md)):
+
+> ## Mandatory constraints for monitoring-role wait design
+> - Do not add a blocking wait to a monitoring role (no sleep / busy-wait / synchronous join for completion waits)
+> - Return immediately after spawn and hand control back to the monitoring loop
+> - Completion-notice detection happens on the loop's regular cycle (the next polling pass)
+> - The loop side manages the timeout (the spawn caller must not wait)
 
 ---
 
