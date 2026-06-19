@@ -6,6 +6,8 @@
 >
 > **Subject**: Set D defines the abstract API that any backend must provide for `claude-org` to operate. Today the only implementation is **renga** (`mcp__renga-peers__*` MCP server, renga 0.18.0+). This contract documents what the harness *requires*, not what renga *happens to provide* — alternative backends are permitted as long as they meet the surface specified here.
 >
+> **Frame note (additive, Refs #586 #604 — does not alter the ratified 2026-05-03 sentence above):** "the only implementation is renga" is the original 2026-05-03 wording. Per the ratified 2026-06-14 amendment in the upstream ja contract, **`org-broker`** is now a second reference backend (renga remains the default operational route; broker is opt-in). The upstream ja contract additionally records a *future* contracted default flip to broker; the contract-declaration, code-constant, and operational frames may advance at different paces, and the sentence above is preserved in the contract-declaration frame.
+>
 > **Method**: Each surface section below is filled from empirical sources (see list below). Sentences sourced from current behavior are written as facts. Open design questions are marked inline.
 >
 > **Empirical sources consulted**:
