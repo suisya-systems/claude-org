@@ -31,6 +31,25 @@ Extraction method: substring-match the tool result text (for example, `[pane_not
 | `parse` / `protocol` | Should not normally occur (assuming MCP assembles requests correctly) | If it occurs, it is a bug. Record it in the journal and report `IPC_PROTOCOL_ERROR` to the Lead |
 | `internal` | renga internal invariant violation (for example parser lock poison) | Handle the same as `app_timeout` |
 
+## Broker (`ORG_TRANSPORT=broker`) additional codes and tool-name projection
+
+This file documents the **default `renga`** (`ORG_TRANSPORT` unset) error codes as canonical. Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (the extraction of wire format `[<code>] <message>` and branching policy are identical). Broker **reuses `pane_not_found` / `last_pane` / `invalid-params` from the shared codes above with matching meanings**, and **adds** the following broker-specific codes (the renga harness is unaffected; the broker harness also handles unknown codes in the default branch). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed/awaiting ratification) §8.7.
+
+| Code | Meaning | Operations it appears in | Recommended behavior |
+|---|---|---|---|
+| `token_invalid` | bind token is unknown / malformed / revoked | All operations requiring authentication | Bug or session loss. Journal-record + escalate to Lead |
+| `session_invalid` | This agent's broker session has vanished (daemon restart / bind drop) | All operations requiring authentication | Requires redoing spawn (rebind). Escalate to Lead |
+| `tool_not_authorized` | The caller's `auth_role` tier does not include this tool (§8.3 tier gating) | Operations with tier restrictions | Misconfiguration. Review the tier design and escalate to Lead (no concept exists in renga) |
+| `peer_not_found` | The destination id / name for `send_message` / messaging cannot be resolved | Messaging operations | Equivalent to renga's `pane_not_found` (in messaging context). Treat as a closed peer |
+| `name_taken` | Name collision on spawn / `set_pane_identity` | Spawn family / `set_pane_identity` | Broker spelling of renga's `name_in_use`. Same handling (numeric-id operation or persistent repair) |
+| `no_backend` | The terminal adapter (tmux/WezTerm) is unavailable = "adapter_unavailable" | Pane control operations | Check the adapter environment and escalate to Lead. Adjacent to renga's `io_error` |
+| `nudge_failed` | The pull nudge could not be delivered to the destination pane | `send_message` | The body is queued but the receiver cannot notice. Retry or escalate to Lead |
+| `unknown_tool` | A tool absent from the broker surface was called (`new_tab` / `focus_pane` etc.) | All operations | Broker intentionally omits `new_tab` / `focus_pane`. Bug on the caller side |
+
+> **Correspondence with the design §5.2(ii) naming**: `token_*` = `token_invalid` + `session_invalid`, `adapter_unavailable` = `no_backend`, and the tier-gating addition is `tool_not_authorized`. `name_taken` is the broker spelling of the shared `name_in_use`.
+
+> **Broker's ok-return / delivery difference**: the renga exceptions described below (the renga-unreachable ok-text shim for `list_peers` / `send_message`) **do not exist in broker** (§6.3 carve-out does not apply). Under broker, transport loss is also returned as an error code per §8.7. Also, since broker delivers to all peers via pull (no push peers exist), receive is "pane-local nudge → pull the body via `mcp__org-broker__check_messages`" (`receive_mode` is the constant `"poll"`, §8.4/§8.8).
+
 ## MCP-tool-specific ok-return rules
 
 The following two MCP tools are exceptions: even when renga is unreachable, they return **ok-text instead of a JSON-RPC error**.
