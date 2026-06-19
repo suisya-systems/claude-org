@@ -49,6 +49,14 @@ member, in-flight dispatches, workers under monitoring), then resume the
 > - If the handover file does not exist or is too old, point at `/org-start`
 >   and stop.
 
+> **Transport layer (transport) both systems — default `renga` / opt-in `broker`**: this skill's `mcp__renga-peers__*` calls are written for **default `renga`** (`ORG_TRANSPORT` unset) and can be followed as-is (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible) the MCP server name becomes `org-broker`, and tools' **fully qualified names get machine-substituted from `mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape and semantics are identical). Only the transport-dependent points are noted in broker form:
+>
+> - **Receive model (push → pull)**: under renga, worker → dispatcher peer messages are pushed in-band. Under broker, only a pane-local nudge fires, and the body must be pulled via `check_messages` (broker: `mcp__org-broker__check_messages`). Step 5's drain of messages stranded from the previous session has the same logic under broker, only the tool name changes. `poll_events` (lifecycle cursor) keeps the same cursor semantics under broker, just as `mcp__org-broker__poll_events`.
+> - **Spawn rite (dev-channel approval → folder-trust approval)**: resume does not spawn, so the approval step is unused; but on broker, the spawn-time approval (in org-start / org-delegate) shifts from dev-channel to the Claude Code **folder-trust prompt**.
+> - **Error branching (broker additional codes)**: on top of the renga codes, broker may return `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]` (= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` (unknown codes hit the default branch). See the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md).
+>
+> `new_tab` / `focus_pane` are **absent** from the broker surface (intentional exclusion). The canonical contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (proposed, awaiting ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii). Broker real-run (dogfood) is scoped to Epic #6 Issue G and is not this skill's default path.
+
 ## Step 0: confirm your identity
 
 1. Use `mcp__renga-peers__set_summary` to set "Dispatcher: monitoring (resumed)".
@@ -74,7 +82,14 @@ level up.
      DISPATCHER_RESUME_FAILED: handover file not found.
      Cold-start the Dispatcher with /org-start.
      ```
-2. Look at frontmatter `created_at` to judge freshness:
+2. Look at frontmatter `created_at` to judge freshness. `created_at` is
+   written in deterministic UTC
+   ([`/dispatcher-handover`](../dispatcher-handover/SKILL.md)), so **also
+   obtain the comparison `now` in deterministic UTC**
+   (`date -u +%Y-%m-%dT%H:%M:%SZ`; on PowerShell
+   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`).
+   Taking `now` as a local (JST) time skews `now - created_at` by ~9 hours
+   and misjudges freshness near the 24h / 7d boundaries:
    - Within 24h → adopt as-is
    - 24h < … ≤ 7d → warn the Secretary ("handover is stale; continuing anyway")
    - More than 7d → do not adopt; recommend switching to `/org-start` and stop
@@ -150,10 +165,17 @@ Evaluate the following **in this order**:
    `.state/dispatcher/curate-inflight.json` is absent (e.g., the previous
    session was cut off right after spawn, before the inflight write), do
    not leave the curator untracked: **regenerate** the inflight record with
-   `started_at = now` / `reasons: []` / `extended: false` /
-   `last_inspect_hash: null` / `last_inspect_ts: null`. All subsequent
-   judgments use this post-regeneration state (= this case always satisfies
-   the resume condition in 2).
+   `started_at = <deterministic UTC>` / `reasons: []` / `extended: false` /
+   `last_inspect_hash: null` / `last_inspect_ts: null`.
+   Paste the output of **`date -u +%Y-%m-%dT%H:%M:%SZ`** (on PowerShell:
+   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`) directly
+   for `started_at`, and **do not hand-write a local (JST) time tagged with
+   `Z`** (if the regenerated `started_at` becomes a future timestamp, Step 5.3's
+   `now - started_at` goes negative and the curator is orphaned forever. The
+   canonical source for deterministic acquisition is
+   [`.dispatcher/references/pane-close.md` 5-3](../../../.dispatcher/references/pane-close.md)).
+   All subsequent judgments use this post-regeneration state (= this case
+   always satisfies the resume condition in 2).
 2. **`/loop 3m` resume condition**: if the handover's
    `active_worker_count > 0`, the active worker dirs in state.db are
    non-empty, **or `curate-inflight.json` exists** (including one
@@ -171,7 +193,10 @@ Evaluate the following **in this order**:
   "any `pane_exited` that arrived while the pane was closed is still
   guaranteed to be picked up at the next poll" (renga 0.5.7+ cursor spec).
 - On the first cycle, `mcp__renga-peers__check_messages` drains any
-  worker → dispatcher peer messages queued during the previous session.
+  worker → dispatcher peer messages queued during the previous session
+  (broker = `mcp__org-broker__check_messages`. broker delivers to all peers
+  via pull from the start, so there is no push→pull difference, only the tool
+  name changes).
 - `.state/dispatcher/worker-idle-state.json` retains the previous session's
   `idle_streak_cycles`, so stall-detection continuity is preserved as well.
 
