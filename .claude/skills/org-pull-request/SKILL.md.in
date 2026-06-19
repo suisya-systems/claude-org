@@ -27,8 +27,8 @@ allowed-tools:
   - Bash(bash tools/pr-watch.sh:*)
   - Bash(pwsh tools/pr-watch.ps1:*)
   - Bash(powershell tools/pr-watch.ps1:*)
-  - mcp__org-broker__send_message
-  - mcp__org-broker__check_messages
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
 ---
 
 # org-pull-request: PR creation, review, and post-merge close
@@ -42,7 +42,7 @@ Covers worker completion report -> user approval -> push / PR creation / CI moni
 
 > **ack != user approval**: By the time this skill is invoked, ack has already been issued (`.claude/skills/org-delegate/SKILL.md` Step 5 step 1 / [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md)). push / `gh pr create` / `tools/pr-watch.*` are issued only after user approval.
 
-> **Transport dual system (`ORG_TRANSPORT`: default `broker` / opt-in `renga`)**: The `mcp__org-broker__*` calls in this skill (worker fix instruction `send_message` etc.) and pr-watch's peer notifications are written for **default `broker`** (no `ORG_TRANSPORT` set) and can be followed as-is (default behavior). **Receiving CI_COMPLETED / PR_MERGED etc. is push-primary** (the channel sidecar `server:org-broker-channel` co-resident in each pane injects the body into the Lead's idle session via `notifications/claude/channel`. runtime push-first 0.1.24+, design SoT is transport-lab `docs/design/broker-native-roles.md` §9), and the **fallback when push fails** is for the Lead to actively call `mcp__org-broker__check_messages` at turn start (see the receive-model note in 2b-i below. §9.6). Errors get the broker extension codes added (the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). With `ORG_TRANSPORT=renga` (opt-in, rollback-capable), the fully-qualified names are mechanically rewritten from **`mcp__org-broker__*` -> `mcp__renga-peers__*`**, and CI_COMPLETED etc. arrive as in-band pushes of `<channel source="renga-peers">` (the procedure is isomorphic; renga is not deleted and is always available as a rollback safety device). For details, see the CLAUDE.md "Transport (transport) dual system" section and [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (ratified 2026-06-14. The additive amendment S3 for push-primary is ratified (2026-06-15), existing ratified body unchanged).
+{{> org-pull-request-transport }}
 
 ## 2b-i. PR creation phase (run immediately)
 
@@ -56,8 +56,7 @@ Triggered immediately after the user gives **explicit approval** such as "OK", "
   This calls `gh pr view <PR> --json url,headRefName` once and overwrites `runs.pr_url` and `runs.branch` via `StateWriter.set_run_pr`. Re-invocation is idempotent (overwrites with the same values, no events appended). Without this, the later `tools/run_complete_on_merge.py` cannot look up `runs.pr_url`, fails with `no_run` (exit 3), and the `-MergeWatch` auto-completion breaks.
 - Append events to the DB events table (push / PR open etc., `bash tools/journal_append.sh ...`).
 - Once the PR number is confirmed, monitor CI with `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX). On completion `ci_completed` is automatically recorded in events. pr-watch **returns** once CI completes (so it does not synchronously block, allowing you to proceed to review-feedback loop 2c or manual close 2b-ii).
-- **pr-watch sends a peer message to the Secretary at the moment of CI completion / merge detection / 24h timeout** (Issue #326). With default broker, `CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` arrive **push-primary** (the channel sidecar `server:org-broker-channel` co-resident in each pane injects the body into the Lead's idle session via `notifications/claude/channel`. runtime push-first 0.1.24+, transport-lab `docs/design/broker-native-roles.md` §9. channel source is `org-broker`). The Lead does not poll the events table; it advances to the next step on arrival of `CI_COMPLETED: PR #<n> ...` (and `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`). `CI_COMPLETED` received -> ask the user for merge approval -> user approval -> `PR_MERGED` received -> go to 2b-ii post-merge cleanup. `PR_MERGED_NO_RUN` is a failure case where merge was observed but no corresponding run row was found (the `no_run` terminal state of `tools/run_complete_on_merge.py`); do not proceed to post-merge cleanup -- handle by human judgment. The **fallback when push fails** is for the Lead to actively pull the body via `mcp__org-broker__check_messages` at turn start before advancing to the next step (the nudge can be a trigger but does not wake idle, so active polling is the canonical path. §9.6). Furthermore, in plain shells / CI without the broker daemon running, peer/channel delivery cannot succeed at all, so as before, fall back to polling the events table.
-  - **With `ORG_TRANSPORT=renga` (opt-in)**: pr-watch in-band pushes `<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...` (and `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`) at the same instant. The semantics and branching of the message body are identical to broker. In plain shells / CI without `RENGA_SOCKET` set, peer-send is a silent noop and falls back to polling the events table as before.
+{{> org-pull-request-recv-model }}
 - **Right before "CI_COMPLETED received -> ask user for merge approval", emit an awaiting_user notification (Issue #28)**: this tells the attention watcher that the user is stopped while awaiting merge approval:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"
@@ -82,7 +81,7 @@ When the Lead launches `tools/pr-watch.sh` / `tools/pr-watch.ps1` from inside Cl
 
 If a human provides feedback / fix instructions, or if CI fails and the user says "have them fix it":
 
-- Send additional instructions to the worker via org-broker (`to_id="worker-{task_id}"`).
+- Send additional instructions to the worker via {{SERVER}} (`to_id="worker-{task_id}"`).
 - If the additional instructions are a trivial fix (CI output formatting / typo / comment fix etc.), explicitly state **verification depth `minimal`** and tell them to reply with only a single line `done: {short commit SHA} {changed file names}` (the format follows [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md)).
 - **Move the run back to IN_PROGRESS via the DB** (`run.status='in_use'`, do not edit markdown directly. The post-commit hook regenerates `.state/org-state.md`):
   ```bash
