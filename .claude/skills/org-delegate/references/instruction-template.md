@@ -11,6 +11,8 @@ Instructions for permissions, reporting destination, SUSPEND handling, and knowl
 > The contract SoT is [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, ratified 2026-06-14) + the trailing "Ratified amendment (2026-06-15): push-primary delivery" (S3; **broker push-primary is the contract default**, pull retained as structural fallback). Design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary) / `docs/design/ja-migration-plan.md` §5, §8. **Opt-in `renga` is not removed; it is retained as an always-available fallback** (the revert safety net). Running broker is the default operational path.
 
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the `send_message` that delivers this template is **default `renga`** (`ORG_TRANSPORT` unset) and uses `mcp__renga-peers__send_message`. Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified name gets machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape identical), the worker-side receive is not an in-band push but a **pane-local nudge + `mcp__org-broker__check_messages` pull**, and the address specification (`to_id="{report_target}"`) for completion / progress reports has the same shape. See [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) and the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) for details. The default-renga instruction text is unchanged (broker is additive).
+
 ## Template
 
 ```
@@ -60,7 +62,12 @@ The default is `full`. Only for a trivial fix should the Lead choose and fill in
 
 - **full** (new feature implementation / fix / refactor / test addition / hook, skill, or config edits, and anything else involving code or behavior changes)
   - **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs into these directories. If you learn something that includes such information, do not record it; escalate to the Lead (secretary) instead.
-  - **Required regardless of whether codex is present**: run the repository's normal verification steps such as the existing test suite / lint / type-check until green, and report using the normal completion format (deliverable summary, remaining work, PR draft / retrospective record)
+  - **Required regardless of whether codex is present**: run the repository's normal verification steps such as the existing test suite / lint / type-check until green, and report using the normal completion format (deliverable summary, remaining work, PR draft, retrospective record, **human-comprehension summary**)
+  - **Human-comprehension summary (`full` only, required)**: So that the Lead can understand "what is about to be approved" without reading the code and use this directly in the approval presentation to the user, every completion report MUST include the following 3 items. This is part of the full-mode completion report (`worker_completed`) that triggers the `awaiting_review` (REVIEW) transition; the contract invariants ([`docs/contracts/delegation-lifecycle-contract.md`](../../../../docs/contracts/delegation-lifecycle-contract.md) T4 / T5) are not changed — only the report format is extended:
+    1. **The N most important changes**: List what this task actually changed, in order of impact, N items (rough guide 3-5). Each item in 1-2 lines so that the gist is clear without opening the diff
+    2. **Files / hunks that require review**: The files (and the relevant function / hunk) that the human must read before approval. Narrow it down to "look at this part specifically", not "look at everything"
+    3. **Design decisions and rationale**: The design choices adopted and why. If there was a rejected alternative, add a 1-line note
+    - The summary is not required in minimal mode (so as not to load trivial fixes; the 1-line `done:` report below stays as-is)
   - **Additional gate (optional)**: after completing the commit, if the `codex` CLI is available, run a Codex self-review with `codex exec --skip-git-repo-check`
     - Check command: `command -v codex` (Bash/zsh) / `Get-Command codex -ErrorAction SilentlyContinue` (PowerShell)
     - In environments where codex is not installed, skip the self-review and proceed to the completion report with only the normal verification above (the round rules below do not apply)
@@ -70,6 +77,11 @@ The default is `full`. Only for a trivial fix should the Lead choose and fill in
     - Minor / Nit findings should generally be left as-is. Document them as known limitations in the README / Issue / PR body
     - Do not use the `codex:rescue` skill (there have been hangs longer than 18 minutes; running `codex exec` directly is more stable)
   - Review instruction example: `codex exec --skip-git-repo-check "Review the diff in this branch from main. Classify findings as Blocker/Major/Minor/Nit, and for each finding include the target file:line number and rationale, concisely in Japanese"`
+  - **Canonical execution form** (Windows / worktree measured findings: `knowledge/curated/codex.md`):
+    - `codex exec --skip-git-repo-check "<prompt>" > tmp/codex-review-<task-id>-round<N>.log 2>&1 < /dev/null &` — explicitly close stdin with `< /dev/null` and write directly to a per-round log file. Do not pipe a running `codex exec` through `| tail` (buffering makes the output look empty). Change the log filename each round (if two processes write to the same file with `>`, the output gets interleaved).
+    - For completion detection, wait for **process exit** rather than the `tokens used` marker at the end of the log (example: `until ! tasklist | grep -qi codex; do sleep 10; done`. The marker can be delayed in output timing or buried among intermediate echoes).
+    - On Windows PowerShell Constrained Language Mode, codex probes frequently fail with `rejected: blocked by policy`, but codex falls back to other means and completes. **Do not misjudge frequent blocks as a review failure.**
+    - Do not call it done after reading only codex's verdict summary (e.g., "no Blockers"). After exit, check the end of the log (e.g., `tail -c 8000`; reading the full log can exceed the 256KB Read limit) for **residual-risk self-declaration** (verifications skipped due to policy blocks), manually re-run any skipped items on the worker side, and only then report "codex clean".
 
 - **minimal** (trivial fix: CI output formatting / typo / comment correction / aligning to an existing test format, etc., where the instructed changes are limited to a few lines in a single file)
   - Apply the instructed fix → `git add` → go straight to `git commit`
@@ -132,6 +144,15 @@ Example Worker instructions:
 
 If the old name / new name has not yet been finalized at the time of delegation, have the Worker operate in two stages: "detect and list target patterns → confirm with the Lead → replace".
 
+## Mandatory brief wording for delegations involving monitoring-role wait design
+
+For delegations that change waits / spawn coordination / lifecycle of a monitoring role (`/loop`-resident, periodically-polling roles such as dispatcher / curator), include the following mandatory wording **verbatim** in the "Constraints" section of the worker instructions (**do not omit it even when only 1 file changes**. For the design-review-side trigger and 3-question prompt, see [`.claude/skills/org-delegate/references/codex-design-review.md`](codex-design-review.md)):
+
+> - **Do not add a blocking wait** to a monitoring role (no sleep / busy-wait / synchronous join for completion waits)
+> - **Return immediately** after spawn and hand control back to the monitoring loop
+> - Completion-notice detection happens on the **loop's regular cycle** (the next polling pass)
+> - **The loop side manages the timeout** (the spawn caller must not wait)
+
 ## doc-audit role only: chunked transfer method for write artifacts
 
 In the doc-audit role, Edit / Write / MultiEdit / NotebookEdit are denied, and Bash heredoc is also blocked by the deny-circumvention safeguard. In tasks that require writing out artifacts such as `AUDIT.md`, incidents reproducibly occur where the Worker gets stuck holding the body text (example: 2026-05-03 readme-drift-audit, 26 findings × 7 repos).
@@ -187,7 +208,7 @@ Work directly in auto mode. Do not use Plan mode.
 {constraints}
 
 ## Verification Depth: {verification_depth}
-- full: run normal verification such as the existing test suite / lint / type-check until green, and after completing the commit, if the codex CLI is available, run a self-review with `codex exec --skip-git-repo-check`. For Blocker / Major findings, add a fix commit before the completion report. If the same finding category cannot be cleared after 3 rounds, report completion immediately. Minor / Nit findings should be left as-is (document them as known limitations). **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs. Do not record learnings that include such information; escalate them to the Lead (secretary).
+- full: run normal verification such as the existing test suite / lint / type-check until green, and after completing the commit, if the codex CLI is available, run a self-review with `codex exec --skip-git-repo-check`. For Blocker / Major findings, add a fix commit before the completion report. If the same finding category cannot be cleared after 3 rounds, report completion immediately. Minor / Nit findings should be left as-is (document them as known limitations). **The completion report MUST include a human-comprehension summary**: (1) the N most important changes in order of impact (rough guide 3-5 items, each 1-2 lines), (2) files / hunks that the human must read before approval, (3) design decisions and their rationale (with a 1-line note on any rejected alternative). This is so that the Lead can use it as the basis of the approval presentation to the user without reading the code. **Knowledge layer privacy (applies only in full mode when recording to `knowledge/raw/`)**: `knowledge/raw/` and `knowledge/curated/` are committed to a public OSS repository. Do not write operator-private content such as operator personal names, internal system identifiers, customer data, secrets, or internal URLs. Do not record learnings that include such information; escalate them to the Lead (secretary).
 - minimal: only for trivial fixes. Codex self-review and additional verification are prohibited. Send the completion report to the Lead as a single line (`done: <SHA> <files>`).
 
 ## Reporting Destination

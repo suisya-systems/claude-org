@@ -10,6 +10,8 @@ Acknowledgement template that the Lead sends in response to a peer message from 
 > The contract SoT is [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, ratified 2026-06-14) + the trailing "Ratified amendment (2026-06-15): push-primary delivery" (S3; **broker push-primary is the contract default**, pull retained as structural fallback). Design SoT is transport-lab `docs/design/broker-native-roles.md` §9 (push-primary) / `docs/design/ja-migration-plan.md` §5, §8. **Opt-in `renga` is not removed; it is retained as an always-available fallback** (the revert safety net). Running broker is the default operational path.
 
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the `mcp__renga-peers__send_message` in the examples below is **default `renga`** (`ORG_TRANSPORT` unset). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified name gets machine-substituted from **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** (argument shape, address specification, and ack text are identical). The worker's report-receipt is not an in-band push but a **pane-local nudge + `check_messages` pull**, so the Lead's order becomes "see the nudge → pull the body via `mcp__org-broker__check_messages` → ack" (the ack-mandatory / dead-lock prevention nature is invariant across systems). See [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) and the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) for details. The default-renga example texts are unchanged (broker is additive).
+
 ## Why ack is mandatory
 
 - worker-claude-template instructs workers to end completion / progress reports with "Holding the pane. Awaiting next instructions."
@@ -42,6 +44,8 @@ mcp__org-broker__send_message(
   message="Completion report received. I'll now report to the user, get approval, and the Lead will perform the push / PR creation. Hold the pane and stand by. If CI fails or review feedback arrives, I'll send the next instruction in the same pane."
 )
 ```
+
+(If a full completion report omits the "human-comprehension summary", do not define a special ack for it; treat it as ordinary review feedback and ask the same pane to supply it. See [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 5 (2a) / [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) 2c for the procedure.)
 
 ### Codex self-review round-completion ack
 

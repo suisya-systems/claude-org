@@ -31,6 +31,8 @@ The real concern is "search-surface noise", not the raw skill count.
 
 This skill mechanically checks 3 dimensions (deprecation / consolidation / owner-missing) and sends a consolidated change proposal to the Lead Claude. It never deletes or modifies a skill on its own.
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the `mcp__renga-peers__send_message` that sends change proposals to the Lead at the end is written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`**, receive is not an in-band push but a **pane-local nudge + `check_messages` pull**, and errors gain the broker-specific codes (see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii); the contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification). The default-renga procedure is unchanged (broker is additive).
+
 ## Step 1: trigger condition (state-based)
 
 If neither condition below is met, **exit immediately** (no log, no report).
