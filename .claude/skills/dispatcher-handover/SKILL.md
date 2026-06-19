@@ -29,6 +29,8 @@ carries the current monitoring state and the Dispatcher's standing as an
 org member into the next session. After writing, notify the Secretary
 to "once you ack, send_keys `/clear` → `/dispatcher-resume`".
 
+> **Transport layer — both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this skill's `mcp__renga-peers__*` calls (the handover notification `send_message` etc.) are written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`**, the ack receive from secretary is not an in-band push but a **pane-local nudge + `check_messages` pull**, the secretary's `/clear` → `/dispatcher-resume` keystrokes use `mcp__org-broker__send_keys` in the same shape, and errors gain the broker-specific codes (see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). See the "Transport layer (transport) both systems" section of [`.dispatcher/CLAUDE.md`](../../../.dispatcher/CLAUDE.md) and [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) for details. The default-renga procedure is unchanged (broker is additive).
+
 > **Key preconditions**:
 > - This skill is run by the **Dispatcher itself** (cwd `.dispatcher/`).
 >   It is not invoked directly from the Secretary.
@@ -135,7 +137,7 @@ Format (YAML frontmatter + markdown):
 
 ```markdown
 ---
-created_at: <UTC ISO8601>
+created_at: <output of `date -u +%Y-%m-%dT%H:%M:%SZ`. Deterministic UTC; JST-as-Z forbidden>
 dispatcher_pane: <pane_id> / peer=<peer_id>
 active_worker_count: <int>
 event_cursor_present: <true | false>
@@ -174,6 +176,16 @@ pending_decisions_count: <int>
 
 **Writing notes**:
 - Write as "a memo to your next self", not as "past logs".
+- For `created_at`, paste the output of **`date -u +%Y-%m-%dT%H:%M:%SZ`**
+  (on PowerShell: `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`)
+  directly. Do not hand-write a local (JST) time and tag it with `Z`
+  (JST-as-Z forbidden). [`/dispatcher-resume`](../dispatcher-resume/SKILL.md)
+  evaluates `now - created_at` against a 7-day freshness window
+  (cold-start vs resume branch) using this `created_at`, so a future
+  timestamp slipping in will skew the decision. Align with the policy of
+  keeping all timestamps in Dispatcher state files in UTC (see the timestamp
+  convention at the top of
+  [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)).
 - Never write secrets / tokens / passwords.
 - Assume the Secretary / human may also read this file.
 
