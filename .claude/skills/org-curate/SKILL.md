@@ -29,6 +29,8 @@ allowed-tools:
 
 Read the raw learnings accumulated under `knowledge/raw/`, classify and consolidate them, and write them to `knowledge/curated/`.
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: this skill's `mcp__renga-peers__*` calls (`send_message` to secretary / dispatcher) are written for **default `renga`** and can be followed as-is when `ORG_TRANSPORT` is unset (default behavior unchanged). Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified names get machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`**, receive is not an in-band push but a **pane-local nudge + `check_messages` pull** (the CURATE_DONE direct `send_message` to the dispatcher → dispatcher-side `check_messages` wait path only changes its tool name under broker; the logic is the same), and errors gain the broker-specific codes (see the broker section in [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)). The design SoT is transport-lab `docs/design/ja-migration-plan.md` §5.2(ii); the contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification). The default-renga procedure is unchanged (broker is additive).
+
 **Launch model (on-demand)**: this skill executes exactly one cycle per activation (`/loop` is forbidden).
 Threshold judgment is consolidated into the external script [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py);
 there is **no** internal gate like "exit immediately if fewer than 5 raw entries" inside this skill.
