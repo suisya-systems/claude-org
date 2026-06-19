@@ -15,8 +15,9 @@
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
 
 ### Windows 環境の注意事項
-- Python 実行時は `python` ではなく `py -3` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合がある）
+- Python 実行時は `py -3` または `python` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合があり、`py -3` も py launcher が別の Python 環境を指す場合がある。起動直後に `--version` で意図したバージョンか確認し、動作する方を使うこと）
 - 日本語を含むファイルを扱う場合は `encoding="utf-8"` を明示すること
+- CLI / 標準出力を持つツールを実装する場合、CLI へ出力される文字列（argparse の `help=` / `print()` など）には ASCII の `-` を使い、em-dash（`—` U+2014）等 cp932 で encode できない文字を含めないこと。含めると cp932 コンソールでの `--help` 実行時に `UnicodeEncodeError` でクラッシュする（pytest は `redirect_stdout` で UTF-8 キャプチャするため検出できず、実端末でのみ落ちる）。実装後は `--help` を実端末で 1 回スモークすること
 
 ## プロジェクト情報
 - プロジェクト名: ${project_name}
@@ -68,6 +69,11 @@ codex exec --skip-git-repo-check "このブランチの main からの差分を�
 - Minor / Nit は原則残置し PR 本文に既知制限として明記
 - `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec` 直打ちのみ）
 
+**完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
+1. **最重要の変更点（N 個）**: このタスクで実際に変えたことを効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
+2. **要確認ファイル / hunk**: 人間が承認前に必ず目を通すべきファイル（と該当する関数 / hunk）。「全部見て」ではなく要点に絞る
+3. **設計判断と理由**: 採用した設計上の選択と、なぜそれを選んだか（却下した代替案があれば 1 行）
+
 <!--END:codex_full-->
 <!--BEGIN:codex_minimal-->
 ## Codex セルフレビュー手順（検証深度 minimal）
@@ -86,7 +92,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 <!--END:codex_minimal-->
 ## 作業完了時
 
-1. **完了報告**: `mcp__renga-peers__send_message(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。`to_id="secretary"` が `[pane_not_found]` で返る場合は DELEGATE メッセージ本文の numeric pane id を使用する。
+1. **完了報告**: `${transport_send_message}(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。`to_id="secretary"` が `[pane_not_found]` で返る場合は DELEGATE メッセージ本文の numeric pane id を使用する。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
 3. **振り返り記録**: 再利用可能な学びがあれば `${claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md` に記録する（topic は英語 kebab-case）。記録基準: 再現性がある / 非自明 / コードを読むだけではわからない。
 
