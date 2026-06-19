@@ -3,6 +3,8 @@
 Task-specific instructions sent via renga-peers `send_message` (`to_id="worker-{task_id}"`).
 Instructions for permissions, reporting destination, SUSPEND handling, and knowledge logging are centralized in `worker-claude-template.md` (via `CLAUDE.md`), so they are not repeated here.
 
+> **Transport layer both systems (`ORG_TRANSPORT`: default `renga` / opt-in `broker`)**: the `send_message` that delivers this template is **default `renga`** (`ORG_TRANSPORT` unset) and uses `mcp__renga-peers__send_message`. Under `ORG_TRANSPORT=broker` (opt-in, revertible), the fully qualified name gets machine-substituted to **`mcp__renga-peers__*` → `mcp__org-broker__*`** (argument shape identical), the worker-side receive is not an in-band push but a **pane-local nudge + `mcp__org-broker__check_messages` pull**, and the address specification (`to_id="{report_target}"`) for completion / progress reports has the same shape. See [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8 (awaiting ratification) and the broker section of [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) for details. The default-renga instruction text is unchanged (broker is additive).
+
 ## Template
 
 ```
