@@ -2,6 +2,8 @@
 
 > **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 12 open questions. This contract defines the abstract backend surface that the `claude-org` harness depends on; renga 0.18.0+ is the reference implementation, but any backend meeting the surface specified here is permitted.
 >
+> **Ratified amendment (2026-06-14 — Epic #6 broker dogfood #515 passed)**: a second reference backend — **`org-broker`** (the pure-backend broker extracted into `claude_org_runtime.broker`, driven by terminal adapters tmux/WezTerm) — is added as an **additive** amendment. The amendment introduces a new [Surface 8 (Broker auth & delivery)](#surface-8-broker-auth--delivery-ratified-amendment) and short per-surface broker notes on Surfaces 1–6; it does **not** modify any ratified normative text above. Renga (`renga-peers`) remains the **default** backend (`ORG_TRANSPORT` unset = `renga`); broker is **opt-in** (`ORG_TRANSPORT=broker`) and renga is never removed (opt-in fallback / rollback safety). Ratification was gated on the Epic #6 dogfood (transport-lab `docs/design/ja-migration-plan.md` §8 Issue G), which **passed** (unattended auto-delegation cycle completed end-to-end under renga/broker coexistence; runtime main 95855d3, re-verified 2026-06-14). Each broker note below is marked **“Broker amendment (ratified)”**. Two known limitations are ratified with the surface and recorded in [Surface 8](#surface-8-broker-auth--delivery-ratified-amendment) (folder-trust auto-approval wiring unverified — ja#566; host-reject silent-drop class — runtime#81); both affect the opt-in broker path only and renga stays the default + always-available fallback, so the risk is bounded.
+>
 > **Scope**: Phase 1 Contract Set D only. Sets A (roles), B (delegation lifecycle), C (state), and E (knowledge) are tracked in #121 / #122 / #124 / #125 and out of scope here.
 >
 > **Subject**: Set D defines the abstract API that any backend must provide for `claude-org` to operate. Today the only implementation is **renga** (`mcp__renga-peers__*` MCP server, renga 0.18.0+). This contract documents what the harness *requires*, not what renga *happens to provide* — alternative backends are permitted as long as they meet the surface specified here.
@@ -24,6 +26,8 @@
 ## Surface 1: Pane control
 
 The backend MUST expose primitives to spawn, enumerate, identify, and close "panes" (process-bearing rectangles in a tiling terminal). Per the Lead-ratified decisions: `inspect_pane`, `send_keys`, and `list_panes` geometry are REQUIRED; the per-runtime spawn helpers (`spawn_claude_pane`, `spawn_codex_pane`) and a graceful-exit operation are OPTIONAL (backends may provide them, but harnesses must be able to drive a generic spawn with flag injection); `focus_pane` and `new_tab` are user-affordance surfaces that backends SHOULD provide but the harness does not depend on for correctness. All operations are scoped to a single tab (see Surface 4 — Identity & addressing).
+
+> **Broker amendment (ratified)**: `org-broker` provides the generic `spawn_pane` plus `spawn_claude_pane` / `spawn_codex_pane` convenience helpers (§1.2/§1.3) and `close_pane` / `list_panes` / `inspect_pane` / `send_keys` / `set_pane_identity`; it intentionally **omits** `focus_pane` and `new_tab` (exercising the OPTIONAL latitude of §1.6/§4.3). Broker spawn helpers inject `--mcp-config <broker>` (not `--dangerously-load-development-channels`) and build the interactive-TUI argv internally behind a default-deny billing-neutral guard. `list_panes` output fields carry broker semantics (§1.5 note, [Surface 8](#surface-8-broker-auth--delivery-ratified-amendment) §8.5/§8.8/§8.9).
 
 ### 1.1 spawn (generic)
 
@@ -69,6 +73,8 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Operation**: enumerate every pane in the current tab.
 - **Outputs**: per-pane records containing `id`, optional `name`, optional `role`, `focused` flag, terminal geometry (`x`, `y`, `width`, `height` in cell units), `cwd`, optional `summary` (see 2.4), and when known the peer client kind / receive mode (push vs poll).
 - **Required for**: balanced-split target selection (`org-delegate` Step 3-1), reconciliation of missed lifecycle events (`.dispatcher/references/worker-monitoring.md` watch-loop Step 3), bootstrap identity verification (`org-start` Step 0.3).
+
+> **Broker amendment (ratified)**: under `org-broker` the `cwd`, `kind`, and `receive_mode` fields are populated with broker semantics — `cwd` is known at spawn-time token bind, `kind` reflects the broker client, and `receive_mode` is the constant `"poll"` (broker delivers all peers pull-style — there are no push peers; [Surface 8](#surface-8-broker-auth--delivery-ratified-amendment) §8.4/§8.8). Geometry, `id`, `focused`, and the rest of the record are unchanged. Where the ratified text says these fields are present "when known", broker makes them deterministic per §8.8.
 - **Visibility scope**: current tab only. Panes in other tabs MUST NOT appear.
 - **Required-vs-optional**: REQUIRED. The backend MUST expose `x` / `y` / `width` / `height` in cell units on every `list_panes` record. The harness's balanced-split scheduling depends on it; a backend without geometry would require an entirely different scheduling strategy and the harness cannot operate against such a backend without contract amendment.
 
@@ -111,6 +117,8 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 
 The backend MUST provide a logical peer-messaging channel separate from raw PTY input.
 
+> **Broker amendment (ratified)**: `org-broker` keeps the same messaging tools (`send_message` / `list_peers` / `check_messages` / `set_summary`, same argument shapes), but delivery is **pull for every recipient** — `send_message` queues the body and emits a pane-local nudge, and the recipient drains it via `check_messages` (2.3). There is no push (in-band `<channel>`) delivery under broker. The channel source label becomes `source="org-broker"` (a transport tag — still non-normative per 2.1's HYBRID encoding rule; harnesses MUST NOT route on it). The `from_id` / `from_name` / `sent_at` semantic fields remain contracted and unchanged. `list_peers` output `cwd` / `kind` / `receive_mode` carry broker semantics ([Surface 8](#surface-8-broker-auth--delivery-ratified-amendment) §8.4/§8.8). On transport loss broker raises an error code per §8.7 (no ok-text shim — broker has no §6.3 carve-out).
+
 ### 2.1 send_message
 
 - **Operation**: deliver a text payload to another pane in the same tab.
@@ -150,6 +158,8 @@ The backend MUST provide a logical peer-messaging channel separate from raw PTY 
 
 The backend MUST expose pane lifecycle events via a long-poll API with cursor-based resume.
 
+> **Broker amendment (ratified)**: `org-broker` exposes the same `poll_events` long-poll API and the same minimum vocabulary (`pane_started` / `pane_exited` / `events_dropped`). Because terminal backends (tmux/WezTerm) have no native lifecycle push, broker **synthesizes** these events from `list_panes` diff reconciliation (transport-lab `docs/design/ja-migration-plan.md` §6 — backend-agnostic, exactly-once `pane_exited`, `events_dropped` on overflow with `list_panes` reconcile recovery). This satisfies the §3.1 best-effort + reconciliation contract (Q9) without change; the cursor/timeout semantics (initial-call = "now", 30 s hard cap) are identical.
+
 ### 3.1 poll_events
 
 - **Operation**: long-poll for pane lifecycle events.
@@ -169,6 +179,8 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 ---
 
 ## Surface 4: Identity & addressing
+
+> **Broker amendment (ratified)**: `org-broker` resolves `target` by the same three addressing kinds as renga — numeric/all-digit handle, stable `name`, and the literal `"focused"` — preserving the §4.1 all-digit-is-id disambiguation rule. Broker honours the SINGLE-TAB MUST scope (§4.2). `new_tab` (§4.3) is **not** provided by broker (OPTIONAL surface; harnesses already tolerate its absence). The reserved-name convention (§4.1) is unchanged.
 
 ### 4.1 Pane identifiers
 
@@ -193,6 +205,8 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 ---
 
 ## Surface 5: Authentication / channel
+
+> **Broker amendment (ratified)**: under `org-broker` the dev-channel flow of §5.1 is replaced by a **bind-token + folder-trust** flow (detail in [Surface 8](#surface-8-broker-auth--delivery-ratified-amendment) §8.2/§8.5). The spawn helper injects `--mcp-config <broker>` instead of `--dangerously-load-development-channels server:<channel>`; the Claude-side approval prompt is the **folder-trust** prompt (a Claude Code feature, not a backend feature), machine-approved by the orchestrator via `send_keys(enter=true)` — structurally the same "spawn → approve prompt → peer joins" shape as §5.1, so §1.9 `send_keys` remains REQUIRED. Authentication itself (which renga leaves to the channel) is carried by a per-agent broker bind token with an immutable permission tier (§8.2/§8.3). The §5.2 transport-agnosticism statement already permits this: broker's channel transport is a localhost HTTP MCP server (§8.6).
 
 ### 5.1 Dev-channel injection
 
@@ -236,6 +250,8 @@ The backend MUST surface failures via a machine-readable code, not by message-st
 - New codes MAY be added at any time. Callers MUST treat unknown codes as non-fatal (default-branch in case analysis), so backends can extend the vocabulary without breaking conformance.
 - The human-facing message MAY change freely; only the `[<code>]` prefix is contracted.
 
+> **Broker amendment (ratified)**: `org-broker` reuses the shared codes where semantics match (`pane_not_found`, `last_pane`, `invalid-params`) and **adds** the broker-specific codes catalogued in [Surface 8](#surface-8-broker-auth--delivery-ratified-amendment) §8.7 (`token_invalid`, `session_invalid`, `tool_not_authorized`, `peer_not_found`, `name_taken`, `no_backend`, `nudge_failed`, `unknown_tool`). These are additive per the 6.2 rule above; renga harnesses are unaffected and broker harnesses default-branch any unknown code.
+
 ### 6.3 ok-text exceptions (today's renga behavior)
 
 Today renga returns ok-text (NOT a JSON-RPC error) on backend-unreachable for two ops only:
@@ -251,6 +267,132 @@ All other ops raise on unreachable.
 ## Surface 7: Backwards-compatibility commitment
 
 The backend surface MUST follow semantic versioning. Breaking changes — operation removal, parameter removal, error-code rename without a deprecation window — MUST bump the major version. New operations, new parameters with safe defaults, and new error codes MAY be added in minor versions. Renames of error codes MUST go through a deprecation window with both the old and new code emitted in parallel for at least one minor version (consistent with the existing 6.2 stability requirements).
+
+---
+
+## Surface 8: Broker auth & delivery (ratified amendment)
+
+> **Status of this surface**: **Ratified 2026-06-14** (Epic #6 broker dogfood #515 passed). Surfaces 1–7 are ratified (2026-05-03) and describe the **renga** reference backend; this section is **additive** and introduces a **second** reference backend, **`org-broker`** (the pure-backend broker extracted into `claude_org_runtime.broker`, driven by terminal adapters `tmux` / `wezterm`). It modifies no ratified normative text. Renga (`renga-peers`) stays the **default** (`ORG_TRANSPORT` unset = `renga`); broker is **opt-in** (`ORG_TRANSPORT=broker`) and renga is never removed (opt-in fallback / rollback safety). Ratification was gated on the Epic #6 dogfood (transport-lab `docs/design/ja-migration-plan.md` §8 Issue G), which **passed**: the unattended auto-delegation cycle completed end-to-end under renga/broker coexistence (runtime main 95855d3, re-verified 2026-06-14). Design SoT for everything below: transport-lab `docs/design/ja-migration-plan.md` §3 (compat surface), §4 (runtime extraction), §5 (ja seam). Reference implementation: `claude_org_runtime.broker` (server / tokens / surface) 0.1.17.
+>
+> **Known limitations (ratified with the surface; opt-in `ORG_TRANSPORT=broker` path only):**
+> - **(1) folder-trust auto-approval wiring is unverified** — the §8.5 spawn ritual's folder-trust machine-approval (the `send_keys(enter=true)` step at `.dispatcher/references/spawn-flow.md` 3-3b) is not yet verified end-to-end as auto-wired. Tracked as **ja#566**, which is an `org-start` operational item distinct from the delivery cycle that the dogfood exercised.
+> - **(2) host-reject silent-drop class persists** — `/confirm-delivered` is an **emit gate**, not a host-accept gate, so a host-side reject of a delivery is not surfaced back to the sender (a silent-drop class remains on the host-reject path). Tracked as **runtime#81**.
+>
+> Both limitations are limited-risk: they affect only the opt-in broker path, and renga remains the **default** and an always-available fallback (rollback safety, §8.10).
+
+### 8.1 Transport identity & coexistence
+
+- The broker MCP server name is **`org-broker`** (deliberately distinct from `renga-peers`), so fully-qualified tool names become `mcp__org-broker__<tool>` (renga: `mcp__renga-peers__<tool>`). The distinct name lets both servers be registered in the same machine/session without collision, which is what makes opt-in / staged migration / rollback safe (design §3.4).
+- "Drop-in compatibility" holds at the **argument-shape and semantics** level (so harness logic / retraining is minimized); the FQ tool-name prefix and the per-role MCP allowlist strings are mechanically rewritten by the generation seam, not by the contract. Renga remains the default and the byte-stable baseline.
+
+### 8.2 Authentication — per-agent bind tokens
+
+- The backend issues a **per-agent bind token** at spawn (reference impl: `secrets.token_urlsafe(32)`). Every subsequent MCP call from that agent is authenticated by its token; an unknown/invalid token raises `token_invalid` (§8.7).
+- Each token carries an **immutable permission tier** (`auth_role`) decided at issue time. The display `role` (mutable via `set_pane_identity`, Surface 1.8) is **decoupled** from `auth_role` and CANNOT escalate the tier — `set_pane_identity` changes the label only. This is a structural strengthening over renga, where `role` is purely a display label and the allowlist is the only gate.
+- A spawned child's tier is **capped at the caller's tier** (a caller cannot grant a child more authority than it holds). This bounds privilege flow through the spawn tree.
+
+### 8.3 Tier-gated surface (structural authorization)
+
+- The broker filters `tools/list` by the caller's `auth_role`, so out-of-tier tools are **not even visible** to a lower tier; invoking one anyway raises `tool_not_authorized` (§8.7). Tiers:
+  - **messaging tier** (`worker` / `curator` / unknown role): `send_message`, `check_messages`, `list_peers`, `set_summary` (4 tools).
+  - **ops tier** (`dispatcher` / `secretary`): the messaging four **plus** pane control (`list_panes`, `inspect_pane`, `send_keys`, `poll_events`, `close_pane`, `set_pane_identity`, `spawn_claude_pane`, `spawn_codex_pane`; `secretary` additionally gets generic `spawn_pane` for the attention-watcher).
+- This is **defense-in-depth**: structural tier gating at the backend is the primary gate; the settings MCP allowlist (per-role) is a second, redundant gate. Under renga every role sees the same surface and the allowlist is the *only* gate — broker is strictly stronger here, not a regression.
+
+### 8.4 Delivery model — pull for every recipient
+
+- `send_message` **queues** the body and emits a **pane-local nudge** to the recipient; the recipient retrieves the body via `check_messages` (Surface 2.3). This applies to **all** recipients — there is no push (in-band `<channel>`) delivery under broker.
+- Consequence for harness prose: the renga receive cue "when a `<channel>` notification arrives, ack" becomes "when a nudge line appears, run `check_messages`, then ack" under broker. The `from_id` / `from_name` / `sent_at` semantic fields (Surface 2.1 HYBRID rule) are unchanged; only the transport source tag differs (`source="org-broker"`).
+
+### 8.5 Spawn ritual — `--mcp-config` injection + folder-trust approval
+
+- Broker spawn helpers (`spawn_claude_pane` / `spawn_codex_pane`) inject **`--mcp-config <broker>`** (not `--dangerously-load-development-channels`) and **build the interactive-TUI argv internally** rather than accepting a caller-supplied `argv`.
+- The Claude-side approval prompt under broker is the **folder-trust** prompt (a Claude Code feature), machine-approved by the orchestrator via `send_keys(enter=true)` — the same "approve the spawn prompt" shape as renga's dev-channel approval (Surface 5.1), so Surface 1.9 `send_keys` stays REQUIRED.
+- **Billing-neutral guard (maintenance contract continues)**: because broker builds the argv, the interactive-TUI guard checks the **builder's own output** (structurally an interactive TUI) rather than caller argv. The guard is a **default-deny allowlist**: headless / non-interactive subcommands and flags (claude/codex `exec` / `review` / `*-server` / `apply` / `sandbox` / `completion` / unknown subcommands / bare positionals / `--` bypass) are rejected with `invalid-params`. New legitimate interactive flags require an allowlist extension; headless surfaces are never added (design §3.3-1/§3.3-6, §7.6 lineage).
+
+### 8.6 Channel transport — localhost HTTP MCP
+
+- The broker is a **localhost-only HTTP MCP server** (bound to `127.0.0.1`). Surface 5.2 already declares the channel transport backend-defined; this records the concrete broker choice.
+- This is a **host-local exception** to `docs/non-goals.md` §12 ("no external HTTP MCP exposure"): the broker is not externally reachable, introduces no TLS / network-boundary / external-auth surface, and stays inside the "local-completeness" operating discipline. See the §12 amendment in `docs/non-goals.md`.
+
+### 8.7 Broker error vocabulary (extends Surface 6)
+
+Additive codes (the `[<code>]` prefix form of Surface 6 applies unchanged). Renga harnesses never see these; broker harnesses default-branch any unknown code (6.2).
+
+| Code | Meaning | Issued by |
+|---|---|---|
+| `token_invalid` | Bind token is unknown / malformed / revoked. | All authenticated ops. |
+| `session_invalid` | Broker session for this agent is gone (daemon restarted, bind dropped). | All authenticated ops. |
+| `tool_not_authorized` | Caller's `auth_role` tier does not include the requested tool (§8.3). | Tier-gated ops. |
+| `unknown_tool` | Tool name not in the broker catalogue. | All ops. |
+| `peer_not_found` | `send_message` / messaging target id or name does not resolve. | messaging ops. |
+| `name_taken` | Spawn / `set_pane_identity` name collision (broker's spelling of renga's `name_in_use`). | spawn family, `set_pane_identity`. |
+| `no_backend` | The terminal adapter (tmux/WezTerm) is unavailable — the "adapter_unavailable" condition. | pane-control ops. |
+| `nudge_failed` | The pull nudge could not be delivered to the recipient pane. | `send_message`. |
+
+> Mapping note for prose (design §5.2 ii names the broker error additions as `token_*` / `nudge_failed` / `adapter_unavailable`): `token_*` = `token_invalid` + `session_invalid`; `adapter_unavailable` = `no_backend`; tier gating adds `tool_not_authorized`. `name_taken` is the broker spelling of the shared `name_in_use` semantics.
+
+### 8.8 Output-field semantics (amends §1.5 / §2.2)
+
+- Under broker, `list_panes` / `list_peers` records populate `cwd` (known at spawn-time token bind), `kind` (broker client kind), and `receive_mode` deterministically. `receive_mode` is the **constant `"poll"`** — broker has no push peers. Where the ratified §1.5/§2.2 wording says these fields appear "when known" / "optional", broker makes them deterministic; this is an *amendment to the output-field documentation*, not a change to the renga shape (renga keeps its existing optional/"when known" behavior).
+
+### 8.9 Surfaces intentionally not provided
+
+- `new_tab` (§4.3) and `focus_pane` (§1.6) are **omitted** from the broker surface — both are already OPTIONAL / SHOULD (no harness correctness flow depends on them), and harnesses already MUST tolerate their absence. This is a deliberate scope decision (design §3.1), not a gap.
+
+### 8.10 Coexistence, default, and rollback
+
+- `org-broker` and `renga-peers` use distinct MCP server names and MAY be registered simultaneously; the `ORG_TRANSPORT` flag selects which the harness drives (org-wide single value — not mixed per-pane).
+- Renga is the **default** and is **never removed** — it is retained as the opt-in fallback / rollback target. A `transport=renga` rollback re-points the *next* spawned pane at renga; full rollback of an active broker deployment additionally requires settings regeneration, respawn of active broker panes, ordered broker-daemon stop, and token/queue-store teardown (design §5.5).
+
+### 8.11 SemVer
+
+- The broker surface follows the Surface 7 SemVer commitment. The runtime release that adds broker is **additive** (existing renga API unchanged), consumable within ja's `<0.2` pin window as a minor bump.
+
+---
+
+## Ratified amendment (2026-06-15): push-primary delivery via `claude/channel`
+
+> **Status: RATIFIED 2026-06-15** (human ratification gate cleared; ja PR #583). This section is an **additive amendment** (S3) and **deletes no prior ratified normative text above**. It **supersedes the pull-only broker delivery semantics** of §2.1 / §2.3 / §5 / §8: under broker, **push-primary (`claude/channel`) is now the contracted delivery model, with pull retained as the structural fallback layer** — the prior pull-only wording is not removed but now reads as the fallback path. Surface 8 (and the per-surface broker notes on Surfaces 1–6) was ratified 2026-06-14 describing broker delivery as **pull for every recipient** (§8.4) with a `--mcp-config` + folder-trust spawn ritual (§8.5) and `receive_mode` constant `"poll"` (§8.8); the runtime then moved to **push-first** delivery (transport-lab PR #24, `claude_org_runtime` 0.1.24+), and this amendment brings the contract into line with that implementation.
+>
+> **Design SoT**: transport-lab `docs/design/broker-native-roles.md` §9 (push-primary redesign, β architecture: daemon authority + per-session channel sidecar) and `docs/design/ja-migration-plan.md` §8 (#18 追補). **Precondition — SATISFIED**: the §9.5 **K1 pre-ratification spike** (Claude Code harness loads a tool-less `claude/channel` server, idle-wakes on its notifications, and coexists with renga's channel) **PASSED** (transport-lab #22 CLOSED=PASS; spike `RESULTS.md`), so the amendment's load-bearing assumption was verified before ratification; the human ratification gate was subsequently cleared (2026-06-15). Had K1 failed, the fallback would have been the claude-peers-style "tools + channel co-resident in one sidecar" form (§9.5). All changes below are **broker-branch additive and flag-gated** (`ORG_TRANSPORT=broker`); **renga (`renga-peers`) is untouched** and remains the default + always-available fallback (§8.10).
+
+### P-§1.2 spawn (Claude Code convenience) — additive dev-channel sidecar
+
+The ratified §1.2 broker note has broker spawn helpers inject `--mcp-config <broker>` and *not* `--dangerously-load-development-channels`. **Ratified (additive)**: broker spawn ALSO loads a per-session **channel sidecar** via `--dangerously-load-development-channels server:org-broker-channel` **in addition to** `--mcp-config <broker>`. The two coexist: `--mcp-config` carries the daemon (all tools + per-agent token, unchanged); the dev-channel flag loads a thin stdio MCP sidecar (`org-broker-channel`) that declares `experimental: { "claude/channel": {} }` and holds only a delivery-scoped credential (P-§8.2). This re-introduces the dev-channel injection half of §5.1 for the **sidecar only** — it does not remove the ratified `--mcp-config` injection.
+
+### P-§2.1 send_message — push-primary delivery for broker
+
+The ratified §8.4 made broker delivery pull for every recipient; this amendment supersedes that for broker. **Ratified**: broker delivery becomes **push-primary**. `send_message` queues the body (unchanged); a per-session channel sidecar claims and pushes it as a `notifications/claude/channel` notification, which the harness injects in-band into the recipient's turn (idle sessions wake — the same "delivered → ack" cue renga's in-band push provides). This realigns broker with §2.1's existing **push-mode-recipient** clause (already contracted for Claude Code) rather than restricting broker to the pull-mode clause. **Pull remains the fallback** (see P-§2.3 / §8.4-fallback): when no healthy sidecar is registered the recipient drains via `check_messages` exactly as the ratified §8.4 prescribes. The `from_id` / `from_name` / `sent_at` HYBRID semantic fields and the `source="org-broker"` transport-tag rule are **unchanged**.
+
+### P-§2.3 check_messages — three-state delivery lifecycle (additive)
+
+The ratified §2.3 contracts AT-MOST-ONCE drain ("each call returns the queue and clears it; messages are not redelivered"). **Ratified (SemVer-additive, no change to the ratified drain guarantee)**: introduce a daemon-owned **three-state lifecycle** so push delivery cannot silently lose a message when a sidecar dies mid-delivery:
+
+| State | Meaning |
+|---|---|
+| `UNDELIVERED` | queued, not yet claimed (initial; set by `send_message`) |
+| `CLAIMED(lease, owner, epoch)` | a drainer holds a lease while attempting delivery |
+| `DELIVERED` | delivery confirmed (harness-accepted); never redelivered |
+
+- Push path = **claim-then-confirm**: the sidecar claims `UNDELIVERED` rows with a lease (`/poll-claims`), emits each as `claude/channel`, then marks only the rows whose notification resolved as `DELIVERED` (`/confirm-delivered`, idempotent by id). A lease that expires unconfirmed (sidecar died) is **reaped back to `UNDELIVERED`** (re-eligible).
+- **Drain semantics restated additively**: `check_messages` drains the **`UNDELIVERED`-and-unclaimed** view (plus lease-expired rows it reclaims), taking the claim itself so it never double-delivers against a live sidecar claim or a concurrent `check_messages`. `DELIVERED` rows are never returned — preserving the ratified "not redelivered after a successful drain" guarantee. The overall lifecycle is **at-least-once + idempotent display** (duplicate display is benign; loss is fatal); the `DELIVERED` (confirmed) terminal is at-most-once, satisfying §2.3.
+- `DELIVERED` means **harness-accepted** (the `claude/channel` notification resolved at the transport), not "visibly rendered to the model" — the residual accept→visible window is exactly what at-least-once + idempotent display covers, and is part of the K1 spike measurement (§9.3).
+
+### P-§5.1 / §5.2 Authentication / channel — dev-channel approval re-introduced (additive)
+
+The ratified §8.5 replaced the §5.1 dev-channel approval with a folder-trust prompt. **Ratified (additive)**: the §5.1 dev-channel approval prompt (`Load development channel? (Y/n)`) **re-appears for the `org-broker-channel` sidecar** and is machine-approved by the orchestrator via `send_keys(enter=true)` (spawn-flow 3-3b, re-introduced). This is **in addition to** the ratified folder-trust approval of §8.5, not a replacement — a broker spawn now machine-approves both prompts. §1.9 `send_keys` stays REQUIRED (it already was). §5.2 (channel transport is backend-defined) is unchanged and already permits the localhost-HTTP daemon + stdio-sidecar split.
+
+### P-§8 Broker auth & delivery — ratified deltas
+
+- **P-§8.2 (delivery-scoped token scope, additive)**: add a `scope` field to the per-agent bind token (`full` | `delivery`). A `scope=delivery` credential authorizes **only** `/poll-claims` and `/confirm-delivered`, and only for rows where `to_id == owner` — it grants **no tool/tier authority**. The sidecar receives a `delivery`-scoped credential (NOT the agent's `full` token), so the second process cannot exercise the agent's pane-control tier. This is the trust-boundary basis that also lets the daemon distinguish sidecar-drain from agent-drain (mutual exclusion). The ratified §8.2/§8.3 per-agent `full` token and tier model are unchanged.
+- **P-§8.4 (delivery model → push-primary, fallback retained)**: amend "pull for every recipient — there is no push" to **"push-primary via the channel sidecar; pull (`check_messages`) is the structural fallback"**. Fallback triggers: sidecar absent / unhealthy (`delivery_mode=PULL` on heartbeat timeout), channel-incapable peers (codex), or claude.ai-login-absent environments. The ratified pull description becomes the documented fallback path, not the only path. **Delivery vs. reception (note for harness prose)**: the backend still emits the ratified §8.4 pane-local nudge on `send_message`, so this surface's *mechanism* is unchanged; but a nudge does NOT wake an idle session, so harness reception in fallback is the agent's **active role-cadence poll** of `check_messages` (worker turn-boundary / bounded `/loop`, dispatcher `/loop 3m`, secretary turn-prologue — design §9.6), with the nudge treated as a non-load-bearing accelerator. This keeps the contract mechanism aligned with ratified §8.4 while preventing the prose from re-introducing a nudge-dependent reception model.
+- **P-§8.5 (spawn ritual, additive)**: broker spawn injects `--mcp-config <broker>` **and** `--dangerously-load-development-channels server:org-broker-channel`, and machine-approves **both** the folder-trust prompt and the re-introduced dev-channel prompt (P-§5.1). The billing-neutral default-deny argv guard is unchanged.
+- **P-§8.8 (receive_mode → `push`, fallback `poll`)**: amend the `receive_mode` field from the constant `"poll"` to **`"push"`** for channel-capable broker peers (fallback value `"poll"` when degraded). This follows §8.4 above; it is a contract output-field amendment (the runtime descriptor that emits this field is tracked separately as transport-lab D2 and is out of ja scope). Renga's `receive_mode="push"` and its optional/"when known" shape are unchanged.
+- **Rollback note (additive to §8.10)**: the push-primary path adds new live state — a per-pane channel sidecar process, per-agent `delivery_mode`, and a delivery-scoped credential. A `transport=renga` rollback therefore gains a sixth teardown sub-step: reap each per-pane channel sidecar (SIGTERM/unregister) + reset that agent's `delivery_mode` + revoke its delivery-scoped credential. Renga still spawns no second dev-channel; the rollback stays bounded and flag-gated (design §9.7).
+
+### P-pre-ratification (K1 spike gate)
+
+The §9.5 **K1 spike** (dependency-ordered *before* this amendment and before the matching prose land) has **PASSED** (transport-lab #22 CLOSED=PASS; spike `RESULTS.md`): the Claude Code harness (i) loads a tool-less `experimental{claude/channel}` stdio server under `--dangerously-load-development-channels`, (ii) idle-wakes on its `notifications/claude/channel`, and (iii) coexists with renga's channel; the `mcp.notification` resolve visibility/failure boundary was measured (§9.3). Had K1 failed, the fallback would have been the claude-peers-style co-resident sidecar (tools + channel in one server), re-scoping P-§8.2's token from `delivery` to messaging-tier (§9.5). The K1 verdict was upstream of this ratification, not a post-hoc dogfood criterion; with K1 PASSED and the human ratification gate cleared (2026-06-15), this amendment is ratified.
 
 ---
 
@@ -283,3 +425,31 @@ The 12 Lead-confirmed decisions above cluster as follows:
 4. **Identity / scope rules** — SINGLE-TAB MUST. Multi-tab addressing is deferred to a future contract amendment.
 5. **Failure-mode normativity** — Message delivery is at-most-once (drain semantics). Backend-unreachable conditions normalize to error codes; the current renga ok-text carve-out is transitional and tracked as a follow-up Issue.
 6. **Backwards-compatibility commitment** — Surface follows SemVer (Surface 7).
+
+### Amendments log
+
+- **2026-06-15 proposed → 2026-06-15 ratified (Epic #6 / ja push-first sync; Refs transport-lab#23, #18; ja PR #583)**: added the [Ratified amendment (2026-06-15): push-primary delivery via `claude/channel`](#ratified-amendment-2026-06-15-push-primary-delivery-via-claudechannel) section (S3). It realigns the previously pull-only broker delivery (§8.4) to **push-primary (`claude/channel`) + pull-fallback** to match the push-first runtime (0.1.24+), via per-surface additive deltas to §1.2 (dev-channel sidecar), §2.1 (push-primary send), §2.3 (three-state delivery lifecycle, additive to the at-most-once drain guarantee), §5.1/§8.5 (dev-channel approval re-introduced alongside folder-trust), §8.2 (delivery-scoped token scope), §8.4 (delivery model), and §8.8 (`receive_mode` → `push`). **Additive — no prior ratified normative text deleted**; it **supersedes** the broker pull-only semantics of §2.1/§2.3/§5/§8 (pull retained as the fallback layer). Dependency-gated on the §9.5 K1 spike, which **PASSED** (transport-lab #22 CLOSED=PASS) before ratification. Design SoT: transport-lab `docs/design/broker-native-roles.md` §9 / `docs/design/ja-migration-plan.md` §8.
+- **2026-06-11 proposed (Epic #6 / ja#514) → 2026-06-14 ratified (Epic #6 broker dogfood #515 passed)**: added [Surface 8 (Broker auth & delivery)](#surface-8-broker-auth--delivery-ratified-amendment) and additive per-surface broker notes on Surfaces 1–6, introducing **`org-broker`** as a second reference backend (pure-backend, tmux/WezTerm adapters). Additive only — no ratified renga normative text changed. Renga stays the default; broker is opt-in (`ORG_TRANSPORT=broker`). Output-field amendments: `cwd` / `kind` / `receive_mode` semantics under broker (§8.8, amends §1.5/§2.2). Error vocabulary extended additively (§8.7). Ratification was gated on the Epic #6 dogfood (transport-lab `docs/design/ja-migration-plan.md` §8 Issue G); the dogfood **passed** (delivery cycle completed end-to-end, runtime main 95855d3, re-verified 2026-06-14). Ratified with two known limitations on the opt-in broker path — folder-trust auto-approval wiring unverified (ja#566) and host-reject silent-drop class (runtime#81) — bounded because renga remains the default + always-available fallback.
+- **2026-06-15 proposed (Epic #586 Phase 1; Refs #586)**: added the [Proposed amendment (Epic #586 Phase 1): default transport flip to broker, renga as opt-in fallback](#proposed-amendment-epic-586-phase-1-default-transport-flip-to-broker-renga-as-opt-in-fallback) section. **Supersedes the renga-as-default declaration** of the 2026-06-14 top-header amendment, §8.1, and §8.10 to **broker default, renga opt-in fallback** (`ORG_TRANSPORT` unset = `broker`; `ORG_TRANSPORT=renga` = renga). **Additive — no prior ratified normative text deleted**; renga is **never removed**, rollback safety is preserved (§8.10), and the P-§8.4 pull-fallback triggers (channel-incapable codex peers / claude.ai-login-absent environments) are unchanged. The contract default *declaration* flips here; the runtime default value (`DEFAULT_TRANSPORT`) and the ja pin bump that actually change `resolve()`'s behaviour land separately in **Epic #586 Phase 2** — until then the operative default remains renga. **Status: proposed, pending human ratification** (Phase 1 gate per the Epic #586 promotion plan). Design SoT: `notes/broker-promotion-plan-586.md`.
+
+---
+
+## Proposed amendment (Epic #586 Phase 1): default transport flip to broker, renga as opt-in fallback
+
+> **Status: PROPOSED — pending human ratification** (Epic #586 Phase 1; Refs #586). This section is an **additive amendment** and **deletes no prior ratified normative text above**. It **supersedes the renga-as-default declaration** of the 2026-06-14 top-header amendment, §8.1, and §8.10 ("Coexistence, default, and rollback"): the contracted default transport flips to **`org-broker`** — `ORG_TRANSPORT` **unset = `broker`**; **renga (`renga-peers`) becomes opt-in** via `ORG_TRANSPORT=renga`. The prior renga-as-default wording is **not removed**; it now reads as the pre-#586 historical default and is retained as documentation of the rollback target. This aligns the contract with the Epic #586 promotion plan (`notes/broker-promotion-plan-586.md`) and the default-resolution SoT in `claude_org_runtime.transport` (`DEFAULT_TRANSPORT`).
+>
+> **This records the contracted decision; it does not assert that the default has already flipped.** The amendment changes only the contract's *default declaration*. The operative runtime default is still renga: the actual behavioural flip — `claude_org_runtime.transport.DEFAULT_TRANSPORT` renga→broker plus the ja runtime-pin bump that consumes it — lands separately in **Epic #586 Phase 2** (a contract amendment alone changes no behaviour; `resolve(env={})` keeps returning `renga` until Phase 2). The resolution order is unchanged (explicit arg > `ORG_TRANSPORT` env > built-in default); only the built-in default value moves, at the single SoT (ja consumes it via `tools/transport.py:resolve()` and does not hardcode it).
+>
+> **Ratification precondition (NOT yet satisfied at Phase 1)**: the Epic #586 ratification gate (proposed) — stable broker dogfood operation under a broker default, plus completion of the Phase 2 default-value flip (runtime `DEFAULT_TRANSPORT` + ja pin bump) and the Phase 3 prose inversion. The exact gate criteria are a human ratification decision (open point in the promotion plan §6). Until ratified, this section is informational and the ratified renga-as-default text above remains operative.
+
+### F-§8.1 / top-header (default declaration → broker)
+
+The ratified 2026-06-14 top-header amendment and §8.1 state that "Renga … remains the **default** (`ORG_TRANSPORT` unset = `renga`); broker is **opt-in** (`ORG_TRANSPORT=broker`)". **Proposed (supersede, not delete)**: the contracted default flips — `ORG_TRANSPORT` **unset = `broker`**; **`ORG_TRANSPORT=renga` selects renga (opt-in)**. The ratified sentences are retained verbatim as the pre-#586 default of record. The resolution order is otherwise unchanged (explicit arg > `ORG_TRANSPORT` env > built-in default); the built-in default value changes renga → broker at the single SoT (`claude_org_runtime.transport`; ja consumes via `tools/transport.py:resolve()`, no hardcode), and that value change is the Phase 2 deliverable, not this amendment.
+
+### F-§8.10 (Coexistence, default, and rollback → flipped, renga never removed)
+
+§8.10 states "Renga is the **default** and is **never removed** — it is retained as the opt-in fallback / rollback target." **Proposed (supersede, not delete)**: **`org-broker` is now the contracted default**; **renga is never removed** and is **retained as the opt-in fallback / rollback target** (selected by `ORG_TRANSPORT=renga`). The never-removed / always-available / rollback-safety guarantee of §8.10 is **preserved and reaffirmed** — only the unset-default side flips. A `transport=renga` rollback re-points the *next* spawned pane at renga exactly as §8.10 (and the S3 "Rollback note (additive to §8.10)") prescribe; the full-rollback teardown sequence is unchanged.
+
+### F-§rollback-safety (preservation statement)
+
+Both transports continue to use distinct MCP server names and MAY be registered simultaneously (§8.10 unchanged). Flipping the unset default does **not** remove renga, weaken the rollback path, or change the per-pane org-wide single-value selection rule. The push-primary S3 amendment (2026-06-15) and its renga-untouched clause remain operative; this amendment only re-reads its "renga remains the default + always-available fallback" statement as "renga remains the opt-in fallback (no longer the unset default)". The pull-fallback triggers of P-§8.4 — sidecar absent / unhealthy, **channel-incapable peers (codex)**, and claude.ai-login-absent environments — are **unchanged**: those peers stay on pull regardless of which transport is the unset default.
