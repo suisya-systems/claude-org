@@ -78,7 +78,7 @@ Because PreToolUse hooks in (2) remain active even in bypass mode, history-rewri
 
 **What we do not do**: Allow non-Claude Code language models (OpenAI / Gemini / DeepSeek, etc.) to be swapped in as primary Workers.
 
-**Why**: claude-org is positioned as **Claude-only**. Multi-provider support looks attractive, but permission models, hook mechanisms, MCP server compatibility, context-window shape, and tool-calling specifications all differ by provider. The more providers you support, the weaker the framework's core property of enforcing discipline becomes. By integrating deeply with Claude Code, claude-org can fully use Claude Code-native discipline mechanisms such as the `renga-peers` MCP server, hooks, configuration schemas, and sandboxing.
+**Why**: claude-org is positioned as **Claude-only**. Multi-provider support looks attractive, but permission models, hook mechanisms, MCP server compatibility, context-window shape, and tool-calling specifications all differ by provider. The more providers you support, the weaker the framework's core property of enforcing discipline becomes. By integrating deeply with Claude Code, claude-org can fully use Claude Code-native discipline mechanisms such as the `renga-peers` MCP server, hooks, configuration schemas, and sandboxing (the transport layer is two-track: both the default `renga-peers` and the opt-in `org-broker` are Claude Code-native transports, and the "deep integration" benefit applies to both; for the two-frame view of the transport, see the §12 host-local exception).
 
 **Alternative**: Calling other providers as **optional review hooks** is in scope only for review or second-opinion use cases, such as `codex:rescue` or a `codex` self-review gate. They are assistants, not the primary system. If you want to use multiple providers as first-class workers, a general-purpose agent framework such as Aider, LangGraph, or CrewAI is a better fit.
 
@@ -88,9 +88,9 @@ Because PreToolUse hooks in (2) remain active even in bypass mode, history-rewri
 
 **What we do not do**: Carry low-level implementations such as pseudo-terminal (PTY) control, pane splitting, or keystroke injection in this repository.
 
-**Why**: The PTY and terminal-multiplexing layer is separated into **Layer 3 = `renga`** (`suisya-systems/renga`). claude-org is Layer 4, the operational layer that drives Claude Code directly, and delegates low-level terminal control to its dependency. If both layers live in the same repository, operational-discipline changes and PTY-layer bug fixes interfere with each other and slow release velocity.
+**Why**: The PTY and terminal-multiplexing layer is separated into **Layer 3 = `renga`** (`suisya-systems/renga`) (here `renga` refers to Layer 3 in the **default operational frame**. The transport layer is two-track: with the opt-in `broker`, the runtime-bundled `org-broker` covers the same Layer 3. Both tracks coexist with rollback available; see the §12 host-local exception). claude-org is Layer 4, the operational layer that drives Claude Code directly, and delegates low-level terminal control to its dependency. If both layers live in the same repository, operational-discipline changes and PTY-layer bug fixes interfere with each other and slow release velocity.
 
-**Alternative**: Use the `renga-peers` MCP server (provided by Layer 3, 14 tools) for pane operations, structured pane creation, and peer communication.
+**Alternative**: Use the `renga-peers` MCP server (provided by Layer 3, 14 tools) for pane operations, structured pane creation, and peer communication (default operational frame; when the opt-in `broker` is selected, `mcp__org-broker__*` provides an equivalent surface).
 
 ---
 
@@ -148,7 +148,7 @@ Because PreToolUse hooks in (2) remain active even in bypass mode, history-rewri
 
 **What we do not do**: Expose the MCP server externally over HTTP so that browser extensions or IDEs on other machines can connect.
 
-**Why**: claude-org's MCP server is consolidated into `renga-peers` (over local stdio), and **same-tab P2P** is the canonical communication model. Exposing it over HTTP introduces a different layer of concerns such as authentication, traffic control, TLS, and network boundaries, breaking the simple guarantee of local-only operational discipline.
+**Why**: In the default operational frame, claude-org's MCP server is consolidated into `renga-peers` (over local stdio), and **same-tab P2P** is the canonical communication model (the opt-in `broker`'s `org-broker` is a **localhost-only** HTTP MCP bound to `127.0.0.1` and is also not "externally exposed"; see the host-local exception below). Exposing it **externally** over HTTP would introduce a different layer of concerns such as authentication, traffic control, TLS, and network boundaries, breaking the simple guarantee of local-only operational discipline.
 
 **Alternative**: For monitoring from another machine or another tab, use state files (`.state/`) and the dashboard (`/org-dashboard`). If real-time external integration is required, you can design a separate MCP HTTP server alongside it, but that is outside the responsibility of claude-org itself.
 

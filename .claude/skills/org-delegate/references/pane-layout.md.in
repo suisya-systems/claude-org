@@ -1,0 +1,87 @@
+# Pane Layout Specification ({{SERVER}} MCP)
+
+Pane / tab layout rules. Referenced by `org-start` and `org-delegate`.
+Pane control goes through the `{{FQ}}*` MCP tools (the pane control tool family including `spawn_claude_pane` / `set_pane_identity` is complete via MCP).
+
+{{> pane-layout-transport }}
+
+{{> pane-layout-initial }}
+
+## Placement rules
+
+| Target | Operation | Notes |
+|---|---|---|
+| Dispatcher | Horizontal split of the Secretary pane, taking the bottom half | `{{FQ}}spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Block A-1) |
+| Curator (on-demand only) | Vertical split of the Dispatcher pane, taking the right half | `{{FQ}}spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto")` (pane-close.md Step 5-3; residency is retired, so org-start does not spawn it) |
+| Each Worker | **balanced split**: dynamically pick target and direction from the current rects returned by `list_panes`, and stack into the same tab | See the "Worker balanced split strategy" section below. `{{FQ}}spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
+
+{{> pane-layout-spawn-rationale }}
+
+## Worker balanced split strategy
+
+### Why balanced split is necessary
+
+Each split divides the target pane 50/50. If the result drops below the lower bounds `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`, the split is rejected with `[split_refused]` (investigation: `<workers_dir>/renga-split-inv/findings.md`).
+
+With a fixed target or an ordinal `k`-based lookup table, the cumulative halving of the dispatcher's width, or re-dispatch after a worker closes mid-flight, caused the assumed layout to diverge from the actual one and triggered `[split_refused]` early.
+
+The current design uses the **rect info (`x / y / width / height`, in cell units)** for each pane returned by `{{FQ}}list_panes`, and **dynamically picks target and direction from the current layout**. It is robust against jitter in worker retirement order and mid-flight closure, has no fixed "N parallel cap," keeps splitting as long as the terminal size and MIN_PANE constraints allow, and auto-escalates when the limit is hit.
+
+### Algorithm
+
+The balanced-split decision logic (target / direction selection, MIN_PANE constraint, secretary safeguard, role-priority sort, rect-adjacency check, `split_capacity_exceeded` detection) is **owned by the `claude-org-runtime` helper as the SoT**. The dispatcher feeds it a `{{FQ}}list_panes` snapshot and the task JSON via one of the entry points below, and then executes `spawn_claude_pane` / escalate according to the returned action plan (`spawn` / `after_spawn` / `escalate` / `state_writes` / `status`):
+
+- CLI (the standard operational entry point): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... [--template-repo ...] [--locale-json ...]`. The dispatcher-side procedure has its primary source in the delegate-plan helper section of `.dispatcher/CLAUDE.md`.
+- Library: `build_plan(...)` (the full action plan) and `choose_split(panes)` (a low-level helper for when you only need target / direction) in the `claude_org_runtime.dispatcher.runner` module.
+
+The constant values (MIN_PANE_WIDTH / MIN_PANE_HEIGHT / SECRETARY_MIN_WIDTH / SECRETARY_MIN_HEIGHT / role-priority map), the order of checks, and the exact definition of rect adjacency are sourced from the **`claude_org_runtime.dispatcher.runner` module itself** (`_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` / `choose_split()` / `rect_adjacent()`). The prose values were removed from this document because doc/runtime drift was a cause of mysterious `[split_refused]`-style failures (Issue #307 cleanup).
+
+When there are no candidates, the helper returns `status="split_capacity_exceeded"` and an `escalate.send_message(to_id="secretary", ...)`. The dispatcher does not issue `spawn_claude_pane`, cancels the dispatch for just that one worker, and keeps the main monitor loop running (see `SKILL.md` Step 3-1c).
+
+### Verification trace (Issue #307 scenario, reference)
+
+A hand-traced reference table of `choose_split` behavior for the layout `secretary 280×43 / dispatcher 140×43 / curator 140×43` immediately after startup (terminal ≈ 280×86, assumed to be right after org-start's secretary horizontal split -> dispatcher vertical split). **The canonical values live in the runtime SoT**. If the doc disagrees with the runtime's actual behavior, trust the runtime.
+
+| spawn | selected role | direction | intuitive rationale |
+|---|---|---|---|
+| 1st | secretary | vertical | while secretary still satisfies the splittable-size requirement, role priority puts it first |
+| 2nd | curator | vertical | secretary drops out under the SECRETARY_MIN_WIDTH guard, so the next-priority curator is picked |
+| 3rd | curator | horizontal | because role priority is strict primary, curator is picked repeatedly until it falls below MIN_PANE |
+
+Once curator falls below MIN_PANE and drops out, the flow moves to the priority-2 worker pool. The design intent of putting the dispatcher last ({{> pane-layout-viewport-rationale }}) is documented in the `_ROLE_PRIORITY` comment in runner.py.
+
+### Edge cases / operational notes
+
+- **Re-dispatch after a worker closes mid-flight**: the old k-table issue of "compacting closed slots diverges from the table's assumptions" cannot occur in the rect-based model. Because the target is always picked from the actual layout, the decision is always consistent with the actual layout tree.
+- **`spawn_claude_pane` errors**: `[split_refused]` / `[pane_not_found]` come back in the MCP result text. Escalate via Curator -> Secretary per the procedure in `references/renga-error-codes.md` (same policy as the old design).
+- **Race**: if other workers come and go between `list_panes` and `spawn_claude_pane`, the target mismatch surfaces as `[pane_not_found]`. It is absorbed by the existing error-handling path.
+- **Responsibility for target selection**: the dispatcher computes it from `list_panes` rect data. The Secretary only needs to pass task_id in the DELEGATE message and does not specify target.
+
+## Operational notes
+
+{{> pane-layout-same-tab }}
+- **Naming conventions**:
+  - Secretary -> `secretary`
+  - Dispatcher -> `dispatcher`
+  - Curator -> `curator`
+  - Worker -> `worker-{task_id}` (task_id is a kebab-case unique identifier)
+  - **{{SERVER}} target resolution rule**: an all-digit name is interpreted as an id, so the name must contain at least one letter (`worker-1` is OK; `1` would be treated as an id, so it's not).
+- **Role labels (`role`)**: four values -- `secretary` / `dispatcher` / `curator` / `worker`.
+  - The `list_panes` output exposes a `role` field, which is useful for aggregating org state and for picking targets in balanced split.
+- **When a worker finishes**:
+  1. The Secretary asks the Dispatcher for `CLOSE_PANE`.
+  2. The Dispatcher explicitly tears down the pane with `{{FQ}}close_pane(target="worker-{task_id}")`.
+     (The pane is removed -> `pane_exited` is emitted once -> it disappears from `list_panes` as well.
+     `[pane_not_found]` / `[pane_vanished]` is treated as "already closed" and skipped.)
+- **Stop order at org-suspend time**: Worker -> Dispatcher -> Curator (all torn down via `{{FQ}}close_pane`. Only when closing the last remaining pane do you get `[last_pane]` back, and that pane has to `exit` itself).
+
+## Split direction conventions
+
+The split directions are defined as follows (shared by `spawn_pane` / `spawn_claude_pane`):
+- `direction="vertical"` = left/right split (existing pane = left, new pane = right)
+- `direction="horizontal"` = top/bottom split (existing pane = top, new pane = bottom)
+
+## Future features / upstream tracking
+
+- A ratio argument such as `--ratio 0.2` for `spawn_pane` / `spawn_claude_pane` (currently fixed at 50/50).
+{{> pane-layout-future-upstream }}
