@@ -167,10 +167,22 @@ Evaluate the following **in this order**:
    non-empty, **or `curate-inflight.json` exists** (including one
    regenerated in 1; completion monitoring of an on-demand curate is part
    of the handover — `.dispatcher/references/worker-monitoring.md`
-   Step 5.3), resume worker monitoring with `/loop 3m`:
+   Step 5.3), resume worker monitoring with the monitoring-only
+   directive below via `/loop 3m` (**do not omit the prompt**):
+
+<!--
+INVARIANT(loop-prompt): do NOT pass this skill itself (`/dispatcher-resume`) or
+any other slash command as the `/loop` prompt argument. If you start `/loop` with
+the prompt omitted inside the skill's execution turn, the active slash command is
+captured as the repeat target and this skill self-recurses every 3 minutes
+(2026-06-19 incident; details in
+knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md). Always pass an
+explicit monitoring-only natural-language directive.
+tests/test_dispatcher_resume_loop_invariant.py pins this invariant.
+-->
 
 ```
-/loop 3m
+/loop 3m Run one cycle of the "monitoring loop" in references/worker-monitoring.md (relative to the Dispatcher cwd .dispatcher/), exactly once (poll_events → check_messages → list_panes → inspect_pane → stall / relay-gap / pane_output evaluation). Notify the secretary only on a cycle where an anomaly / stall / relay-gap / pane_exited is detected; if nothing is detected, output nothing (do not write a per-cycle status summary or natural-language status narration). Keep the cadence at 3 minutes or more and do not shorten it. Do not use a slash command or this skill as the repeat target.
 ```
 
 - On the first cycle of the monitoring loop, `mcp__renga-peers__poll_events`
@@ -257,3 +269,7 @@ bash ../tools/journal_append.sh dispatcher_resumed \
   decision)
 - Split the atomic update across multiple writes (it must always complete
   within a single `StateWriter.transaction()` block)
+- Start Step 5's `/loop 3m` with the prompt omitted, or pass
+  `/dispatcher-resume` (this skill itself) or any other slash command as the
+  `/loop` repeat target (the skill self-recurses every 3 minutes; always pass
+  an explicit monitoring-only directive — see Step 5's INVARIANT(loop-prompt))
