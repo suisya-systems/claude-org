@@ -16,15 +16,18 @@ Looking at the `preview` output's `description` / `--target` count / referenced 
 
 ## Execution procedure
 
+Because a design review runs **before implementation, when no diff exists**, the diff self-review `codex exec review` (review surface) does not apply. Use the **`codex exec` prompt form** that takes the design content, target files, and contract references. The method benchmark ([`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)) measures that the heavy multi-perspective `exec` prompt has superior breadth for catching subtle / design-level Blockers; design review is exactly that breadth-required use case, so the `exec` prompt form is appropriate here (a separate judgement from the diff self-review's switch to the review surface).
+
 ```bash
-codex exec --skip-git-repo-check "Design review for <task-id>.\
+codex exec --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort=medium \
+  "Design review for <task-id>.\
   Task description: <description>.\
   Target files: <target paths>.\
   Related contracts / references: <docs paths>.\
   Classify pre-design findings as Blocker / Major / Minor / Nit. For each finding, cite the target file:line and the rationale. Be concise."
 ```
 
-Do not use the `codex:rescue` skill (prohibited per CLAUDE.local.md). Only direct `codex exec` invocation.
+Do not use the `codex:rescue` skill (prohibited per CLAUDE.local.md). Only direct `codex exec` invocation. The `gpt-5.5-codex` model / API-key surface cannot run on a ChatGPT account, so explicitly pass `-m gpt-5.5`. For hang guards (stdin `< /dev/null`, per-round logs, 5-10 min kill on 0 bytes), see [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md).
 
 ### 3 additional questions for monitoring-role wait-design changes
 
