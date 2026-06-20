@@ -1,118 +1,121 @@
-# Autonomous work-discovery (Issue triage) — Design
+# Autonomous work-discovery (Issue triage) — design
 
-> Status: **Phases 1-4 implemented (in operation).** This design has been implemented and wired up along the staged rollout plan in [§9](#9-staged-rollout-and-verification-proposal). The artifacts (all paths relative to the repo root):
-> - **Phase 1 — Compute layer**: [`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) (read-only scan, candidate JSON on stdout, exit-code branching).
-> - **Phase 2 — Option B manual entry**: [`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md) (the Lead invokes it manually or on events to present candidates).
-> - **Phase 3 — Option C standing trigger**: wiring that runs the scan at worker close and forwards the result to the Lead ([`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) and other dispatcher prose).
-> - **Phase 4 — post-merge integration**: candidate generation for proactive next-dispatch is replaced with the triage output ([`CLAUDE.md`](../../CLAUDE.md) "Next-task proposals after a PR merge" and [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md) 2b-iii).
+> Status: **Phases 1-4 implemented (in operation)**. This design has been implemented and wired along the phased rollout plan in [§9](#9-phased-rollout-and-verification-proposal). Entities (all paths relative to the repository root):
+> - **Phase 1 — compute layer**: [`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) (read-only scan, candidate JSON to stdout, exit-code branching).
+> - **Phase 2 — Plan B manual entry**: [`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md) (the Secretary launches it manually or on an event and presents the result).
+> - **Phase 3 — Plan C steady trigger**: wiring that launches the scan at worker close time and forwards it to the Secretary ([`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) and other dispatcher prose).
+> - **Phase 4 — post-merge integration**: candidate generation for the proactive next-dispatch is swapped to the triage output ("Proposing the next task after a PR merge" in [`CLAUDE.md`](../../CLAUDE.md) and [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md) 2b-iii).
 >
-> **The body below retains the original design wording as-is.** Phrasings such as "not implemented", "(unimplemented) proposal", "proposed tool", or "this design defines only the interface and does not implement it" reflect the **framing at design time**; the actual artifacts now exist at the paths listed above. The invariants in [§7](#7-safety-rails-invariants) (INV-1 through INV-5) are contracts that remain in force after implementation.
+> **The body below is preserved as the original design description.** Phrases such as "not yet implemented", "(unimplemented) proposal", "proposed tool", "this design defines only the interface and does not implement it", etc. that appear in the body are **framing as of the design moment**; the current entities exist at the paths above. The invariants in [§7](#7-safety-rails-invariants) (INV-1 through INV-5) are contracts that continue to hold after implementation.
 >
 > Primary inputs:
-> - [`.state/reports/loop-engineering-assessment.md`](../../.state/reports/loop-engineering-assessment.md) — **§5-1 (the only structural gap = no autonomous discovery of work)** and **§7(b) (introducing limited autonomous work-discovery as "auto up to proposal, the start decision stays with the human", +2-3 points)**.
-> - Originating Issue: suisya-systems/claude-org-ja#520.
+> - [`.state/reports/loop-engineering-assessment.md`](../../.state/reports/loop-engineering-assessment.md) **§5-1 (the single structural gap = there is no autonomous discovery of work)** and **§7(b) (introduce a limited autonomous work-discovery as "automatic up to proposal, human stays on commitment", +2-3 points)**.
+> - originating Issue: suisya-systems/claude-org-ja#520.
 >
-> Dependent documents (at design time, references flowed only one way, from this design to existing documents. After implementation, in Phases 2/4, references from [`CLAUDE.md`](../../CLAUDE.md), [`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md), and [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md) back to this design have been added):
-> - [`CLAUDE.md`](../../CLAUDE.md) (Lead = the only point of contact with humans / all implementation work is delegated / proactive next-dispatch / role boundaries)
-> - [`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) (the canonical path for starting work = from Step 0 after the human gate)
-> - [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) and [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) (on-demand spawn at worker close = the delivery precedent for this design)
-> - [`.dispatcher/CLAUDE.md`](../../.dispatcher/CLAUDE.md) (the dispatcher's role boundary and monitoring `/loop`)
-> - [`docs/journal-events.md`](../journal-events.md) (the journal event ledger)
+> Dependency documents (at design time the only references were one-way from this design to existing documents. Now that Phases 2/4 are implemented, [`CLAUDE.md`](../../CLAUDE.md), [`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md), and [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md) also reference back to this design):
+> - [`CLAUDE.md`](../../CLAUDE.md) (Secretary = sole human contact / all real work is delegated / proactive next-dispatch / role boundaries)
+> - [`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) (the canonical entry to commitment = Step 0 of the post-human-gate flow)
+> - [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) and [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) (on-demand spawn at worker close = the precedent for this design's delivery)
+> - [`.dispatcher/CLAUDE.md`](../../.dispatcher/CLAUDE.md) (dispatcher role boundaries / monitoring /loop)
+> - [`docs/journal-events.md`](../journal-events.md) (the ledger of journal events)
 
 ---
 
-## 1. Background and fixed constraints (premises this design does not overturn)
+## 1. Background and confirmed constraints (premises this design does not overturn)
 
-This organization's loop is **human-initiated**. The loop only turns once the user asks the Lead, and as `.state/reports/loop-engineering-assessment.md` §5-1 notes, there is no self-feeding loop that "scans the issue tracker, triages, and picks the next one". There is a proactive behavior of "suggest the next work after a merge", but **the candidate selection is by the human**, and even the suggestion itself is improvised on the spot by the Lead ([§2](#2-current-state-and-this-designs-relationship-to-it)).
+This organization's loop is **human-initiated**. The loop only spins after the user asks the Secretary, and as `.state/reports/loop-engineering-assessment.md` §5-1 notes, there is no self-feeding loop that "scans the issue tracker, triages, and picks the next item". A proactive behavior of "proposing the next task after a merge" does exist, but **selection of the candidate is human**, and the proposal itself is improvised by the Secretary on the spot ([§2](#2-current-state-and-this-designs-relationship-to-it)).
 
-This design materializes the lever from assessment §7(b) — **"automate Issue triage up to the proposal, keep the start decision human"**. The aim is **not** to take the human out of the loop. We raise only the autonomy of **discovery**, while **commitment (the start decision) remains at the human gate as before**.
+This design realizes the lever in assessment §7(b) — **"Make Issue triage automatic up to proposal, keep human on commitment"**. The aim is **not** to "remove the human from the loop". It only raises the autonomy of **discovery**; **commitment stays at the human gate as before**.
 
-The following three are fixed constraints that this design does not overturn.
+The following three points are confirmed constraints that this design does not overturn.
 
-1. **Lead = the only point of contact with humans** ([`CLAUDE.md`](../../CLAUDE.md)). The path by which the triage result reaches a human must always go through the Lead. The discovery mechanism must not reach humans (or human-visible surfaces on GitHub) directly.
-2. **All implementation work is delegated; the secretary does not investigate** ([`CLAUDE.md`](../../CLAUDE.md)). The triage scan is designed as a **deterministic tool invocation**, not as "investigation" (in the same class of deterministic ops as [`tools/journal_append.sh`](../../tools/journal_append.sh) / `tools/pending_decisions.py` / [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py)). If deeper analysis of individual candidates is required (feasibility, design), that becomes a delegated worker task after the human gate.
-3. **Do not increase comprehension debt** (assessment §5-2). Triage is a mechanism that **surfaces** "what could be done next"; it is not a mechanism that lets work be started by skipping past the human's comprehension. Propose-only is directly tied to this constraint ([§7](#7-safety-rails-invariants)).
+1. **Secretary = sole human contact** ([`CLAUDE.md`](../../CLAUDE.md)). The path by which triage results reach the human must always go through the Secretary. The discovery mechanism must not reach the human (or any human-visible surface on GitHub) directly.
+2. **All real work is delegated; the Secretary does not investigate** ([`CLAUDE.md`](../../CLAUDE.md)). Triage scan is designed not as "investigation" but as a **deterministic tool execution** (peer of [`tools/journal_append.sh`](../../tools/journal_append.sh) / `tools/pending_decisions.py` / [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) — deterministic ops). If a deep dive per candidate (feasibility examination, design) is needed, that becomes a delegated worker task after passing the human gate.
+3. **Do not grow understanding debt** (assessment §5-2). Triage is a mechanism to **make visible** "what can be done next"; it is not a mechanism that skips human understanding and advances commitment. Propose-only ties directly to this constraint ([§7](#7-safety-rails-invariants)).
 
 ## 2. Current state and this design's relationship to it
 
-**Current behavior (implemented, in operation)**: once post-merge cleanup is finished after a PR is merged, the Lead — per the proactive next-dispatch policy in [`CLAUDE.md`](../../CLAUDE.md) — improvises `gh issue list` and similar, and presents 2-4 next-work candidates plus 1 recommendation to the human. This is **the Lead's improvisation**; the decision criteria (dependencies resolved, priority, effort) are not codified, and there is no reproducibility, coverage, or auditability. The trigger is also limited to "immediately after a PR merge"; discovery at the point the organization becomes idle is not performed.
+**Current behavior (implemented, in operation)**: After post-merge cleanup following a PR merge, the Secretary follows the proactive next-dispatch policy in [`CLAUDE.md`](../../CLAUDE.md), bangs out `gh issue list` etc. on the spot, and presents 2-4 next-task candidates + 1 recommendation to the human. This is **Secretary improvisation**; the decision criteria (dependency resolved? priority? effort?) are not explicit, and there is no reproducibility, coverage, or auditability. The trigger is also limited to "immediately after a PR merge"; discovery at the moment the organization becomes idle is not performed.
 
-**This design (unimplemented proposal)**: separate the improvisation above into a **deterministic triage compute layer** ([§3](#3-the-two-layer-structure-of-the-design) / [§4](#4-triage-criteria) / [§5](#5-output-format)) and a **delivery layer that triggers and routes it** ([§6](#6-comparison-of-the-three-delivery-options)). The post-merge proactive next-dispatch is then upgraded into one consumer of this triage result ([§8](#8-integration-with-post-merge-proactive-next-dispatch)). Until this design is implemented, the current improvised behavior changes nothing.
+**This design (unimplemented proposal)**: Separate the above improvisation into a **deterministic triage compute layer** ([§3](#3-the-designs-two-layer-structure), [§4](#4-triage-criteria), [§5](#5-output-format)) and a **delivery layer that launches and delivers it** ([§6](#6-comparison-of-three-delivery-options)). The post-merge proactive next-dispatch is promoted to one consumer of this triage output ([§8](#8-integration-with-post-merge-proactive-next-dispatch)). Until this design is implemented, the current improvised behavior is not changed at all.
 
 | Aspect | Current (improvised, implemented) | Proposed (triage mechanism, unimplemented) |
 |---|---|---|
-| Decision criteria | Implicit (the Lead's judgment) | Codified (dependencies resolved / priority / effort estimate, [§4](#4-triage-criteria)) |
-| Output | Free-form, ad hoc each time | Structured schema (N candidates + 1 recommendation, [§5](#5-output-format)) |
-| Trigger | Only immediately after PR merge | post-merge / worker close / manual by the Lead ([§6](#6-comparison-of-the-three-delivery-options)) |
-| Start decision | Human (immediate pick by number) | Human (unchanged; propose-only made an invariant, [§7](#7-safety-rails-invariants)) |
-| Audit | None | Reproducible from journal events + candidate JSON |
+| Decision criteria | Implicit (Secretary judgment) | Explicit (dependency resolved / priority / effort estimate, [§4](#4-triage-criteria)) |
+| Output | Free-form each time | Structured schema (N candidates + 1 recommendation, [§5](#5-output-format)) |
+| Trigger | Only immediately after a PR merge | post-merge / worker close / Secretary manual ([§6](#6-comparison-of-three-delivery-options)) |
+| Commitment | Human (decided on the spot by number) | Human (unchanged; propose-only made invariant, [§7](#7-safety-rails-invariants)) |
+| Audit | None | journal events + candidate JSON enable reproduction |
 
-## 3. The two-layer structure of the design
+## 3. The design's two-layer structure
 
-Split triage into "**computation (which Issue is triaged how)**" and "**delivery (when, who runs it, and how it is delivered to a human)**". This is the skeleton of the design.
+Split triage into two layers: "**compute (which Issues get triaged how)**" and "**delivery (when, who runs it, and how it reaches the human)**". This is the skeleton of this design.
 
 ```
-┌─ Compute layer (deterministic, delivery-independent) ─────────┐
-│  Input: open Issues / Epics (via gh / rtk)                    │
-│  Process: dependency-resolved check -> priority score -> effort estimate -> ranking │
-│  Output: candidate JSON (N candidates + 1 recommendation, §5) │
-│  Properties: zero side effects. Reads Issues only. No spawn / commit / PR at all │
-└───────────────────────────────────────────────────────────────┘
-            ▲ Three deliveries share the same tool
-┌─ Delivery layer (3 options, §6) ───────────────────────────┐
-│  A. Cron cloud routine                                     │
-│  B. Local skill (manual / event-triggered by the Lead)     │
-│  C. dispatcher-loop extension (on-demand at worker close)  │
-│  Common: output always reaches the Lead -> Lead presents to human -> human selects │
-└────────────────────────────────────────────────────────────┘
++-- compute layer (deterministic, delivery-agnostic) -----------+
+|  input: open Issues / Epics (via gh / rtk)                    |
+|  process: dependency resolution -> priority score             |
+|           -> effort estimate -> ranking                       |
+|  output: candidate JSON (N candidates + 1 recommendation, §5) |
+|  property: zero side effect. Only reads Issues. Never spawns, |
+|            commits, or opens a PR                             |
++---------------------------------------------------------------+
+            ^ Three deliveries share the same tool
++-- delivery layer (three plans, §6) --------------------------+
+|  A. cron cloud routine                                       |
+|  B. local skill (Secretary manual / event-driven)            |
+|  C. dispatcher-loop extension (on-demand at worker close)    |
+|  shared: output always reaches the Secretary                 |
+|          -> Secretary presents to human -> human selects     |
++--------------------------------------------------------------+
 ```
 
-**Design implication**: by detaching the compute layer from delivery, the three options collapse from being exclusive choices into "different ways to invoke the same compute tool". The recommendation ([§6.4](#64-recommendation)) picks a single primary delivery, but with the compute layer unified to one, adding another delivery later does not destabilize triage semantics.
+**Design implication**: By decoupling the compute layer from delivery, the three plans collapse from being exclusive choices to being "different ways to launch the same compute tool". The recommendation ([§6.4](#64-recommendation)) picks a single primary delivery, but as long as the compute layer is consolidated into one piece, adding another delivery later does not shift the meaning of triage.
 
-The concrete compute layer is, in this design, the proposed tool `tools/work_discovery_scan.py` (a pure-computation + JSON-stdout tool of the same class as [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py)). **This design document defines only the interface; it does not implement it.**
+The body of the compute layer is, in this design, the proposed tool `tools/work_discovery_scan.py` (a pure-compute + JSON-stdout tool peer to [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py)). **This design document defines only the interface; it does not implement.**
 
 ## 4. Triage criteria
 
-The evaluation axes for candidate Issues take the three named by assessment §7(b) — **dependencies resolved / priority / effort estimate** — as primary criteria, plus two auxiliary axes. Each axis is computed by the compute layer from Issue metadata, and the contract is **that the same input produces the same output on each run (reproducibility)**. However, not every axis is determined by a straightforward read of metadata: `dependency` and `priority` (from labels / milestones) are deterministic, but `effort`, `parallelizable`, and `unblocked_by_recent_merge` involve **heuristic estimation**. The latter always have uncertainty flags attached in the output (`*_estimated` / `signals[]`) to make it explicit to the human that "this is a machine estimate, not an assertion" ([§4.4](#44-making-estimated-axes-uncertainty-explicit)). This lets us achieve both propose-only (even when an estimate is wrong, the start decision is the human's) and auditability (you can trace which signals drove the estimate).
+The evaluation axes for candidate Issues take as primary the three named in assessment §7(b) — **dependency resolved / priority / effort estimate** — and add two auxiliary axes. The compute layer computes each axis from Issue metadata, and **reproducibility (same input -> same output on every run)** is a contract. However, not all axes are decided by a straight read of metadata: `dependency` and `priority` (derived from labels / milestones) are deterministic, but `effort`, `parallelizable`, and `unblocked_by_recent_merge` include **heuristic estimation**. For the latter, the output must always carry an uncertainty flag (`*_estimated` / `signals[]`) to make it explicit to the human that "this is a machine estimate, not an assertion" ([§4.4](#44-explicit-uncertainty-for-estimated-axes)). This way, propose-only (commitment stays human even if the estimate is wrong) and auditability (which signal drove the estimate is traceable) are both satisfied.
 
 ### 4.1 Primary criteria
 
-| Axis | Computation source (deterministic signals) | Value domain |
+| Axis | Computation source (deterministic signal) | Range |
 |---|---|---|
-| **Dependencies resolved** (`dependency`) | Extract `Blocked by #N` / `Depends on #N` / `Requires #N` / task-list `- [ ] #N` from the Issue body / comments, and judge whether the referenced Issues/PRs are **all closed**. The `blocked` / `on-hold` labels are treated as unresolved immediately. | `resolved` / `blocked` (`blocked` is excluded from the candidate set and shown separately with reason) |
-| **Priority** (`priority`) | Labels (`priority:high` / `p0`-`p2` etc.) > milestone > age (stale bonus or penalty is a policy choice). In repositories without a label scheme, computed from milestone and updated timestamp only. | `high` / `medium` / `low` |
-| **Effort estimate** (`effort`) | Adopt labels such as `size:S/M/L` if present. Otherwise heuristically **estimate** `S/M/L` (body length / number of acceptance criteria / number of areas expected to change). Always attach `effort_estimated: true` to estimated values so the human is told "this is a machine estimate". | `S` / `M` / `L` (+ `effort_estimated` flag) |
+| **Dependency resolved** (`dependency`) | Extract `Blocked by #N` / `Depends on #N` / `Requires #N` / task list `- [ ] #N` from Issue body / comments, and check whether the referenced Issue/PR is **all closed**. Labels `blocked` / `on-hold` are immediately treated as unresolved. | `resolved` / `blocked` (blocked is excluded from candidates and shown in a separate slot with the reason) |
+| **Priority** (`priority`) | Label (`priority:high` / `p0`-`p2` etc.) > milestone > elapsed days (stale upweighting or downweighting is a policy choice). Repos without a label scheme use only milestone and update time. | `high` / `medium` / `low` |
+| **Effort estimate** (`effort`) | Adopt `size:S/M/L` labels if present. If not, **estimate** `S/M/L` via heuristics (body length / number of acceptance criteria / number of likely-touched areas). Estimated values must carry `effort_estimated: true` to make it explicit to the human that "this is a machine estimate". | `S` / `M` / `L` (+ `effort_estimated` flag) |
 
 ### 4.2 Auxiliary axes (used for ranking)
 
 | Axis | Use |
 |---|---|
-| **Parallelizability** (`parallelizable`) | Can it be started independently of other Issues and fill a free pane slot? Detection signal: the Issue does **not** reference any other open Issue via `Blocked by` / `Depends on` (= a leaf in the dependency graph). Directly aligned with [`CLAUDE.md`](../../CLAUDE.md)'s proactive policy of "fill the parallel slots with independent open issues". Raises the rank when there are free panes. **Heuristic** (implicit conflicts that do not appear in dependency notation cannot be detected) -> attach `parallelizable_estimated`. |
-| **Unblocked by recent merge** (`unblocked_by_recent_merge`) | Is the Issue something that was unblocked by a recent merge / a natural follow-up? Detection signal: the Issue's `Blocked by` / `Depends on` references include "an Issue/PR closed by one of the most recent K merged PRs", or a recent merged PR references this Issue via `Refs #N` and the like. Most important for the upgrade in [§8](#8-integration-with-post-merge-proactive-next-dispatch). In a post-merge trigger this axis matters most. **Heuristic** ("conceptual follow-up" that does not appear in notation cannot be detected) -> attach `unblocked_by_recent_merge_estimated`. |
+| **Parallelism** (`parallelizable`) | Whether the Issue can be picked up independently of others and fill an empty pane slot. Determining signal: the Issue does **not** reference another open Issue via `Blocked by` / `Depends on` (= leaf in the dependency graph). Ties directly to the proactive policy in [`CLAUDE.md`](../../CLAUDE.md) of "fill parallel slots with independent open issues". Boost the rank when empty panes exist. **Heuristic** (implicit conflicts not expressed in dependency notation cannot be detected) -> attach `parallelizable_estimated`. |
+| **Unblocked by recent merge** (`unblocked_by_recent_merge`) | Whether the Issue was unblocked by a recent merge / is a natural follow-up. Determining signal: the Issue's `Blocked by` / `Depends on` references include "an Issue/PR closed by one of the last K merged PRs", or a recent merged PR references the Issue via `Refs #N` etc. Most important for the promotion in [§8](#8-integration-with-post-merge-proactive-next-dispatch). Strongly active on the post-merge trigger. **Heuristic** (conceptual follow-ups not in notation cannot be detected) -> attach `unblocked_by_recent_merge_estimated`. |
 
-### 4.3 Ranking and how "one recommendation" is decided
+### 4.3 Ranking and deciding "one recommendation"
 
-Sort the candidate set (those with `dependency == resolved`) lexicographically by `(priority, unblocked_by_recent_merge, parallelizable fit, smallness of effort)` and return the top N (default N=3, configurable). **The single recommendation** is the top item, but always attach the reason for the recommendation (one sentence saying "why this and not the others"). To avoid the recommendation collapsing into "the top of the machine ranking", emit the recommendation rationale as a structured field (the `recommendation.reason` field in [§5](#5-output-format)), used as evidence when the Lead presents to the human.
+Sort the candidate set (those with `dependency == resolved`) lexicographically by `(priority, unblocked_by_recent_merge, parallelizable fit, small effort)` and return the top N (default N=3, configurable). The **single recommendation** is the top one, but always attach a reason ("why this rather than another" in one sentence). To avoid the recommendation collapsing to the raw machine rank, emit the recommendation reason as a structured field ([§5](#5-output-format) `recommendation.reason`), and use it as the basis when the Secretary presents to the human.
 
-> **Important**: the compute layer emits a "recommendation", but it is a **suggestion**, not a decision. The final selection is by the human ([§7](#7-safety-rails-invariants) INV-2). Auto-starting rank 1 is prohibited by design.
+> **Important**: The compute layer issues a "recommendation", but this is a **proposal**, not a decision. The final pick is human ([§7](#7-safety-rails-invariants) INV-2). It is forbidden by design to auto-commit to rank 1.
 
-### 4.4 Making estimated axes' uncertainty explicit
+### 4.4 Explicit uncertainty for estimated axes
 
-`effort`, `parallelizable`, and `unblocked_by_recent_merge` involve heuristic estimation ([§4.1](#41-primary-criteria) / [§4.2](#42-auxiliary-axes-used-for-ranking)). Their output must always satisfy:
+`effort` / `parallelizable` / `unblocked_by_recent_merge` include heuristic estimation ([§4.1](#41-primary-criteria) / [§4.2](#42-auxiliary-axes-used-for-ranking)). These must always satisfy the following in output:
 
-- Attach the corresponding `*_estimated: true` flag to the estimated value (`effort_estimated` / `parallelizable_estimated` / `unblocked_by_recent_merge_estimated`).
-- Enumerate the raw signals that drove the estimate in `signals[]` (e.g., `"label:size:M"`, `"leaf in dependency graph"`, `"follow-up of #528 (merged)"`). The human can trace "why it was estimated that way".
-- In the human-readable rendering ([§5.2](#52-human-readable-rendering-lead--human)), append `(estimated)` to estimated values.
+- Attach the corresponding `*_estimated: true` flag to estimated values (`effort_estimated` / `parallelizable_estimated` / `unblocked_by_recent_merge_estimated`).
+- List the raw signals that drove the estimate in `signals[]` (e.g., `"label:size:M"`, `"leaf in dependency graph"`, `"follow-up of #528 (merged)"`). The human can trace "why it was estimated that way".
+- In human-readable rendering ([§5.2](#52-human-readable-rendering-secretary--human)), attach `(estimated)` to estimated values.
 
-This is a device to prevent a human from misreading "the machine has asserted this" and ceding the start decision to the mechanism (cognitive surrender, assessment §5). Operationally, it underpins INV-1 / INV-2.
+This is a device to prevent the human from misreading "the machine asserted it" and surrendering the commitment decision to the mechanism (cognitive surrender, assessment §5). It supports INV-1 / INV-2 operationally.
 
 ## 5. Output format
 
-The compute layer has two representations: a machine-readable JSON (the tool's stdout, consumed by the delivery layer), and a human-readable text the Lead uses to present to a human (plain text / markdown-compatible). The JSON is the SoT; the latter is a derived rendering.
+The compute layer has two representations: machine-readable JSON (tool stdout, consumed by the delivery layer), and a human-readable text (plain text / markdown-compatible) that the Secretary presents to the human. The JSON is the SoT; the latter is derived rendering.
 
 ### 5.1 Machine-readable JSON (tool stdout)
 
-Modeled on the [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) contract of "stdout is a single JSON object + branching by exit code".
+Follow the convention of [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py): "stdout is a single JSON object + exit code branches".
 
 ```json
 {
@@ -120,11 +123,13 @@ Modeled on the [`tools/check_curate_threshold.py`](../../tools/check_curate_thre
   "generated_for": "post_merge",
   "candidate_count": 1,
   "truncated_count": 0,
+  "effort_model": null,
   "candidates": [
     {
+      "repo": "suisya-systems/claude-org-ja",
       "issue": 531,
       "title": "...",
-      "summary": "one-line summary (mechanically extracted from body)",
+      "summary": "one-line summary (machine-extracted from body)",
       "dependency": "resolved",
       "blocking_refs": [],
       "priority": "high",
@@ -139,160 +144,191 @@ Modeled on the [`tools/check_curate_threshold.py`](../../tools/check_curate_thre
     }
   ],
   "recommendation": {
+    "repo": "suisya-systems/claude-org-ja",
     "issue": 531,
-    "reason": "Natural follow-up of recently merged #528, dependencies resolved, effort S, fills a free pane"
+    "reason": "Natural follow-up of recently merged #528, dependency resolved, effort S, fills an empty pane"
   },
   "excluded_blocked": [
-    { "issue": 540, "blocking_refs": [537], "note": "excluded because #537 is still open" }
+    { "repo": "suisya-systems/claude-org-ja", "issue": 540, "blocking_refs": [537], "note": "excluded because #537 is open" }
   ]
 }
 ```
 
-(The `candidates` above shows only one entry as an example. In reality `candidate_count` entries are listed in ascending `rank`. JSON does not allow comments, so no abbreviation notation is used.)
+(The `candidates` above shows only one entry as an example. In reality, `candidate_count` entries are laid out in ascending `rank` order. Since JSON does not allow comments, no ellipsis notation is used.)
 
 - `status`: `candidates_found` / `no_candidates` (zero candidates) / `error`.
-- `candidate_count`: the actual length of `candidates[]`. `truncated_count`: the count of "dependencies-resolved-but-out-of-rank" candidates dropped from `candidates[]` due to the N cap (**required field**; do not omit even when `0`. This forbids silent truncation).
-- The delivery side branches on the exit code. Following [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py), **do not assign meaning to `1`** (this collides with Python's default exit code on uncaught exceptions, which would cause a scan crash to be misread as "no candidates" and prevent the error from reaching the Lead). The assignment is `0` = no candidates (`no_candidates`), `10` = candidates exist (`candidates_found`), `2` = error. The delivery layer decides behavior by the exit code without depending on JSON parse failure (same policy as the curator threshold tool).
-- `excluded_blocked` keeps "Issues excluded due to unresolved dependencies" with reasons. **No silent truncation** (both out-of-rank candidates via `truncated_count` and dependency-excluded ones via `excluded_blocked` are made auditable by the human).
+- `repo` (each candidate / recommendation / excluded entry): identifies the source repo of the candidate (`owner/repo`) for cross-repository triage ([§10](#10-cross-repository-triage-implemented)). In a single-repository scan (`--repo` omitted or used once), this is `null`. Because `(repo, issue)` is the candidate identity, `ja#60` and `runtime#60` do not collide.
+- `blocking_refs` (candidates / excluded): canonical representation of dependency references. Home-repo references are bare integers `N` (backward compatible); cross-repo references are strings `"owner/repo#N"` (mixed allowed).
+- `candidate_count`: actual length of `candidates[]`. `truncated_count`: number of "dependency-resolved but ranked below cutoff" candidates dropped from `candidates[]` due to the N-item cap (**required field**. Not omitted even when `0`. Forbids silent truncation).
+- The exit code branches the delivery side. Following [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py), **do not assign meaning to `1`** (it would collide with the default Python exit `1` on uncaught exceptions, causing a scan crash to be misread as "no candidates" and the error not reaching the Secretary). The assignment is `0` = no candidates (`no_candidates`), `10` = candidates exist (`candidates_found`), `2` = error. The delivery layer decides behavior by the exit code, not by JSON parse failure (same policy as the curator threshold tool).
+- `excluded_blocked` retains "Issues excluded for unresolved dependencies" with reasons. **No silent truncation** (`truncated_count` lets the human audit candidates ranked below cutoff, and `excluded_blocked` lets the human audit dependency exclusions).
+- `effort_model`: summary of the learned effort model ([§10](#10-out-of-scope--future-work) effort estimation refinement), or `null` when learning is disabled / offline. **A fixed schema is assumed** so `effort_model` always takes one of the two values `null | object`; the object form carries `sample_size` / `applies` (whether to override the data-driven gate) / `predictor_correlation` / `realized_cutpoints` / `realized_median_lines` / `coverage` (training-data coverage: number of single-issue-linked PRs, adopted samples, dropped-for-missing-body), `reason`, etc. When `applies==false`, the static heuristic is preserved, and each candidate's `signals[]` explicitly carries the reason plus the realized effort context. In this repository, body length does not correlate with realized effort, so `applies==false` is always returned (gated OFF).
 
-### 5.2 Human-readable rendering (Lead -> human)
+### 5.2 Human-readable rendering (Secretary -> human)
 
-The form the Lead presents to the human. Compatible with the current proactive next-dispatch convention (2-4 candidates + 1 recommendation, immediate pick by number), so the human's operations do not change.
+The form the Secretary presents to the human. Compatible with the current proactive next-dispatch convention (2-4 candidates + 1 recommendation, decided on the spot by number); does not change the human operation.
 
 ```text
-Next-work candidates (triage result, proposal only / starting is your decision):
+Next-task candidates (triage result / proposal only; commitment is your decision):
 
-1. [Recommended] #531 ... (priority high / effort S(estimated) / dependencies resolved / parallelizable)
-   └ Follow-up of recently merged #528. Fills a free pane.
-2. #533 ... (priority medium / effort M(estimated) / dependencies resolved)
-3. #529 ... (priority medium / effort S / dependencies resolved / parallelizable)
+1. [Recommended] #531 ... (priority high / effort S(estimated) / dependency resolved / parallel-ok)
+   `- Follow-up of recently merged #528. Fills an empty pane.
+2. #533 ... (priority medium / effort M(estimated) / dependency resolved)
+3. #529 ... (priority medium / effort S / dependency resolved / parallel-ok)
 
 Excluded (unresolved dependencies): #540 (because #537 is open)
 
-Please specify the one to start by number. After your start decision, /org-delegate will run.
+Please select the one to start by number. After your decision, /org-delegate is invoked.
 ```
 
-- Prefix the recommendation with `[Recommended]`; only one.
-- If effort is a machine estimate, always append `(estimated)`.
-- Always state "proposal only / starting is your decision" each time (the operational manifestation of INV-1).
-- Always show the excluded slot (auditability + the reassurance that "we looked at everything and picked N").
+- The recommendation is prefixed with `[Recommended]` and is just one entry.
+- If the effort is a machine estimate, always append `(estimated)`.
+- Always make explicit "proposal only / commitment is your decision" (operational manifestation of INV-1).
+- Always show the excluded slot (auditability + the reassurance of "saw everything and N selected").
+- **In cross-repository scans ([§10](#10-cross-repository-triage-implemented))**: if a candidate's `repo` is non-null (multi-repo scan), display `repo#N` (e.g., `runtime#531`) instead of `#N` to eliminate ambiguity about the source repo. In single-repo scans (`repo: null`), display `#N` as before. This rendering branch is implemented in the delivery layer (Secretary skill) (similar to [§9](#9-phased-rollout-and-verification-proposal); it touches `.claude/` editing and is therefore outside the compute-layer worker's scope, a separate task).
 
-## 6. Comparison of the three delivery options
+## 6. Comparison of three delivery options
 
-The compute layer ([§3](#3-the-two-layer-structure-of-the-design)) is the same. The difference is **who triggers it, when, and how it reaches the Lead**.
+The compute layer ([§3](#3-the-designs-two-layer-structure)) is shared. The difference is **who launches it, when, and how it reaches the Secretary**.
 
 ### 6.1 Option A: cron cloud routine
 
-Put the triage scan on a cloud routine of the `schedule` family (a headless cloud agent that runs on cron).
+Put the triage scan on a `schedule` family cloud routine (headless cloud agent running on cron).
 
-- **Benefits**: true autonomous discovery on a time-based cadence even when the organization session is not running. Keeps running even when the machine is off.
-- **Drawbacks (blocking adoption)**:
-  1. **Violates the Lead boundary**: a cloud routine runs outside the organization's renga tabs and cannot inject results in-band into the Lead session. To deliver results to a human, it would have to write **directly** to GitHub (Issue comment / triage Issue) or to notifications, breaking "Lead = the only point of contact with humans". Routing back through the Lead would require a bridge to local anyway, canceling out the cron benefits.
-  2. **Live state is invisible**: free-pane counts, in-flight workers, `.state/` / state.db are local and cannot be observed from the cloud. `parallelizable` / free-slot-filling decisions ([§4.2](#42-auxiliary-axes-used-for-ranking)) do not function.
-  3. **Operational opacity + billing**: detection through presentation runs decoupled from the organization session, making audit and intervention hard. In addition, headless / Agent SDK families may consume a separate credit billing bucket (cost is not the deciding factor per this organization's policy, but combined with 1 and 2, there is no reason to adopt this).
-- **Verdict**: **rejected**. The two issues of Lead boundary and live-state visibility are fatal.
+- **Pros**: True autonomous discovery on a time basis even when the organization session is not running. Runs even with the machine off.
+- **Cons (preventing adoption)**:
+  1. **Violation of the Secretary boundary**: A cloud routine runs outside the org's renga tab and cannot inject results in-band into the Secretary session. To deliver results to the human, it ends up writing **directly** to GitHub (Issue comments / triage Issues) or to notifications, breaking "Secretary = sole human contact". Routing back through the Secretary would require an additional bridge layer to local, canceling the cron advantage.
+  2. **Live state is invisible**: Number of empty panes, in-flight workers, `.state/` / state.db all live locally and cannot be observed from the cloud. The determinations of `parallelizable` / empty-slot fit ([§4.2](#42-auxiliary-axes-used-for-ranking)) do not function.
+  3. **Operational opacity + billing**: Detection-to-presentation runs decoupled from the org session, making audit and intervention difficult. Additionally, it may load on the separate billing pool of headless / Agent SDK series (cost is not a deciding factor under this organization's policy, but together with the above 1-2 there is no reason to adopt).
+- **Verdict**: **Not adopted**. Secretary-boundary violation and lack of live-state visibility are fatal.
 
 ### 6.2 Option B: local skill
 
-A skill the Lead launches locally (provisionally `/work-discovery`). The skill calls the compute-layer tool, and the Lead presents the output to the human. **The initiator is limited to the Lead**: if an already-delegated worker were to start the search for the next work outside its own task, that would break "1 worker = 1 task = 1 scope" and "a separate concern goes from Step 0 of [`/org-delegate`](../../.claude/skills/org-delegate/SKILL.md)" ([`CLAUDE.md`](../../CLAUDE.md)).
+A skill the Secretary launches locally (e.g., tentative name `/work-discovery`). The skill calls the compute-layer tool, and the Secretary presents the output to the human. **Restrict launching to the Secretary**: if a delegated worker launches "search for the next task outside one's own task", that breaks "1 worker = 1 task = 1 scope" and "another item starts from Step 0 of [`/org-delegate`](../../.claude/skills/org-delegate/SKILL.md)" ([`CLAUDE.md`](../../CLAUDE.md)).
 
-- **Benefits**: naturally keeps the Lead boundary (Lead launches, Lead presents). Live state (free panes) can be seen locally. Good fit for manual on-demand use.
-- **Drawbacks / cautions**:
-  1. **Trigger is passive**: the Lead must consciously decide "when to run it". A standing `/loop` running on time would pollute raw logs and presentations on days with no change (same lesson as `skill-audit`'s "do not launch from a time-based /loop"). Therefore avoid the standing /loop and **limit to event triggers (post-merge / manual)**.
-  2. **Who runs the scan**: if the Lead scans directly, it touches the "secretary does not investigate" boundary. Avoid this by confining the scan to a **deterministic tool** ([§1](#1-background-and-fixed-constraints-premises-this-design-does-not-overturn) constraint 2). If deeper analysis of a candidate is needed, delegate to a worker after the human gate.
-- **Verdict**: **adopted (as the manual entry)**. However, alone it leaves the "when to run it" problem, so the standing trigger is delegated to Option C.
+- **Pros**: Naturally preserves the Secretary boundary (Secretary launches, Secretary presents). Live state (empty panes) is visible locally. Plays well with manual on-demand.
+- **Cons / caveats**:
+  1. **Trigger is passive**: The Secretary has to think about "when to run it". A time-based steady `/loop` would dirty the raw logs / presentation on days with no change (same lesson `skill-audit` drew with "do not launch in a time-based /loop"). Therefore, avoid a steady /loop and **limit to event-driven (post-merge / manual)**.
+  2. **Who executes the scan**: If the Secretary scans directly, this can brush against the "Secretary does not investigate" boundary. This is avoided by sealing the scan into a **deterministic tool** ([§1](#1-background-and-confirmed-constraints-premises-this-design-does-not-overturn) constraint 2). Candidates that need a deep dive get delegated to a worker post human gate.
+- **Verdict**: **Adopted (as the manual entry)**. However, by itself the "when to run" problem remains, so the steady trigger is delegated to Option C.
 
 ### 6.3 Option C: dispatcher-loop extension
 
-Extend the already-resident dispatcher monitoring `/loop` (worker monitoring) and the on-demand spawn mechanism at worker close ([`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) / [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md)) to run the triage scan **the moment a worker closes = a pane slot opens up**, and send the candidate JSON to the Lead via peer message.
+Extend the dispatcher's already-resident monitoring `/loop` (worker monitoring) and the on-demand spawn mechanism at worker close ([`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) / [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md)) so that **at the moment a worker closes = pane slot opens**, run the triage scan and send the candidate JSON to the Secretary via peer message.
 
-- **Benefits**:
-  1. **Reuse of an existing standing loop**: does not add a new resident process. Rides the same pattern as on-demand curator: "at worker close, run threshold/condition check -> launch only when the condition is met" (the implementation/operational cognitive cost is known).
-  2. **Trigger is semantically correct**: fires at "pane opens = the timing where the next work can be put in". Naturally tied to idle detection too.
-  3. **Has live state**: the dispatcher knows the pane topology and present workers, providing material for the `parallelizable` / free-slot-filling decision.
-- **Drawbacks / cautions**:
-  1. **Expansion of dispatcher role**: the dispatcher's principle is "act as the Lead's delegate; do not talk directly with humans" ([`.dispatcher/CLAUDE.md`](../../.dispatcher/CLAUDE.md)). Triage is a new responsibility, but the dispatcher **only runs a compute tool and forwards the candidate JSON to the Lead** — it does not touch the human or make a start decision. As long as the "dispatcher -> Lead -> human" path is preserved, the boundary is not broken.
-  2. **Firing depends on worker close**: while workers are zero and the org is fully idle, it does not fire. Compensate this with Option B (manual).
-- **Verdict**: **adopted (as the standing trigger)**.
+- **Pros**:
+  1. **Reuse of existing resident loop**: Does not add a new resident process. Rides on exactly the same "at worker close, check threshold/conditions, launch only when conditions hold" pattern as the on-demand curator (cognitive cost of implementation/operation is already known).
+  2. **Trigger is semantically correct**: Fires at "pane opens = timing to put the next task in". Connects naturally with idle detection too.
+  3. **Holds live state**: The dispatcher knows the pane topology and resident workers, providing the material for `parallelizable` / empty-slot fit determinations.
+- **Cons / caveats**:
+  1. **Expansion of dispatcher's role**: The dispatcher's principle is "act for the Secretary's DELEGATE; do not converse directly with the human" ([`.dispatcher/CLAUDE.md`](../../.dispatcher/CLAUDE.md)). Triage is a new duty, but the dispatcher **only runs the compute tool and forwards the candidate JSON to the Secretary**; does not touch the human, does not commit. As long as the path "dispatcher -> Secretary -> human" is preserved, the boundary is not broken.
+  2. **Firing depends on worker close**: While workers are zero and fully idle, it does not fire. This is supplemented by Option B (manual).
+- **Verdict**: **Adopted (as the steady trigger)**.
 
 ### 6.4 Recommendation
 
-**Recommendation: Option C as the standing trigger, Option B as the manual override, with both sharing the same compute-layer tool. Option A is rejected.**
+**Recommendation: Option C as the steady trigger, Option B as the manual override, both sharing the same compute-layer tool. Option A is not adopted.**
 
-| | Lead boundary | Live state visible | Trigger quality | Operational cost | Decision |
+| | Secretary boundary | Live state visible | Trigger quality | Operational cost | Adopt? |
 |---|---|---|---|---|---|
-| A. cron cloud | x breaks | x invisible | o time-autonomous | △ separate billing / opaque | **rejected** |
-| B. local skill | o | o | △ passive / manual | o | **adopted (manual)** |
-| C. dispatcher-loop extension | o (Lead-routed) | o | o event-driven | o reuses existing loop | **adopted (standing)** |
+| A. cron cloud | X breaks | X invisible | O time-autonomous | / separate billing/opaque | **No** |
+| B. local skill | O | O | / passive/manual | O | **Yes (manual)** |
+| C. dispatcher-loop extension | O (Secretary route preserved) | O | O event-driven | O reuses existing loop | **Yes (steady)** |
 
-Rationale: with the compute layer consolidated to one, "C as standing + B as manual" is just two entrances to the same tool, not a double implementation. C reuses the proven on-demand-curator pattern and is the only option satisfying the Lead boundary, live state, and trigger quality simultaneously. B plugs the holes at idle time or any arbitrary timing. A is structurally incompatible due to the Lead boundary and live state.
+Rationale: Because the compute layer is consolidated into one piece, "C for steady launch + B for manual launch" is just two entries to the same tool, not double implementation. C reuses the proven pattern of the on-demand curator and is the only option that simultaneously satisfies the three points of Secretary boundary, live state, and trigger quality. B plugs the hole during idle or at arbitrary timings. A is structurally unfit on the two points of Secretary boundary and live state.
 
-> This recommendation aligns perfectly with assessment §7(b)'s "auto up to the proposal, the start decision is the human's": **discovery (scan, ranking, presentation) is automated, judgment (selection, starting) is the human's**.
+> This recommendation is fully aligned with assessment §7(b)'s "automatic up to proposal, keep human on commitment": **discovery (scan, ranking, presentation) is automated, judgment (selection, commitment) is human**.
 
 ## 7. Safety rails (invariants)
 
-The following are designated **invariants** of this mechanism. They must not be broken regardless of the delivery option or future extensions.
+The following are the **invariants** of this mechanism. They must not be broken regardless of delivery option or future extensions.
 
-- **INV-1 — propose-only / stop at the proposal**: the mechanism's output is the ranked candidate list only. After emitting it, **stop**. No spawn, delegate, branch creation, commit, PR, or write to an Issue. The compute layer is read-only (only reads Issues; zero side effects).
-- **INV-2 — start decision requires the human gate**: candidate selection is made by the human only. The chosen candidate enters the normal delegation flow **from Step 0 of the existing [`/org-delegate`](../../.claude/skills/org-delegate/SKILL.md)**. It is forbidden for the discovery mechanism to call org-delegate by itself. Auto-starting rank 1 (the recommendation) is also forbidden.
-- **INV-3 — no auto-PR / no auto-commit**: this mechanism **does not change the source tree, Issues, PRs, or git (commit / branch / push) in any way**. Even if the operation is to commit the triage result to source, that is a separate task by human judgment and is not done by the mechanism automatically.
-  - **Exception (= recording org state, not change)**: ordinary operational bookkeeping such as appending a journal event to the `.state/state.db` events table ([§7.1](#71-verifiability-of-the-invariants)) is out of scope of this INV. This is the same class of bookkeeping that all other roles routinely perform, and it does not change git history / source / GitHub. **The read-only compute-layer tool itself does not write to state.db either** ([§7.1](#71-verifiability-of-the-invariants) "ensuring zero side effects"). The separation that the delivery layer (Lead / dispatcher) writes journal entries — not the compute-layer tool — must be maintained.
-- **INV-4 — Lead = the only point of contact with humans**: the triage result must always reach the Lead, and the Lead presents to the human. The discovery mechanism (dispatcher / cron / tool) must not directly reach a human or a human-visible surface on GitHub (the direct reason Option A was rejected).
-- **INV-5 — all implementation work is delegated / the secretary does not investigate**: the scan is a deterministic tool invocation; it is not "investigation". If deeper feasibility / design work on a candidate is needed, treat it as a delegated worker task after the human gate. The Lead / dispatcher do not investigate or implement the content of a candidate themselves.
+- **INV-1 — propose-only / stop at proposal**: The mechanism's output is only the ranked candidate list. After generation, it **stops**. It does not perform any of: spawn, delegate, branch creation, commit, PR, write to an Issue. The compute layer is read-only (only reads Issues, zero side effects).
+- **INV-2 — commitment requires the human gate**: Candidate selection is made by the human only. Selected candidates enter the normal delegation flow **starting from Step 0 of the existing [`/org-delegate`](../../.claude/skills/org-delegate/SKILL.md)**. It is forbidden for the discovery mechanism to call org-delegate by itself. Auto-commit to rank 1 (recommendation) is also forbidden.
+- **INV-3 — no auto PR / no auto commit**: This mechanism **does not modify the source tree, Issues, PRs, or git (commit / branch / push) at all**. Even if the operation commits triage results into source for retention, that is a separate task by human judgment and not done automatically by the mechanism.
+  - **Exception (= bookkeeping of organization state, not modification)**: Appending journal events to the `events` table of the regular `.state/state.db` ([§7.1](#71-verifiability-of-invariants)) is outside this INV. It is peer to the daily bookkeeping all other roles perform, and does not change git history, source, or GitHub. **The read-only compute-layer tool itself does not write to state.db either** ([§7.1](#71-verifiability-of-invariants) "Guarantee of zero side effects"). Journal entry is done by the delivery layer (Secretary / dispatcher), not the compute-layer tool — keep this separation.
+- **INV-4 — Secretary = sole human contact**: Triage results always reach the Secretary, and the Secretary presents them to the human. The discovery mechanism (dispatcher / cron / tool) must not reach the human or any human-visible surface on GitHub directly (the direct grounds for not adopting Option A).
+- **INV-5 — all real work is delegated / Secretary does not investigate**: The scan is deterministic tool execution, not "investigation". If feasibility deep dive or design is needed for a candidate, that is handled as a delegated worker task post human gate. The Secretary / dispatcher does not investigate or implement the candidate's contents themselves.
 
-> These five mechanically guarantee what assessment §5-1 / §7(b) demands: "raise the autonomy of discovery without removing the human from the loop apex". In particular, **INV-1 + INV-2 are the core of "auto up to the proposal / human gate"**; INV-4 is what excludes Option A; INV-5 is the brake that does not increase comprehension debt (§5-2).
+> These five mechanically guarantee what assessment §5-1 / §7(b) demands: "raise the autonomy of discovery, but do not remove the human from the apex of the loop". In particular, **INV-1 + INV-2 are the body of "up to proposal / human gate"**; INV-4 is the basis for excluding Option A; INV-5 is the brake against growing understanding debt (§5-2).
 
-### 7.1 Verifiability of the invariants
+### 7.1 Verifiability of invariants
 
-- **Audit log**: record the scan execution, candidate count, and recommendation as a journal event (proposed kind example: `work_discovery_scanned` / payload `candidate_count` / `recommendation_issue` / `trigger`) so that "when, how many, what was recommended" can be retraced after the fact. The one doing the recording is the **delivery layer (Lead / dispatcher), not the read-only compute-layer tool** (the separation of the INV-3 exception). As [`docs/journal-events.md`](../journal-events.md) says, the SoT of events is the events table in `.state/state.db`, and emission goes through the DB-routed helpers (`tools/journal_append.sh` / `tools/journal_append.py`) (no more legacy `.state/journal.jsonl` direct writes or direct DB INSERTs). **Adding the proposed event to the ledger and wiring it up is out of scope of this design** (a separate task).
-- **Ensuring zero side effects**: the compute-layer tool uses **only read-only APIs** like `gh issue list` / `rtk gh issue view`, and pins by tool contract (and future unit tests) that it does not call any write API or git operation.
+- **Audit log**: Leave scan execution, candidate count, and recommendation as journal events (proposed kind example: `work_discovery_scanned` with payload `candidate_count` / `recommendation_issue` / `trigger`) so that "when, how many, what was recommended" can be traced. Entry is done by **the delivery layer (Secretary / dispatcher), not the read-only compute-layer tool** (separation of the INV-3 exception). As [`docs/journal-events.md`](../journal-events.md) says, the SoT for events is the `events` table in `.state/state.db`, and emission goes through DB-routed helpers (`tools/journal_append.sh` / `tools/journal_append.py`) (no direct writes to the old `.state/journal.jsonl` or direct DB INSERT).  **Ledger entry for the proposed event and its actual wiring are out of scope for this design** (separate task).
+- **Guarantee of zero side effects**: The compute-layer tool uses **only read APIs** such as `gh issue list` / `rtk gh issue view`, and never calls write APIs or git operations; fix this as a tool contract (and future unit tests).
 
-## 8. Integration with post-merge proactive-next-dispatch
+## 8. Integration with post-merge proactive next-dispatch
 
-The current post-merge proactive next-dispatch (the policy in [`CLAUDE.md`](../../CLAUDE.md) + operational memory) has the Lead improvise `gh issue list` after a PR merge and emit candidates. We **upgrade this to a triage-result base**.
+The current post-merge proactive next-dispatch (the policy in [`CLAUDE.md`](../../CLAUDE.md) + operational memory) has the Secretary bang out `gh issue list` on the spot after a PR merge to produce candidates. **Promote this to a triage-result base.**
 
-### 8.1 Integration approach
+### 8.1 Integration method
 
-1. **Trigger convergence**: trigger the triage scan at the point where PR merge -> post-merge cleanup -> dispatcher CLOSE_PANE confirmation is done (the same moment as worker close in [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md)). Naturally overlaps with Option C's worker-close trigger.
-2. **Improvisation -> structured**: instead of having the Lead run `gh issue list` itself, it receives the compute-layer tool's candidate JSON ([§5.1](#51-machine-readable-json-tool-stdout)) and presents to the human in the form of [§5.2](#52-human-readable-rendering-lead--human). The decision criteria (dependencies resolved / priority / effort) are codified, and reproducibility and auditability are added.
-3. **Prioritize recent-merge-driven**: in the post-merge context, strongly weight the `unblocked_by_recent_merge` axis ([§4.2](#42-auxiliary-axes-used-for-ranking)) so that "natural follow-ups to the most recent merge" and "Issues unblocked by the most recent merge" (the proactive candidate patterns listed by operational memory) appear near the top. Put `generated_for: "post_merge"` into the JSON to make context explicit.
-4. **Invariant of the human operation**: keep the presentation format and the "pick by number" experience compatible with the current behavior ([§5.2](#52-human-readable-rendering-lead--human)). The only change visible to the human is "the basis for candidates is explicit, and the exclusion reasons are visible".
+1. **Trigger-point merge**: The moment "PR merge -> post-merge cleanup -> dispatcher CLOSE_PANE confirmed" finishes (the same moment as worker close in [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md)) becomes the trigger for the triage scan. It naturally overlaps with Option C's worker-close trigger.
+2. **Improvisation -> structuring**: Instead of the Secretary banging out `gh issue list`, receive the candidate JSON from the compute-layer tool ([§5.1](#51-machine-readable-json-tool-stdout)) and present it to the human in the form of [§5.2](#52-human-readable-rendering-secretary--human). Decision criteria (dependency resolved / priority / effort) are made explicit, gaining reproducibility and auditability.
+3. **Prioritize the recent-merge basis**: In the post-merge context, strongly activate the `unblocked_by_recent_merge` axis ([§4.2](#42-auxiliary-axes-used-for-ranking)) to bring "natural follow-ups of the recent merge" / "Issues unblocked by the recent merge" (proactive candidate patterns listed in operational memory) to the top. Put `generated_for: "post_merge"` in the JSON to make context explicit.
+4. **Human operation invariant**: Keep the presentation format and the "decide on the spot by number" experience compatible with the current ([§5.2](#52-human-readable-rendering-secretary--human)). From the human's view, the only change is "the basis of candidates becomes explicit, and the exclusion reason becomes visible".
 
-### 8.2 Post-upgrade position
+### 8.2 Position after promotion
 
-| | Current proactive next-dispatch | After upgrade |
+| | Current proactive next-dispatch | After promotion |
 |---|---|---|
-| Candidate generation | Lead improvises `gh issue list` | Compute-layer tool (codified criteria) |
+| Candidate generation | Secretary improvising `gh issue list` | Compute-layer tool (explicit criteria) |
 | Decision basis | Implicit | `dependency` / `priority` / `effort` + signals |
-| Exclusion visibility | None | Presents `excluded_blocked` |
-| Trigger | post-merge only | post-merge (converged with Option C) + manual (Option B) |
-| Starting | Human (unchanged) | Human (unchanged) |
+| Visibility of exclusions | None | Show `excluded_blocked` |
+| Trigger | post-merge only | post-merge (merging with Option C) + manual (Option B) |
+| Commitment | Human (unchanged) | Human (unchanged) |
 | Audit | None | journal `work_discovery_scanned` |
 
-> The key to integration: **we do not abolish or replace proactive next-dispatch; we only swap its "candidate generation" part from improvisation to the triage mechanism**. The outer shape "Lead presents to human; human selects" is fully preserved (INV-2 / INV-4).
+> Crux of the integration: **do not abolish / replace proactive next-dispatch; just swap its "candidate generation" part from improvisation to the triage mechanism**. The outer form "Secretary presents to human, human picks" is fully preserved (INV-2 / INV-4).
 
-## 9. Staged rollout and verification (proposal)
+## 9. Phased rollout and verification (proposal)
 
-Recommended order if implemented (this design document plans only; implementation of each phase is a separate task).
+Recommended ordering if implemented (this design document only plans; implementation of each Phase is a separate task).
 
-1. **Phase 1 — compute layer**: `tools/work_discovery_scan.py` (read-only, candidate JSON on stdout, exit-code branching, unit tests). Alone it has zero side effects and can be output-verified manually with `python3 tools/work_discovery_scan.py`.
-2. **Phase 2 — Option B manual entry**: the path where the Lead manually launches and presents. Adding the skill involves `.claude/` edits, which is out of scope of this worker (a separate task).
-3. **Phase 3 — Option C standing trigger**: wiring that runs the scan at worker close and forwards to the Lead (involves prose updates of [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) / [`.dispatcher/CLAUDE.md`](../../.dispatcher/CLAUDE.md)).
-4. **Phase 4 — post-merge integration**: the upgrade in §8. Swap proactive next-dispatch candidate generation to the triage output.
+1. **Phase 1 — compute layer**: `tools/work_discovery_scan.py` (read-only, candidate JSON to stdout, exit-code branching, unit tests). Alone, this has zero side effects, and the output can be verified manually via `python3 tools/work_discovery_scan.py`.
+2. **Phase 2 — Plan B manual entry**: The path where the Secretary launches manually and presents. Adding the skill entails `.claude/` editing, hence outside this worker's scope (separate task).
+3. **Phase 3 — Plan C steady trigger**: Wiring that launches the scan at worker close and forwards to the Secretary (entails prose updates to [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) / [`.dispatcher/CLAUDE.md`](../../.dispatcher/CLAUDE.md)).
+4. **Phase 4 — post-merge integration**: The promotion in §8. Swap proactive next-dispatch's candidate generation to the triage output.
 
-Each phase is reviewed at its gate to confirm that INV-1 through INV-5 are not broken. In particular, "is it read-only?" and "is the human gate not being skipped?" are verified per phase.
+Each Phase confirms via review gate that it does not break INV-1 through INV-5. In particular, "is it read-only" and "is the human gate not skipped" are verified per Phase.
 
-## 10. Out of scope / future work
+## 10. Cross-repository triage (implemented)
 
-- **Auto-starting**: out of scope of this design (permanently forbidden by INV-1 / INV-2). As assessment §5 says, "keeping the human at the apex of the loop" is the fixed policy of this organization.
-- **Cross-repository triage**: dependency resolution across multiple repositories (runtime / ja / renga, etc.) is assumed to be single-repository in this design. Future extension.
-- **More sophisticated effort estimation**: the effort in §4.1 is a heuristic. Learning from actual effort on past PRs is future work.
-- **Concrete implementation of `.claude/` skill, `.dispatcher/` prose, and `tools/`**: this worker is DESIGN ONLY. All separate tasks.
-- **Ledger entry and wiring of the proposed journal event**: ledger updates for `work_discovery_scanned` etc. in [`docs/journal-events.md`](../journal-events.md) and emit wiring are implementation-task side.
+> Status: **Implemented** (Issue #528). The original premise was "single-repository assumed; future extension", but the compute layer ([`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py)) was additively extended to **multi-repository cross dependency resolution + cross ranking**. Single-repository behavior (`scan()` entry) is fully preserved, and the invariants INV-1 through INV-5 ([§7](#7-safety-rails-invariants)) also hold.
 
-## 11. Open points (require human judgment before implementation)
+Scan multiple repositories (ja / runtime / renga / transport-lab etc.) at once and rank next-task candidates across them. The core is the **qualified ref**: all open Issues/PRs / dependency references / recent merge links are keyed by `(repo, number)`, so `ja#60` and `runtime#60` are treated as distinct and do not collide.
 
-1. **Default value of N**: candidate cap set to N=3 default, but is it variable by free pane count (free slots = N) or fixed?
-2. **Priority label scheme**: it is unconfirmed to what extent the Issues in this repository carry a `priority:*` / `p0..p2` label scheme. If absent, the priority computation in §4.1 degenerates to milestone + updated timestamp. Confirm the actual label distribution before implementation.
-3. **Variance in dependency notation**: which notations — `Blocked by` / `Depends on` / task list, etc. — are actually used in this repository's Issues? The extraction patterns must be calibrated on real data (to avoid over-matching that misclassifies as blocked -> unjustly excludes from candidates).
-4. **Idle-time trigger**: at full idle with zero workers, Option C does not fire. Whether to add a lightweight trigger beyond Option B manual (e.g., "scan once at Lead startup") is an operational judgment.
+### 10.1 Dependency notation and calibration (2026-06-12, based on real Issues)
+
+- **Notation resolved**: `Blocked by owner/repo#N` / `Depends on owner/repo#N` / `Requires owner/repo#N`, and GitHub URL form (`https://github.com/owner/repo/issues/N` / `/pull/N`). Bare `#N` in the home repo is qualified to the relevant Issue's repo as before.
+- **Most important point confirmed by calibration**: In the real Issue corpus, all cross-repository references appear in **non-blocking notation** (`Epic:` / `Refs:` / `Found by` / `Design source:`); they appear zero times in blocking clauses like `Blocked by`. Therefore the cross-repo extractor, like the home extractor, uses **keyword gate + leading-run anchored** ([§11-3](#11-open-points-requiring-human-judgment-before-implementation) avoidance of over-match) and does not mistakenly treat `Epic: owner/repo#6` as a blocker. This feature is **enabled in a forward-compatible way**: the moment a real Issue adopts blocking notation it resolves it, and existing non-blocking references are not misread.
+- **Intentional non-coverage** (prefer explicit to misread, [§4.4](#44-explicit-uncertainty-for-estimated-axes)):
+  - Owner-less short form `ja#467` is ambiguous and not resolved.
+  - Prose dependencies on releases / versions (`claude-org-runtime>=0.1.11`, "waiting for the runtime 0.1.20 release") are not Issue references and are not resolved. If a real blocker is written in this form, **human scope judgment** is needed (not silently dropped).
+
+### 10.2 Resolution model (scan-set-relative + audit signals)
+
+- Blocking references are resolved against the **open set of repos included in the scan target**. To resolve `runtime#60`, include runtime in the scan set (cross triage assumes batch scanning of ja/runtime/renga etc., which is natural).
+- **Keying is always done by the actual repo name (separated from display)**: Even when collapsing display to home (`repo: null` / int `blocking_refs`, §5.1 backward compatible) in single-repo scans, dependency-resolution keying is by the actual repo name. This way, **fully qualified self-references** to the same repo (`Blocked by owner/repo#5` in the scan of that repo) are correctly resolved against that repo's open set, and `#5` becomes blocked when it is open (avoiding the unscanned-misjudgment that would happen if the display collapse were applied to keying). Display collapse is the responsibility of output rendering only.
+- Cross-repository references that point to repos **outside** the scan set are **treated as resolved** (following the existing policy of mis-exclusion < mis-inclusion), but the candidate's `signals[]` must always emit `"cross-repo ref owner/repo#N to un-scanned repo — treated resolved"` so the human can distinguish "because closed" vs. "because unverified" (auditable silent resolution).
+- The recent-merge set is **qualified by the merging repo** (a runtime PR's `Closes #60` resolves runtime#60, leaving ja#60 untouched).
+
+### 10.3 Launch (CLI)
+
+- Pass multiple repos by repeating `--repo`: `python3 tools/work_discovery_scan.py --repo suisya-systems/claude-org-ja --repo suisya-systems/claude-org-runtime`. With omitted or single use, single-repo as before.
+- For candidate identity (`repo`+`issue`), canonical `blocking_refs`, and the recommendation's `repo`, see [§5.1](#51-machine-readable-json-tool-stdout). INV-1 (read-only / propose-only) is preserved: only **read subcommands** of gh are used; cross-repo scans never perform writes, git operations, or spawn.
+
+## 10'. Out of scope / future work
+
+- **Auto-commitment**: out of scope of this design (permanently forbidden by INV-1 / INV-2). As assessment §5 says, the confirmed policy of this organization is "keep the human at the apex of the loop".
+- **Release/version dependency resolution**: Auto-resolution of prose release dependencies in [§10.1](#101-dependency-notation-and-calibration-2026-06-12-based-on-real-issues) (`runtime>=0.1.11` etc.) is out of scope (scope A confirmed: up to cross resolution of Issue references). Cross matching with `gh release` is future work.
+- **Effort estimation refinement (implemented; gated OFF in this repository)**: In addition to the static heuristic in §4.1, [`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) learns a repo-calibrated effort model from the **realized effort** of recently merged PRs (changed lines / file count. Review-round count and time-to-merge are degenerate signals, so they are excluded from the composite and recorded as context only) (`--effort-history`, default 60, `0` disables). Uses `closingIssuesReferences` to bridge PR<->Issue, and measures whether the only observable predictor at triage time (Issue body length) correlates with realized effort. Only when the **data-driven gate** (sufficient sample size AND Spearman >= threshold) is cleared does it override the static estimate; otherwise the static estimate is preserved, and reason + realized effort context is made explicit in `signals[]`. In the real data of this repository, body length does not correlate with realized effort (rho ~ 0, n~23 — body length reflects the spec's detail, not code change volume), so the gate correctly declines to override, and the model adds only audit context while avoiding the misread that "the machine asserted it" (cognitive surrender, §4.4). Repos that adopt size labels in the future or where a body-length correlation emerges have the same framework auto-applying learned cutpoints. The learning fetch is **non-fatal** (on gh failure, falls back to the static heuristic; triage is not interrupted). The uncertainty-explicit contract of `effort_estimated` + `signals[]` is preserved on the learning path. The model summary is echoed to `effort_model` in the output. **Known limitation (explicit)**: The body used for the predictor is the *current* body of the closed issue, not the snapshot at merge / triage time (because gh does not offer a cheap way to fetch historical bodies). Post-close body edits can move the learned correlation / cutpoint (spec issues are rarely edited post-close, but `coverage` makes the noise source auditable for coverage). **
+- **Implementation of `.claude/` skills / `.dispatcher/` prose entities**: Delivery-layer wiring for cross-repository support (Secretary skill multi-repo launch / dispatcher extension) and the operational wiring of the effort learning gate are separate tasks.
+- **Ledger entry and wiring of proposed journal events**: Additions to [`docs/journal-events.md`](../journal-events.md) for `work_discovery_scanned` etc. and the emit wiring are on the implementation task side.
+
+## 11. Open points (requiring human judgment before implementation)
+
+1. **Default value of N**: The candidate upper bound is defaulted to N=3, but whether to make it variable with empty pane count (empty slots = N) or fixed.
+2. **Priority label scheme**: It is unconfirmed how far this repository's Issues carry a `priority:*` / `p0..p2` label scheme. If absent, the §4.1 priority computation degenerates to milestone + update time. Confirmation of the actual label distribution is needed before implementation.
+3. **Variation in dependency notation**: Which of `Blocked by` / `Depends on` / task list etc. real Issues in this repository use. The extraction patterns need calibration against real data (to avoid over-match -> mistaken blocked judgment -> unfair exclusion from candidates).
+4. **Trigger when idle**: When workers are zero and the org is fully idle, Option C does not fire. Whether to add a light trigger like "scan once on Secretary startup" in addition to Option B manual is an operational judgment.

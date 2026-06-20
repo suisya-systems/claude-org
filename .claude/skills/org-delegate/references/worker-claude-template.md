@@ -32,7 +32,7 @@ If it does not match, do not begin work — report the error to the Secretary.
 - When creating files, verify that the absolute path starts with `{worker_dir}/`.
 
 ### Notes for Windows
-- For Python, use `py -3` instead of `python` (on Windows `python` may redirect to the Store app).
+- For Python, use either `py -3` or `python` (on Windows `python` may redirect to the Store app, and `py -3` may also point to a different Python environment depending on the py launcher configuration. Right after startup, verify the intended version with `--version` and use whichever one works).
 - When dealing with files that contain Japanese, explicitly pass `encoding="utf-8"`.
 
 ## Project information
@@ -94,7 +94,7 @@ Follow the **"verification depth" line that is always included** in the dispatch
 
 **Codex self-review as an additional gate (optional; run if the codex CLI is installed):**
 
-After committing and before the completion report, **if the `codex` CLI is available**, run a self-review by invoking `codex exec --skip-git-repo-check` directly. This is an additional gate layered on top of `full`; in environments without it installed, you can proceed to the completion report with only the "`full` prerequisites" above.
+After committing and before the completion report, **if the `codex` CLI is available**, run a self-review with `codex exec review` (review surface) (the long-prompt direct `codex exec` form is deprecated; on small/medium diffs the review surface is roughly 2x faster and at parity for safety-critical Blocker/Major findings). This is an additional gate layered on top of `full`; in environments without it installed, you can proceed to the completion report with only the "`full` prerequisites" above.
 
 Availability check example:
 ```bash
@@ -105,11 +105,14 @@ Get-Command codex -ErrorAction SilentlyContinue
 ```
 
 - If `unavailable`: skip self-review and proceed directly to the completion report after commit (the round discipline / fix loop below does not apply).
-- If `available`: run the command below.
+- If `available`: run the command below in the **foreground** (pass the branch's base, normally `main`, to `--base`. Close stdin explicitly with `< /dev/null`. Avoid background `&` + log redirect because it leads to reporting completion without waiting for or reading the findings, slipping past the gate).
 
 ```bash
-codex exec --skip-git-repo-check "Review the diff of this branch against main. Classify findings as Blocker/Major/Minor/Nit and, for each finding, give the target file:line and a concise rationale in Japanese."
+codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
+
+- The review surface returns Blocker/Major-equivalent findings (P1/P2 etc.) from the built-in review prompt. **Read the output in the foreground before moving on** (you may interrupt and skip only in the rare case the response does not come back). **Do not raise the effort on a large diff (rule of thumb: over 100 lines)** (a high-effort review does not scale on large diffs and has been measured to be slower than the direct form).
+- The review surface protects the dangerous-side Major findings (the false-positives that would let the gate pass incorrectly) but can miss benign safe-side Major findings (false negatives in the over-polling direction) and ReDoS-class side bugs. For changes close to design that need deep inspection, consult the Lead about pairing with a design review. For the SoT with measured rationale see [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md).
 
 The following only apply when `codex` was actually run:
 - Blocker / Major: stack a fix commit and re-review.
@@ -130,7 +133,7 @@ done: {short commit SHA} {changed filenames}
 - Retrospective records (`knowledge/raw/`) are also **not required** under minimal (the assumption is that a trivial fix has no reusable learning). If you do hit a non-obvious finding, you may produce one record using the same procedure as `full`.
 
 ### Prohibited in both modes (when using codex)
-Do not use the `codex:rescue` skill (real-world incident: it hung for over 18 minutes; switching to direct `codex exec` worked normally). In environments without codex installed, this note is irrelevant.
+Do not use the `codex:rescue` skill (real-world incident: it hung for over 18 minutes; the direct `codex exec review` / `codex exec` forms work normally). The `gpt-5.5-codex` model and the API-key surface cannot run on a ChatGPT account (explicitly pass `-m gpt-5.5`). In environments without codex installed, this note is irrelevant.
 
 ## When the work is done (required; verification depth `full` only)
 
