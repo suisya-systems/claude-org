@@ -13,7 +13,7 @@
 3. `git push` 不可
 
 ### Windows
-- Python は `py -3` または `python` (3.10 推奨)
+- Python は `py -3` または `python`（3.10 推奨。どちらも別の Python 環境を指す場合があるため `--version` で確認し、動作する方を使う）
 - 日本語ファイル: `encoding="utf-8"` 明示
 - CLI 出力文字列（argparse `help=` / `print()`）は ASCII の `-` を使う（em-dash 等 cp932 非対応文字は cp932 コンソールでの `--help` を `UnicodeEncodeError` でクラッシュさせる。pytest の `redirect_stdout` では検出できず実端末でのみ落ちる）。実装後 `--help` を実端末で 1 回スモーク
 
@@ -50,13 +50,15 @@ ${references_knowledge_block}
 
 <!--BEGIN:codex_full-->
 ## Codex セルフレビュー
-検証深度 full。`codex` available なら commit 後:
+検証深度 full。`codex` available なら commit 後、`codex exec review`（review surface）で差分セルフレビュー（直打ち長文プロンプト形は廃止。中小 diff で約 2 倍速・安全側パリティ同等）:
 ```bash
-codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"
+# --base はブランチのベース（通常 main）。前景実行して出力を読んでから次へ進む。
+codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
-- Blocker/Major 修正、3 ラウンド上限
+- **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、3 ラウンド上限
 - Minor/Nit 残置可
-- `codex:rescue` skill 禁止、`codex exec` 直打ちのみ
+- **large diff では effort を上げない**（high-effort review は大 diff でスケールしない）。review surface は危険側 Major は守るが benign safe-side false-negative / ReDoS 級を取りこぼしうる（詳細: claude-org リポジトリの `knowledge/curated/codex.md`）
+- `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。`gpt-5.5-codex` / API キー surface は不可（`-m gpt-5.5` 明示）
 
 **完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
 1. **最重要の変更点（N 個）**: 効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
