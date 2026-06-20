@@ -32,7 +32,7 @@ If it does not match, do not begin work — report the error to the Secretary.
 - When creating files, verify that the absolute path starts with `{worker_dir}/`.
 
 ### Notes for Windows
-- For Python, use `py -3` instead of `python` (on Windows `python` may redirect to the Store app).
+- For Python, use either `py -3` or `python` (on Windows `python` may redirect to the Store app, and `py -3` may also point to a different Python environment depending on the py launcher configuration. Right after startup, verify the intended version with `--version` and use whichever one works).
 - When dealing with files that contain Japanese, explicitly pass `encoding="utf-8"`.
 
 ## Project information
