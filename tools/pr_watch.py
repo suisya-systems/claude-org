@@ -23,16 +23,22 @@ Behavior:
   exit code (gh exits non-zero on a transient watch error too, and
   exit 8 specifically means "Checks pending", not "failed").
   Classifies as ``passed`` (all pass/skipping), ``failed``
-  (≥1 fail/cancel), ``incomplete`` (any pending / unknown bucket /
-  empty list), or ``canceled`` (parent SIGINT). Falls back to
-  exit-code-based classification only if the JSON probe itself
-  fails. Appends one row to the ``events`` table in
-  ``<repo_root>/.state/state.db`` (anchored to ``tools/..`` so cwd
-  doesn't matter).
+  (≥1 fail/cancel), ``incomplete`` (checks parseable but at least one
+  still pending / unknown bucket / empty list), ``indeterminate``
+  (Issue #685: the ``gh pr checks --json`` probe never returned a
+  parseable response within the retry budget, so no CI verdict could
+  be read), or ``canceled`` (parent SIGINT). The JSON probe is retried
+  with exponential backoff so a transient ``gh`` failure resolves to a
+  definitive ``passed`` / ``failed`` instead of degrading; only a
+  persistent probe failure lands on ``indeterminate``. Appends one row
+  to the ``events`` table in ``<repo_root>/.state/state.db`` (anchored
+  to ``tools/..`` so cwd doesn't matter).
 * Prints the final status as a single line on stdout and exits with
   a deterministic exit code derived from the *resolved* status
   (Issue #413 / Codex round-1 Major): ``passed``→0, ``failed``→1,
-  ``canceled``→2, ``incomplete``→8. The original ``gh`` exit code
+  ``canceled``→2, ``incomplete``→8, ``indeterminate``→8 (Issue #685:
+  like ``incomplete`` it is not a clean pass/fail for ``$?`` callers).
+  The original ``gh`` exit code
   is intentionally NOT propagated, because the resolver may upgrade
   ``gh exit 8`` ("Checks pending") to a final ``passed`` verdict
   via retry — returning 8 in that case would mislead shell callers
@@ -48,8 +54,29 @@ The event payload shape is::
 
     {"event": "ci_completed", "ts": "<ISO8601>",
      "pr": <int>, "repo": "<owner/repo>",
-     "status": "passed|failed|incomplete|canceled",
-     "duration_sec": <int>}
+     "status": "passed|failed|incomplete|indeterminate|canceled",
+     "duration_sec": <int>, "head": "<short-sha|null>"}
+
+Issue #685: when the verdict was derived from a parseable
+``gh pr checks --json`` response, the payload additionally carries
+``fail_count`` / ``pending_count`` / ``total_checks`` (so a consumer
+can tell a single-check red from a broad outage without re-querying
+gh). An ``indeterminate`` verdict instead carries
+``retry_recommended: true`` / ``retry_after_sec`` / ``probe_attempts``,
+making the retry schedule explicit so the monitoring side can
+distinguish "verdict not yet knowable, re-invoke pr_watch" from a
+genuinely stalled merge gate. The base keys above are unchanged, so
+existing consumers keep working.
+
+Issue #636: ``--merge-watch`` no longer assumes the head is frozen
+after CI passes. Each merge-watch iteration polls ``headRefOid`` (via
+``gh pr view``); if a new commit lands on the PR branch, the watcher
+loops back to ci-watch for the new head and re-emits ``CI_COMPLETED``,
+so the secretary never approves a merge against a stale verdict. The
+``head`` field (short sha) is added to the ``ci_completed`` event and to
+every peer message (``CI_COMPLETED`` / ``PR_MERGED`` /
+``PR_MERGED_NO_RUN`` / ``PR_MERGE_WATCH_TIMEOUT``) so callers can tell
+which head the signal belongs to.
 """
 
 from __future__ import annotations
@@ -69,6 +96,12 @@ from pathlib import Path
 # secretary can intervene manually past that.
 MERGE_WATCH_MAX_SECONDS = 24 * 60 * 60
 
+# Issue #636 (Codex review): sentinel returned by _watch_for_merge when the
+# PR merged at a head whose CI this watcher never confirmed (a push + merge
+# both landed between polls). Distinct from a clean merge so main surfaces a
+# non-zero exit and the peer signal uses a distinct prefix — fail-closed.
+MERGE_RESULT_HEAD_UNCONFIRMED = "merged_head_unconfirmed"
+
 # Issue #413: post-watch verdict-resolution retry. `gh pr checks --watch`
 # can return immediately on a freshly-created PR (before any check-run
 # row has propagated through GitHub's API), in which case the JSON
@@ -80,6 +113,15 @@ MERGE_WATCH_MAX_SECONDS = 24 * 60 * 60
 # `incomplete` once, capturing the elapsed time honestly).
 RETRY_BUDGET_SEC = 60
 RETRY_INTERVAL_SEC = 5
+
+# Issue #685: back off between JSON-probe retries so a persistently
+# flaky `gh pr checks --json` doesn't hammer the API. The sleep starts
+# at RETRY_INTERVAL_SEC and multiplies by RETRY_BACKOFF_FACTOR after
+# each attempt, capped at RETRY_MAX_INTERVAL_SEC. The overall retry
+# window is still bounded by RETRY_BUDGET_SEC, so backoff only changes
+# how the attempts are spaced, not how long we keep trying.
+RETRY_BACKOFF_FACTOR = 2.0
+RETRY_MAX_INTERVAL_SEC = 30
 
 # Make `tools.state_db.*` importable when running this script directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -119,12 +161,83 @@ def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
         return False
 
 
+def _short_head(oid: "str | None") -> "str | None":
+    """Return the 7-char short form of a commit OID, or ``None``.
+
+    None-safe (Issue #636): a missing / non-string OID degrades to
+    ``None`` so head-change detection and message formatting never raise
+    on a PR view that omits ``headRefOid``.
+    """
+    if not oid or not isinstance(oid, str):
+        return None
+    return oid[:7]
+
+
+def _fetch_head_oid(pr: int, repo: str) -> "str | None":
+    """Return the PR's current head commit OID (full sha), or ``None``.
+
+    Issue #636: fetched once at the start of each ci-watch round so the
+    recorded / messaged head is the head whose CI we actually observed,
+    and threaded into :func:`_watch_for_merge` as the baseline for
+    head-change detection. Best-effort: any gh / parse failure degrades
+    to ``None`` (treated downstream as "head unknown → no change"), so a
+    flaky probe never aborts the watch or fakes a head movement.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr), "--repo", repo,
+             "--json", "headRefOid"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
+            check=False,
+        )
+    except OSError:
+        return None
+    try:
+        # ``ValueError`` covers json.JSONDecodeError; ``TypeError`` covers a
+        # non-string stdout (e.g. a Mock in tests that don't stub this call).
+        data = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    oid = data.get("headRefOid")
+    return oid if isinstance(oid, str) and oid else None
+
+
 def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
-                         status: str, duration: int) -> None:
-    """Append a ``ci_completed`` event to the DB events table."""
+                         status: str, duration: int,
+                         head: "str | None" = None,
+                         extra: "dict | None" = None) -> None:
+    """Append a ``ci_completed`` event to the DB events table.
+
+    ``head`` (Issue #636) is the short sha of the head whose CI verdict
+    this event records; ``None`` when the head could not be resolved.
+
+    ``extra`` (Issue #685) carries optional additive payload keys —
+    per-bucket counts (``fail_count`` / ``pending_count`` /
+    ``total_checks``) and, for an ``indeterminate`` verdict, the retry
+    schedule (``retry_recommended`` / ``retry_after_sec`` /
+    ``probe_attempts``). The base keys (``pr`` / ``repo`` / ``status`` /
+    ``duration_sec`` / ``head``) always win, so a stray ``extra`` key
+    can never clobber them and existing consumers keep working.
+    """
     from tools.state_db import apply_schema, connect
     from tools.state_db.discover import verify_or_exit
     from tools.state_db.writer import StateWriter
+
+    payload = {
+        "pr": pr,
+        "repo": repo,
+        "status": status,
+        "duration_sec": duration,
+        "head": head,
+    }
+    if extra:
+        # Additive only: never let extra shadow a base key.
+        for key, value in extra.items():
+            payload.setdefault(key, value)
 
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,12 +252,7 @@ def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
         writer.append_event(
             kind="ci_completed",
             actor="pr_watch",
-            payload={
-                "pr": pr,
-                "repo": repo,
-                "status": status,
-                "duration_sec": duration,
-            },
+            payload=payload,
         )
         writer.commit()
     finally:
@@ -208,11 +316,20 @@ def _classify(exit_code: int) -> str:
     blocks until pending checks resolve and then returns 0 (all
     checks passed). Exit code 2 is gh's standard cancellation code
     (e.g. user interrupt). Exit code 8 means "Checks pending" per
-    gh's docs (NOT failure). Other non-zero values most likely
-    indicate an internal gh error rather than a CI verdict, so they
-    map to the conservative ``incomplete`` status — refusing to
-    silently turn a transient error into "passed" while also not
-    libelling green CI as "failed".
+    gh's docs (NOT failure).
+
+    Issue #685: exit 0 (definitively "all passed") and exit 2
+    (cancellation) are honoured, but exit 8 ("Checks pending") and any
+    other non-zero code reach this function only when the JSON probe
+    never yielded a parseable response within the retry budget — so we
+    literally could not read whether CI passed, failed, or is still
+    running. Those map to ``indeterminate`` (verdict undetermined /
+    fetch failure) rather than ``incomplete``: ``incomplete`` now means
+    "we DID read the checks and at least one is still pending", while
+    ``indeterminate`` means "we could not read the checks at all". The
+    split lets the events table distinguish a genuinely pending CI from
+    a gh outage, and keeps a real red (``failed``) from being libelled
+    as merely pending when its probe happened to fail transiently.
 
     SIGINT raised in the parent (Python ``KeyboardInterrupt``) is
     normalized to 2 in :func:`main` before reaching this function.
@@ -225,9 +342,47 @@ def _classify(exit_code: int) -> str:
         return "passed"
     if exit_code == 2:
         return "canceled"
-    if exit_code == 8:
-        return "incomplete"
-    return "incomplete"
+    return "indeterminate"
+
+
+def _summarize_checks(checks: "list[dict]") -> "tuple[str, int, int, int]":
+    """Return ``(status, fail_count, pending_count, total)`` for a checks list.
+
+    Issue #685: the counts are threaded into the ``ci_completed`` payload
+    so a consumer can tell a single-check red from a broad failure — and
+    an ``incomplete`` with 1 pending check from one with 20 — without
+    re-querying gh. ``status`` follows the same rules as
+    :func:`_classify_from_checks`:
+
+    * ``fail_count`` counts :data:`_FAILED_BUCKETS` (``fail``/``cancel``).
+    * ``pending_count`` counts everything that is neither a failure nor a
+      pass: :data:`_PENDING_BUCKETS` plus empty / unrecognized buckets
+      (all treated conservatively as "not yet decided").
+    * ``total`` is ``len(checks)``.
+
+    Status: any failure → ``failed``; else an empty list or any
+    pending/unknown → ``incomplete``; else (all pass/skipping) →
+    ``passed``.
+    """
+    total = len(checks)
+    fail_count = 0
+    pending_count = 0
+    for chk in checks:
+        bucket = (chk.get("bucket") or "").lower()
+        if bucket in _FAILED_BUCKETS:
+            fail_count += 1
+        elif bucket in _PASSED_BUCKETS:
+            continue
+        else:
+            # pending, empty, or any unrecognized bucket → not yet decided.
+            pending_count += 1
+    if fail_count > 0:
+        status = "failed"
+    elif total == 0 or pending_count > 0:
+        status = "incomplete"
+    else:
+        status = "passed"
+    return status, fail_count, pending_count, total
 
 
 def _classify_from_checks(checks: "list[dict]") -> str:
@@ -244,19 +399,11 @@ def _classify_from_checks(checks: "list[dict]") -> str:
       → ``passed``.
     * Anything else (unrecognized bucket) → ``incomplete``
       (conservative).
+
+    Thin wrapper over :func:`_summarize_checks` (which also returns the
+    per-bucket counts used in the ``ci_completed`` payload, Issue #685).
     """
-    if not checks:
-        return "incomplete"
-    has_pending_or_unknown = False
-    for chk in checks:
-        bucket = (chk.get("bucket") or "").lower()
-        if bucket in _FAILED_BUCKETS:
-            return "failed"
-        if bucket in _PASSED_BUCKETS:
-            continue
-        # pending, empty, or any unrecognized bucket → conservative incomplete.
-        has_pending_or_unknown = True
-    return "incomplete" if has_pending_or_unknown else "passed"
+    return _summarize_checks(checks)[0]
 
 
 def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
@@ -306,7 +453,9 @@ def _resolve_final_status(
     *,
     budget_sec: "float | None" = None,
     retry_interval_sec: "float | None" = None,
-) -> str:
+    backoff_factor: "float | None" = None,
+    max_interval_sec: "float | None" = None,
+) -> dict:
     """Drive `_fetch_checks` until a final CI verdict is observed.
 
     Issue #413: ``gh pr checks --watch`` occasionally returns
@@ -322,7 +471,10 @@ def _resolve_final_status(
     * ``passed`` / ``failed`` → return immediately (deterministic).
     * ``incomplete`` (empty list, ``pending`` bucket, or
       ``gh exit 8``) → enter a bounded retry loop. Each iteration
-      sleeps ``retry_interval_sec`` and re-queries.
+      sleeps and re-queries; the sleep grows by ``backoff_factor``
+      each attempt (Issue #685: exponential backoff, capped at
+      ``max_interval_sec``) so a persistently flaky gh doesn't hammer
+      the API.
     * ``_fetch_checks`` returns ``None`` (probe was unparseable —
       empty / malformed stdout, JSON parse error, unexpected
       shape) → also retried within the same budget (Codex round-2
@@ -333,11 +485,21 @@ def _resolve_final_status(
     * Budget exhausted with at least one parseable response →
       return the last observed ``incomplete`` verdict (recorded as
       a single, honest final event whose ``duration_sec`` reflects
-      the full observation window).
+      the full observation window), carrying the per-bucket counts.
     * Budget exhausted with NO parseable response → fall back to
-      :func:`_classify` against ``exit_code`` so the recorded
-      status still reflects what gh believed about CI even when
-      the JSON probe never succeeded.
+      :func:`_classify` against ``exit_code``. On exit 0 that is a
+      definitive ``passed``; otherwise it is ``indeterminate``
+      (Issue #685: verdict undetermined / fetch failure — kept
+      distinct from ``incomplete`` so the events table separates a
+      genuine pending CI from a gh outage).
+
+    Returns a dict verdict::
+
+        {"status": str,           # passed|failed|incomplete|indeterminate
+         "fail_count": int|None,  # None when derived from the exit-code fallback
+         "pending_count": int|None,
+         "total_checks": int|None,
+         "probe_attempts": int}   # how many gh pr checks --json calls were made
 
     Time / sleep are referenced via the ``time`` module attribute
     lookup so existing tests (``mock.patch.object(pr_watch.time,
@@ -347,6 +509,10 @@ def _resolve_final_status(
         budget_sec = RETRY_BUDGET_SEC
     if retry_interval_sec is None:
         retry_interval_sec = RETRY_INTERVAL_SEC
+    if backoff_factor is None:
+        backoff_factor = RETRY_BACKOFF_FACTOR
+    if max_interval_sec is None:
+        max_interval_sec = RETRY_MAX_INTERVAL_SEC
 
     # Codex round-2 Major: a transient JSON parse failure (the
     # subprocess succeeded but stdout was empty / malformed for a
@@ -357,7 +523,9 @@ def _resolve_final_status(
     # ``incomplete`` (transient empty / pending) as retryable, and
     # only fall back to the exit-code classifier if NO parseable
     # response is observed within the budget.
-    last_verdict: "str | None" = None
+    last_summary: "tuple[str, int, int, int] | None" = None
+    probe_attempts = 0
+    interval = retry_interval_sec
     deadline_set = False
     deadline = 0.0
 
@@ -369,30 +537,52 @@ def _resolve_final_status(
 
     while True:
         checks = _fetch_checks(pr, repo)
+        probe_attempts += 1
         if checks is not None:
-            verdict = _classify_from_checks(checks)
-            if verdict in ("passed", "failed"):
-                return verdict
-            last_verdict = verdict
+            summary = _summarize_checks(checks)
+            if summary[0] in ("passed", "failed"):
+                return {
+                    "status": summary[0],
+                    "fail_count": summary[1],
+                    "pending_count": summary[2],
+                    "total_checks": summary[3],
+                    "probe_attempts": probe_attempts,
+                }
+            last_summary = summary
         # Either probe was unparseable (checks is None) or the verdict
         # is `incomplete`. Initialise the budget on the first observed
         # need to wait, then back off and try again.
         _set_deadline_once()
         if time.monotonic() >= deadline:
             break
-        time.sleep(retry_interval_sec)
+        time.sleep(interval)
+        # Issue #685: exponential backoff between probes, capped.
+        interval = min(interval * backoff_factor, max_interval_sec)
 
-    if last_verdict is None:
+    if last_summary is None:
         # Never got a parseable probe response. Catastrophic-end:
         # honour the exit-code fallback so the recorded status still
-        # reflects what gh believed the watched PR's CI was doing.
+        # reflects what gh believed the watched PR's CI was doing —
+        # `passed` on exit 0, else `indeterminate` (Issue #685).
         sys.stderr.write(
             "tools/pr_watch.py: warning: could not query check results "
             "via `gh pr checks --json` within the retry budget; falling "
             "back to exit-code classification.\n"
         )
-        return _classify(exit_code)
-    return last_verdict
+        return {
+            "status": _classify(exit_code),
+            "fail_count": None,
+            "pending_count": None,
+            "total_checks": None,
+            "probe_attempts": probe_attempts,
+        }
+    return {
+        "status": last_summary[0],
+        "fail_count": last_summary[1],
+        "pending_count": last_summary[2],
+        "total_checks": last_summary[3],
+        "probe_attempts": probe_attempts,
+    }
 
 
 def _watch_for_merge(
@@ -404,8 +594,9 @@ def _watch_for_merge(
     max_seconds: int = MERGE_WATCH_MAX_SECONDS,
     sleeper=time.sleep,
     monotonic=time.monotonic,
+    baseline_head: "str | None" = None,
 ) -> str:
-    """Poll `gh pr view --json mergedAt` until merged or bound elapses.
+    """Poll `gh pr view` until merged, the head moves, or the bound elapses.
 
     Issue #317. On the first poll that returns a non-null ``mergedAt``,
     invoke :func:`tools.run_complete_on_merge.complete_on_merge` to
@@ -413,6 +604,15 @@ def _watch_for_merge(
     On bound exhaustion, append a ``pr_merge_watch_timeout`` event to
     the DB and return ``"timeout"``. ``sleeper`` and ``monotonic`` are
     injectable for tests.
+
+    Issue #636: each poll also compares ``headRefOid`` against
+    ``baseline_head`` (the head whose CI we just watched). If a new
+    commit landed on the PR branch, return ``"head_changed"`` so the
+    caller loops back to ci-watch for the new head — the secretary must
+    not approve a merge against a CI verdict for an older head. The
+    comparison is None-safe: when either side is unknown we treat it as
+    "no change" and keep polling (so callers / mocks that don't supply
+    ``headRefOid`` retain the pre-#636 mergedAt-only behavior).
     """
     from tools.run_complete_on_merge import (
         complete_on_merge, fetch_pr_view, RESULT_ALREADY, RESULT_MERGED,
@@ -430,6 +630,23 @@ def _watch_for_merge(
             view = None
 
         if view is not None and view.get("mergedAt"):
+            # Head sha of the branch tip that was merged.
+            merged_full = view.get("headRefOid")
+            merged_head = _short_head(merged_full)
+            # Issue #636 (Codex review): a merge is terminal — the PR is
+            # already on main, so we can NOT loop back to ci-watch to
+            # confirm it (there is nothing left to watch and the merge is
+            # irreversible). But if the merged head differs from the head
+            # whose CI we last confirmed (baseline_head), the PR was merged
+            # at a commit pr_watch never separately verified. Rather than
+            # report a clean success, we flag the discrepancy loudly so the
+            # secretary doesn't treat the merge as "the approved head
+            # landed". The head tag already lets a consumer compare against
+            # the CI_COMPLETED it acted on; this makes the mismatch explicit.
+            stale_head = bool(
+                baseline_head and isinstance(merged_full, str)
+                and merged_full and merged_full != baseline_head
+            )
             try:
                 result = complete_on_merge(
                     pr=pr, repo=repo, db_path=db_path, pr_view=view,
@@ -452,27 +669,71 @@ def _watch_for_merge(
                 # merge was observed but no matching run row was found
                 # — Secretary must NOT treat it as the post-merge
                 # cleanup signal, so we surface a distinct error
-                # variant instead of PR_MERGED.
+                # variant instead of PR_MERGED. Issue #636: tag the head.
+                head_tag = merged_head or "unknown"
+                if stale_head:
+                    # Issue #636 (Codex review): the PR merged at a head
+                    # whose CI this watcher never confirmed (a push +
+                    # merge slipped between polls). A merge is terminal —
+                    # we cannot loop back to ci-watch — but we must NOT
+                    # report a clean PR_MERGED, or a consumer keying on
+                    # that prefix / exit 0 would proceed as if the merged
+                    # head had passing CI. Emit a DISTINCT prefix (like
+                    # PR_MERGED_NO_RUN, this fails closed: an unrecognized
+                    # signal makes the secretary escalate to a human
+                    # rather than auto-advance) and return a sentinel that
+                    # main maps to a non-zero exit.
+                    sys.stderr.write(
+                        f"pr_watch: PR #{pr} merged at {head_tag} but the "
+                        f"last CI-confirmed head was "
+                        f"{_short_head(baseline_head)}; the merged head's CI "
+                        "was never separately confirmed by pr_watch.\n"
+                    )
+                    _notify_peer(
+                        f"PR_MERGED_HEAD_UNCONFIRMED: PR #{pr} "
+                        f"(head={head_tag}, last CI-confirmed head="
+                        f"{_short_head(baseline_head)})"
+                    )
+                    return MERGE_RESULT_HEAD_UNCONFIRMED
                 if result == RESULT_NO_RUN:
-                    _notify_peer(f"PR_MERGED_NO_RUN: PR #{pr}")
+                    _notify_peer(f"PR_MERGED_NO_RUN: PR #{pr} (head={head_tag})")
                 else:
-                    _notify_peer(f"PR_MERGED: PR #{pr}")
+                    _notify_peer(f"PR_MERGED: PR #{pr} (head={head_tag})")
                 return result
             # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
             # defensively as "keep polling".
 
+        # Issue #636: detect a new commit on the PR branch and hand control
+        # back to the caller's ci-watch loop. Checked after the merge gate
+        # (a merged PR is terminal) and only when both heads are known.
+        if view is not None and baseline_head:
+            current_head = view.get("headRefOid")
+            if (isinstance(current_head, str) and current_head
+                    and current_head != baseline_head):
+                sys.stdout.write(
+                    f"pr_watch: PR #{pr} head moved "
+                    f"{_short_head(baseline_head)} -> "
+                    f"{_short_head(current_head)}; returning to ci-watch\n"
+                )
+                return "head_changed"
+
         if monotonic() >= deadline:
+            timeout_head = _short_head(baseline_head)
             _record_event(
                 db_path=db_path,
                 kind="pr_merge_watch_timeout",
                 payload={
                     "pr": pr, "repo": repo,
                     "max_seconds": max_seconds,
+                    "head": timeout_head,
                 },
             )
             # Issue #326: surface the 24h bound to secretary so a stuck
             # PR doesn't sit silently after the loop releases.
-            _notify_peer(f"PR_MERGE_WATCH_TIMEOUT: PR #{pr}")
+            _notify_peer(
+                f"PR_MERGE_WATCH_TIMEOUT: PR #{pr} "
+                f"(head={timeout_head or 'unknown'})"
+            )
             sys.stdout.write(
                 f"pr_watch: PR #{pr} merge-watch timed out after "
                 f"{max_seconds}s\n"
@@ -516,6 +777,195 @@ def _pr_exists(pr: int, repo: str) -> bool:
     except subprocess.CalledProcessError:
         return False
     return True
+
+
+def _run_ci_watch_phase(
+    *, pr: int, repo: str, interval: int, db_path: Path,
+) -> "tuple[str, int, str | None]":
+    """Run one ci-watch round and record/emit its verdict (Issue #636).
+
+    Blocks on ``gh pr checks --watch`` for ``pr``, resolves the final
+    verdict, appends a single ``ci_completed`` event and emits one
+    ``CI_COMPLETED`` peer message — both tagged with the short head sha
+    so the secretary can tell which head the verdict belongs to.
+    Returns ``(status, exit_code, head_oid)`` where ``head_oid`` is the
+    full head OID observed at verdict time (or ``None``).
+
+    Returns ``("head_changed", 0, head)`` instead when the branch advances
+    while we are resolving the verdict (see below); the caller treats that
+    like the merge-watch loop-back and re-runs a fresh ci-watch round.
+
+    Head/verdict pairing (Codex review, rounds 1-6): both
+    ``gh pr checks --watch`` and ``_resolve_final_status``'s
+    ``gh pr checks --json`` observe the PR's *live* head, so a branch that
+    advances any time between the start of the watch and the end of
+    resolution can yield a verdict describing a different commit than the
+    one we tag. We bracket the *entire* watch+resolve phase with a head
+    read taken before the watch starts and one taken after the verdict
+    resolves: if they differ, we do NOT record a (possibly stale or
+    transiently-incomplete) verdict — we return ``head_changed`` so
+    :func:`main` restarts the *full* ci-watch (``gh pr checks --watch``
+    blocks until the new head's CI actually completes) rather than tagging
+    a verdict to a head it doesn't describe or short-circuiting on the
+    bounded JSON resolver. When the head is stable across the whole phase,
+    the recorded head is exactly the one whose checks the verdict describes.
+
+    Factored out of :func:`main` so the head-poll loop (Issue #636) can
+    re-run a fresh ci-watch round — re-emitting ``CI_COMPLETED`` — when the
+    head moves, whether observed here (across the watch) or by merge-watch.
+    """
+    # Baseline head captured BEFORE the (blocking) watch starts, so an
+    # advance *during* the watch is caught when compared to the
+    # post-resolution head below (Codex review round 6).
+    head_before = _fetch_head_oid(pr, repo)
+    cmd = [
+        "gh", "pr", "checks", str(pr),
+        "--repo", repo,
+        "--watch",
+        "--interval", str(interval),
+    ]
+    started = time.monotonic()
+    canceled = False
+    try:
+        completed = subprocess.run(cmd)
+        exit_code = completed.returncode
+    except KeyboardInterrupt:
+        # Normalize parent-side cancellation to gh's standard exit code 2
+        # so callers (and the journal status mapping) see a portable signal.
+        exit_code = 2
+        canceled = True
+
+    # gh's documented cancellation exit code is 2 (parent SIGINT or
+    # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
+    # genuine cancellation with whatever the JSON probe returns.
+    head_oid: "str | None" = None
+    # Issue #685: per-bucket counts (parseable probe) and probe attempts,
+    # threaded into the payload / peer message below. Stay None for the
+    # cancellation path (no verdict was resolved).
+    fail_count: "int | None" = None
+    pending_count: "int | None" = None
+    total_checks: "int | None" = None
+    probe_attempts = 0
+    if canceled or exit_code == 2:
+        status = "canceled"
+        # Skip the head probe on cancellation: the user is aborting, so a
+        # second SIGINT during an extra subprocess would surface an ugly
+        # traceback for no benefit (a canceled verdict has no head to act
+        # on). head_oid stays None → "unknown".
+    else:
+        # Resolve the verdict against a stable head (see the head/verdict
+        # pairing note above). Issue #224: gh exit 1 from a transient
+        # watch-loop error must not be conflated with "CI failed". Issue
+        # #413: a freshly created PR may have no check rows yet when
+        # --watch returns, so an empty / pending JSON response is "still
+        # observing" rather than the final verdict — _resolve_final_status
+        # drives the resolver until a final verdict (or its retry budget).
+        verdict = _resolve_final_status(pr, repo, exit_code)
+        status = verdict["status"]
+        fail_count = verdict["fail_count"]
+        pending_count = verdict["pending_count"]
+        total_checks = verdict["total_checks"]
+        probe_attempts = verdict["probe_attempts"]
+        head_after = _fetch_head_oid(pr, repo)
+        if (head_before is not None and head_after is not None
+                and head_before != head_after):
+            # The branch advanced somewhere across the watch+resolve phase:
+            # the verdict may describe a different commit than the live
+            # head, and the new head's checks may still be running. Don't
+            # record it — hand control back to main to restart the full
+            # `gh pr checks --watch` for the new head (which blocks until it
+            # completes), rather than tagging a stale head or
+            # short-circuiting on the JSON resolver's budget.
+            sys.stderr.write(
+                f"pr_watch: PR #{pr} head advanced across the ci-watch "
+                f"phase ({_short_head(head_before)} -> "
+                f"{_short_head(head_after)}); restarting ci-watch for the "
+                "new head.\n"
+            )
+            return "head_changed", 0, head_after
+        # Anchor on the pre-watch head; fall back to the post-resolution
+        # read only if the pre-watch probe failed.
+        head_oid = head_before if head_before is not None else head_after
+    head_short = _short_head(head_oid)
+
+    # Issue #413: duration is measured from the start of the watch to
+    # the moment we have a final verdict (post-retry), so a
+    # transient-empty race no longer reports `1s`.
+    duration = int(round(time.monotonic() - started))
+
+    # Codex review (round 1, Major): once the resolver picks the final
+    # verdict, the script's exit code must reflect that verdict, not
+    # whatever gh returned from the initial `--watch` invocation. With
+    # the retry loop, gh can exit ``8`` ("Checks pending") on the first
+    # observation and then a later JSON probe surfaces the actual
+    # ``passed`` state — returning ``8`` to the caller would falsely
+    # signal "incomplete" to shell-script consumers checking `$?`. The
+    # mapping below mirrors :func:`_classify` (gh's documented codes:
+    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. Issue
+    # #685: `indeterminate` (verdict undetermined) maps to 8 as well —
+    # like `incomplete` it is not a clean pass/fail for `$?` callers.
+    # The later merge-watch block can still override ``0`` → ``9`` when
+    # the post-CI loop itself fails.
+    exit_code = {
+        "passed": 0,
+        "failed": 1,
+        "canceled": 2,
+        "incomplete": 8,
+        "indeterminate": 8,
+    }.get(status, exit_code)
+
+    # Issue #685: additive payload enrichment. Per-bucket counts ride
+    # along whenever the verdict came from a parseable probe; an
+    # `indeterminate` verdict instead carries the retry schedule so the
+    # monitoring side can tell "re-invoke pr_watch" from a stalled gate.
+    extra: dict = {}
+    if total_checks is not None:
+        extra["fail_count"] = fail_count
+        extra["pending_count"] = pending_count
+        extra["total_checks"] = total_checks
+    if status == "indeterminate":
+        extra["retry_recommended"] = True
+        extra["retry_after_sec"] = RETRY_INTERVAL_SEC
+        extra["probe_attempts"] = probe_attempts
+
+    _record_ci_completed(
+        db_path=db_path,
+        pr=pr,
+        repo=repo,
+        status=status,
+        duration=duration,
+        head=head_short,
+        extra=extra,
+    )
+
+    # Issue #326: nudge secretary as soon as the CI verdict is recorded
+    # so it doesn't have to poll the DB. Best-effort — silent fallback
+    # in non-renga environments (RENGA_SOCKET unset). Issue #413: the
+    # peer notification, like the DB event, fires once per ci-watch
+    # round and only on the final verdict (the retry loop above already
+    # absorbed transient incomplete observations). Issue #636: the head
+    # tag lets the secretary distinguish a re-emitted CI_COMPLETED for a
+    # new head from the original one. If a progress channel is ever
+    # wanted, route it through a distinct event/message name (e.g.
+    # `ci_progress`) rather than overloading `CI_COMPLETED`.
+    ci_msg = (
+        f"CI_COMPLETED: PR #{pr} {status} "
+        f"(head={head_short or 'unknown'}, duration {duration}s, repo {repo})"
+    )
+    # Issue #685: give the human-facing message the same disambiguation
+    # the payload got — name the fail count on a red, and flag an
+    # undetermined verdict as retry-recommended (not a stall).
+    if status == "indeterminate":
+        ci_msg += " [verdict undetermined; retry recommended]"
+    elif status == "failed" and fail_count:
+        ci_msg += f" [{fail_count} of {total_checks} checks failed]"
+    _notify_peer(ci_msg)
+
+    sys.stdout.write(
+        f"pr_watch: PR #{pr} {status} "
+        f"({duration}s, head={head_short or 'unknown'})\n"
+    )
+    return status, exit_code, head_oid
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -594,114 +1044,73 @@ def main(argv: "list[str] | None" = None) -> int:
         )
         return 2
 
-    cmd = [
-        "gh", "pr", "checks", str(args.pr),
-        "--repo", repo,
-        "--watch",
-        "--interval", str(args.interval),
-    ]
-    started = time.monotonic()
-    canceled = False
-    try:
-        completed = subprocess.run(cmd)
-        exit_code = completed.returncode
-    except KeyboardInterrupt:
-        # Normalize parent-side cancellation to gh's standard exit code 2
-        # so callers (and the journal status mapping) see a portable signal.
-        exit_code = 2
-        canceled = True
+    # Issue #636: ci-watch → merge-watch is now a loop, not a one-shot.
+    # Each round watches the PR's CI, records the head observed at verdict
+    # time, and (when --merge-watch is on and CI passed) polls for merge
+    # against that head. If the merge-watch loop observes the head move to
+    # a new commit, it returns "head_changed" and we loop back to ci-watch
+    # for the new head — so the secretary always sees a CI_COMPLETED for
+    # the *current* head and never approves a merge against a stale
+    # verdict. The merge-watch 24h timeout resets each round because
+    # _watch_for_merge recomputes its own deadline on entry (a moving head
+    # is a sign of active work, so resetting the human-intervention grace
+    # is correct — Issue #636 design note 6).
+    while True:
+        status, exit_code, head_oid = _run_ci_watch_phase(
+            pr=args.pr, repo=repo, interval=args.interval,
+            db_path=JOURNAL_PATH,
+        )
 
-    # gh's documented cancellation exit code is 2 (parent SIGINT or
-    # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
-    # genuine cancellation with whatever the JSON probe returns.
-    if canceled or exit_code == 2:
-        status = "canceled"
-    else:
-        # Issue #224: gh exit 1 from a transient watch-loop error must
-        # not be conflated with "CI failed". Issue #413: a freshly
-        # created PR may have no check rows yet when --watch returns,
-        # so an empty / pending JSON response is "still observing"
-        # rather than the final verdict. Drive the resolver until it
-        # returns a final verdict (or exhausts its retry budget).
-        status = _resolve_final_status(args.pr, repo, exit_code)
+        if status == "head_changed":
+            # The head moved while resolving this round's verdict; no
+            # verdict was recorded. Restart the full ci-watch for the new
+            # head (re-emitting CI_COMPLETED once it resolves stably).
+            continue
 
-    # Issue #413: duration is measured from the start of the watch to
-    # the moment we have a final verdict (post-retry), so a
-    # transient-empty race no longer reports `1s`.
-    duration = int(round(time.monotonic() - started))
+        # Issue #317: only enter merge-watch when CI actually passed and
+        # the caller explicitly opted in via --merge-watch. The default
+        # is off so pr_watch stays a "CI passed → return" command
+        # compatible with secretary's 2c/T6 review-feedback loop.
+        # Codex pre-design review (Minor 1): `run_complete_on_merge` is
+        # the downstream actor for the green-PR path and is invoked only
+        # when `status == "passed"`. `incomplete` / `failed` /
+        # `canceled` results never trigger merge-watch.
+        if not (status == "passed" and args.merge_watch
+                and not args.no_merge_watch):
+            return exit_code
 
-    # Codex review (round 1, Major): once the resolver picks the final
-    # verdict, the script's exit code must reflect that verdict, not
-    # whatever gh returned from the initial `--watch` invocation. With
-    # the retry loop, gh can exit ``8`` ("Checks pending") on the first
-    # observation and then a later JSON probe surfaces the actual
-    # ``passed`` state — returning ``8`` to the caller would falsely
-    # signal "incomplete" to shell-script consumers checking `$?`. The
-    # mapping below mirrors :func:`_classify` (gh's documented codes:
-    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. The
-    # later merge-watch block can still override ``0`` → ``9`` when
-    # the post-CI loop itself fails.
-    exit_code = {
-        "passed": 0,
-        "failed": 1,
-        "canceled": 2,
-        "incomplete": 8,
-    }.get(status, exit_code)
-
-    _record_ci_completed(
-        db_path=JOURNAL_PATH,
-        pr=args.pr,
-        repo=repo,
-        status=status,
-        duration=duration,
-    )
-
-    # Issue #326: nudge secretary as soon as the CI verdict is recorded
-    # so it doesn't have to poll the DB. Best-effort — silent fallback
-    # in non-renga environments (RENGA_SOCKET unset). Issue #413: the
-    # peer notification, like the DB event, fires once per pr_watch
-    # invocation and only on the final verdict (the retry loop above
-    # already absorbed transient incomplete observations). If a
-    # progress channel is ever wanted, route it through a distinct
-    # event/message name (e.g. `ci_progress`) rather than overloading
-    # `CI_COMPLETED`.
-    _notify_peer(
-        f"CI_COMPLETED: PR #{args.pr} {status} "
-        f"(duration {duration}s, repo {repo})"
-    )
-
-    sys.stdout.write(f"pr_watch: PR #{args.pr} {status} ({duration}s)\n")
-
-    # Issue #317: only enter merge-watch when CI actually passed and
-    # the caller explicitly opted in via --merge-watch. The default is
-    # off so pr_watch stays a "CI passed → return" command compatible
-    # with secretary's 2c/T6 review-feedback loop.
-    # Codex pre-design review (Minor 1): `run_complete_on_merge` is
-    # the downstream actor for the green-PR path and is invoked here
-    # only when `status == "passed"`. `incomplete` / `failed` /
-    # `canceled` results never trigger merge-watch, so callers can
-    # treat the `passed`-gated invocation as the contract.
-    if status == "passed" and args.merge_watch and not args.no_merge_watch:
         merge_result = _watch_for_merge(
             pr=args.pr,
             repo=repo,
             interval=args.interval,
             db_path=JOURNAL_PATH,
+            baseline_head=head_oid,
         )
+
+        if merge_result == "head_changed":
+            # A new commit landed on the PR branch during merge-watch.
+            # Loop back to ci-watch for the new head (re-emitting
+            # CI_COMPLETED for it). No exit-code mutation — the next
+            # round computes a fresh verdict.
+            continue
+
         # Codex Major: surface merge-watch failure modes via exit code
         # so callers can distinguish "CI passed but PR did not merge in
         # 24h" / "helper raised" from "CI passed and we successfully
         # transitioned the run". Don't override a non-zero CI exit
         # code — that already signaled trouble.
-        if exit_code == 0 and merge_result in ("timeout", "error", "no_run"):
+        if exit_code == 0 and merge_result in (
+            "timeout", "error", "no_run", MERGE_RESULT_HEAD_UNCONFIRMED,
+        ):
             # Codex round-2 Major: no_run means we observed a merge but
             # could not resolve the PR back to a runs row, so the
             # status flip didn't happen and the secretary needs to
-            # intervene. Surface that as exit 9 so callers don't treat
-            # it as success.
+            # intervene. Issue #636: merged_head_unconfirmed means the PR
+            # merged at a head whose CI we never confirmed. Surface both
+            # as exit 9 so callers don't treat them as success.
             exit_code = 9
 
-    return exit_code
+        return exit_code
 
 
 if __name__ == "__main__":
