@@ -15,6 +15,8 @@ allowed-tools:
   - Bash(python3 dashboard/org_state_converter.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
   - Bash(python3 tools/check_runtime_version.py:*)
+  - Bash(py -3 tools/secretary_queue_watcher.py:*)
+  - Bash(python3 tools/secretary_queue_watcher.py:*)
   - mcp__renga-peers__*
   - mcp__org-broker__* # mechanical replacement target when ORG_TRANSPORT=broker (opt-in)
 ---
@@ -184,6 +186,23 @@ In parallel with Block A's spawn firing. Compare the installed version of `claud
 > - The warning command embeds the pin constraint read from `pyproject.toml` verbatim, so even if the user pastes the warning command as is, it will not upgrade outside the window.
 > - Script body: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py).
 
+### Block C3: resident secretary backlog watcher (broker only)
+
+Run this **only when `ORG_TRANSPORT=broker`**. Do not start it under renga (broker's `queue.jsonl` does not exist there; if Step 0's transport determination is `renga`, skip this whole Block).
+
+On the broker transport there was previously a failure where "messages addressed to the secretary silently vanished with claimed/delivered records" (root cause: a double-run race in the channel sidecar; fixed on the runtime side with an observer lease). As an operational guard against its recurrence and similar backlogs, the broker session keeps a `queue.jsonl` backlog watcher resident right after org-start.
+
+1. Just call it once with the Claude Code Bash tool with **`run_in_background=true`**:
+   ```bash
+   python3 tools/secretary_queue_watcher.py   # Mac/Linux
+   py -3 tools/secretary_queue_watcher.py     # Windows
+   ```
+2. Behavior: the watcher live-tails from the tail of `$ORG_BROKER_STATE_DIR/queue.jsonl` at startup, and if a subsequent `message_enqueued` addressed to the secretary goes past the threshold (default 120 seconds) without being `delivered`, it prints one line with the backlog count and elapsed seconds and **exits**. The background Bash exit event re-wakes the secretary, so when you see that output, drain via the `check_messages` of the transport in use (in broker, `mcp__org-broker__check_messages`). It does not count the running gap of past logs (a known past loss mixed in would cause a false positive, so only new records during this session are in scope).
+
+> **sandbox note**: because it is a resident process, it cannot be started inside the sandbox (same as Block C); use host execution via `run_in_background`.
+
+> Script body: [`tools/secretary_queue_watcher.py`](../../../tools/secretary_queue_watcher.py) (tunable with `--owner` / `--stale-sec` / `--poll-sec`; a broker-only tool that exits 1 immediately if `ORG_BROKER_STATE_DIR` is unset).
+
 > **Sidebar: attention watcher startup guidance (optional, explicit start recommended)**
 >
 > You can run a separate resident watcher that actively notifies via OS notifications + sound + terminal bell for things like awaiting approval / awaiting decision / CI failure / silent stop / PR merged. **`/org-start` does not start it automatically** (OS notification backends are highly environment-dependent, and unsolicited sound is easily annoying. Design [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1).
@@ -269,11 +288,26 @@ Curator spawn / boot failure modes do not exist in org-start (it does not spawn 
 | after Stage A+B | on top of the above, fire Block A's spawn right after Step 0 completes, overlapping Claude's boot wait with Block B (state restore) / Block C (dashboard startup) | ~35s |
 | after curator on-demand | only the dispatcher is launched (curator's spawn / Enter / poll / greet are gone) | further reduced |
 
+### Post-startup verification: confirm the dispatcher's /loop monitoring declaration by keystroking the actual invoke
+
+The dispatcher can declare "I will monitor with /loop 3m" in its first DELEGATE completion report yet fall idle without actually invoking it (the declaration expires the moment the turn ends, and without a next trigger it never runs). The Lead does not trust the first DELEGATE completion report or the monitoring declaration; verify a trace of the /loop invocation (loop reservation / monitoring-cycle output) via `inspect_pane(target="dispatcher")` on the transport in use, and if there is none, re-ignite it by keystroking `/loop 3m <monitoring directive>` as a user turn via `send_keys`. Do the keystroke in **two calls** for text and Enter separately, in two stages (`send_keys(target="dispatcher", text="/loop 3m ...")` → confirm via `inspect_pane` that it landed in the input field → `send_keys(target="dispatcher", enter=true)`; sending text+enter together tends to re-trigger the unarmed state from a leftover draft; same procedure as [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a) (in either case call with the fully qualified names of the transport determined in Step 0. Do not keystroke the monitoring directive with placeholders left in; use the code-block body of [`.claude/skills/dispatcher-resume/SKILL.md`](../dispatcher-resume/SKILL.md) Step 5 verbatim. Procedure details in [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)). An instruction via `send_message` / `check_messages` does not arm it — keystroke injection as a user turn is the reliable arming method (the same structure as ultracode arming).
+
 ## Step 4: report ready
 
 Report concisely to the human. Only the dispatcher is launched (the curator is on-demand).
 
 **Handling Block C2's runtime drift output**: if Block C2's `tools/check_runtime_version.py` stdout emitted a single `[runtime drift] ...` line, then for any of the templates below **transcribe that one line verbatim at the end, separated by one blank line**. If stdout was empty, do not attach the warning line (installed == latest / not installed / offline / parse failure / no release within the pin range are all silent).
+
+> **Sidebar: dispatcher self-repair view startup guidance (broker frame only, optional)**
+>
+> On the broker(tmux) backend the dispatcher pane exists independently as a detached tmux session. Starting this once in the terminal next to the Lead keeps the control plane always in view (it self-repairs and re-attaches even when the session name changes on restart / auto-compact fork):
+>
+> ```bash
+> tools/org-dispatcher-view.sh          # read-only attach (default, safe)
+> tools/org-dispatcher-view.sh --rw     # read-write attach (be careful: a stray keystroke goes straight to the dispatcher)
+> ```
+>
+> read-only is enough, but while attached you can switch to other sessions on the same socket (= the worker / curator panes) with **`Ctrl-b s`** to peek at them. To exit, detach with `Ctrl-b d` and then `Ctrl-C` at the prompt. It is not offered on the renga frame because the tmux session model does not map there (with renga you can just look at the screen itself). For details, see the `--help` of [`tools/org-dispatcher-view.sh`](../../../tools/org-dispatcher-view.sh).
 
 **With previous state**:
 ```
