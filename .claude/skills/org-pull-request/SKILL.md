@@ -69,6 +69,28 @@ Triggered immediately after the user gives **explicit approval** such as "OK", "
 - If PR review feedback arrives, follow flow 2c and send a `send_message` follow-up instruction to the same worker so they push fix commits in the same pane (avoid respawning a new worker — you would pay the cost of rebuilding Issue / diff / judgment boundaries).
 - **For dogfood-target PRs (Issue #338)**: in `registry/dogfood_pending.md`, find the row for the relevant task_id with `status=pending`, then (a) fill in `impl_pr=#<PR>`, (b) create the paired follow-up issue with `gh issue create --title "dogfood follow-up: <surface>" --body-file <rendered template>` (template: [`.claude/skills/org-delegate/references/dogfood-issue-template.md`](../org-delegate/references/dogfood-issue-template.md)), (c) fill in the resulting issue number as `dogfood_issue=#<MMM>` and transition `status` from `pending -> open`, (d) append `Paired dogfood issue: #<MMM>` to the end of the PR body. The SoT for the full protocol is [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8.
 
+### CI-completion detection, the canonical path: the events-DB poll is canonical, push is a best-effort aid (Issue #653)
+
+The **canonical signal for CI completion is the `ci_completed` row in the events table** (the `payload_json` matches the target PR, `head` matches the pushed SHA, `status='passed'|'failed'`), not the `CI_COMPLETED` peer push touched on in the 2b-i receive model above (the in-band push of `<channel source="renga-peers">` / the broker channel sidecar's `notifications/claude/channel` injection). The peer push is a **best-effort aid**: `tools/peer_notify.py: notify_peer` is a raw-env-decision helper, so there are paths where it becomes a **silent no-op** — with `ORG_TRANSPORT` unset (the operational default) and no `RENGA_SOCKET` on a plain shell / the broker daemon not started / the channel sidecar unhealthy, etc. (the same circumstances as the transport note at the top of the SKILL). Treating "a push arrived" as ground truth drops CI-green on a no-op path and falls into the terminal case of leaving it unattended until a human points out "the CI watch failed again" (the motivation for this Issue).
+
+**Recommended poll procedure for ground truth**:
+
+- **From ~60s after `git push origin <branch>`, periodically poll the events table** (recommended 60-90s interval; this repository's CI settles in roughly 60-80s). If the pr-watch pane is alive, the watcher writes the `ci_completed` row to events regardless of whether a push notification fired (the `ci_completed` write path of `tools/pr-watch.sh` / `tools/pr-watch.ps1`).
+- Example decision query (`PR_NUMBER` is the int value the Lead already holds locally; it does not arrive via a user-input path, so a literal f-string expansion is fine):
+  ```python
+  from tools.state_db import connect
+  conn = connect('.state/state.db')
+  row = conn.execute(
+      "SELECT payload_json FROM events WHERE kind='ci_completed' AND payload_json LIKE ? ORDER BY id DESC LIMIT 1",
+      (f'%\"pr\": {PR_NUMBER}%',)
+  ).fetchone()
+  # json.loads the row's payload_json and pull out head / status:
+  #   if head matches the pushed SHA and status='passed', the merge gate is cleared -> go to the awaiting_user emit above
+  #   if it does not match (a prior CI row) / status='failed', fetch the cause and fix -> re-push (into the 2c loop)
+  ```
+- **How to treat a push notification when it arrives**: treat it as a supplementary early notification, and when it arrives, query the events table to confirm the head match and status. Do not stop the events-DB poll on the assumption that a push may not arrive. Once both the peer push and the events row have landed, base the decision on the events DB's `head` + `status` as ground truth (this makes primary the same stance as the receive-model note's "polling the events table is the last fallback").
+- The human gates for `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` are unaffected by this section (these are on the merge-observation side / fail-closed gates, and the events-DB poll makes only CI-completion detection canonical). The canonical detection of the merge observation itself is still done, as before, by the combination of `pr-watch --merge-watch`'s `pr_merged` event and `tools/run_complete_on_merge.py`.
+
 ### Warning: cwd when launching pr-watch
 
 `tools/pr-watch.sh` / `tools/pr-watch.ps1` / `tools/pr_watch.py` open `state.db` via a relative path, so if the cwd at launch is not the ja root, writing the CI-completion event will crash and peer notifications (`CI_COMPLETED` / `PR_MERGED` etc.) will not fire. If you just `cd .worktrees/...` beforehand, always launch as `cd <ja-root> && nohup bash tools/pr-watch.sh <PR> ...`. A root fix (cwd-independence) is in progress in Issue #398.
@@ -76,6 +98,19 @@ Triggered immediately after the user gives **explicit approval** such as "OK", "
 ### Warning: when launching via the Claude Code Bash tool
 
 When the Lead launches `tools/pr-watch.sh` / `tools/pr-watch.ps1` from inside Claude Code, always submit with the Bash tool's `run_in_background: true`. With `nohup ... &` + `disown` alone, the Claude Code bash sub-shell is short-lived and pr-watch gets killed along with it as soon as the call returns, so neither the CI-completion event nor the peer notification fires (the process disappears quietly and only an empty log file is left behind, which is hard to notice). This trap is especially easy to fall into in fresh sessions right after `/clear` / [`/secretary-resume`](../secretary-resume/SKILL.md). With `run_in_background: true`, you get an automatic completion notification (with exit code), so the CI-completion detection path is covered there as well.
+
+### On receiving `PR_MERGED_HEAD_UNCONFIRMED` (human-confirmation gate, Issue #639 / pr-watch #638)
+
+When you receive `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last CI-confirmed head=<baseline_short>)` from pr-watch, **do not proceed to post-merge cleanup (2b-ii); ask the human for confirmation**. This is the terminal case where a push and a merge slip in simultaneously between pr-watch's polls and the PR is merged at a CI-unconfirmed head (a merge is irreversible so loopback is impossible; pr-watch emits it fail-closed with exit 9; design in PR #638). It is an independent signal parallel to `PR_MERGED` / `PR_MERGED_NO_RUN` — do not auto-advance on the `PR_MERGED` prefix.
+
+- **Human-presentation text (example)**: `PR #<n> was merged at a CI-unconfirmed head (<merged_short>). The last CI-confirmed head is <baseline_short>. Manually verify the head sha and decide whether post-merge cleanup may proceed.`
+- **Append a journal event** (for attention notification; the same emit shape as the "notify when the secretary is waiting on a user decision" section of CLAUDE.md):
+  ```bash
+  bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_unconfirmed_head_gate note="PR #<PR> merged at unconfirmed head <merged_short> (last CI-confirmed <baseline_short>)"
+  ```
+  The attention watcher classifier recognizes this emit as the `kind=awaiting_user` → `secretary_awaiting_user` subkind and picks it up as **severity `urgent` (immediate beep)** (the canonical shape in the "notify when the secretary is waiting on a user decision" section of CLAUDE.md). Having `gate` set to `ci_unconfirmed_head_gate` distinguishes it from the existing four gates `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` (this is not a CI-green-backed merge approval but an after-the-fact confirmation gate for "merged but at a CI-unconfirmed head").
+- Once the user, after checking the head, explicitly decides "you may proceed", manually advance to the 2b-ii post-merge cleanup at that point (the normal procedure, including `tools/run_complete_on_merge.py --pr <PR>`. Because you proceed without having received `PR_MERGED`, run the pattern B / C StateWriter block explicitly on the Lead side as well). If the user instructs "undo the merge" / "revert" etc., handle it with normal `gh pr` operations and do not run cleanup.
+- **The existing `PR_MERGED` / `PR_MERGED_NO_RUN` paths are unaffected by this section**: a normal clean merge arrives with the `PR_MERGED` prefix and proceeds to 2b-ii. `PR_MERGED_NO_RUN` is the run-row-unresolved failure case and goes to human judgment as before (this section only adds a new prefix for CI-unconfirmed heads; it does not change the existing two paths).
 
 ## 2c. Review feedback / CI failure feedback loop
 
