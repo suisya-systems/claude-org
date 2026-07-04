@@ -1072,6 +1072,9 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
         with mock.patch.object(wds, "fetch_effort_history", return_value=prs), \
              mock.patch.object(
                  wds, "fetch_closed_issue_bodies", return_value={5: "issue body"}
+             ), \
+             mock.patch.object(
+                 wds, "_resolve_home_repo", return_value="owner/repo"
              ):
             model = wds.build_effort_model(None, 60)
         self.assertEqual(model["coverage"]["single_issue_linked_prs"], 2)
