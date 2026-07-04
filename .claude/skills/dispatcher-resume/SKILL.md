@@ -168,7 +168,11 @@ Evaluate the following **in this order**:
    regenerated in 1; completion monitoring of an on-demand curate is part
    of the handover — `.dispatcher/references/worker-monitoring.md`
    Step 5.3), resume worker monitoring with the monitoring-only
-   directive below via `/loop 3m` (**do not omit the prompt**):
+   directive below via `/loop 3m` (**do not omit the prompt**). This resume is
+   **not armed by merely declaring** "I'll resume monitoring with /loop" — the
+   declaration expires the moment the turn ends, so you must actually invoke
+   `/loop` within this turn (on the Lead side too, the operation is to verify the
+   invocation trace via `inspect_pane` and re-ignite via `send_keys` if it is missing):
 
 <!--
 INVARIANT(loop-prompt): do NOT pass this skill itself (`/dispatcher-resume`) or
