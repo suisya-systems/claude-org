@@ -9,6 +9,16 @@ Because this repository is primarily a **template for personal operation**, we w
 - Generalization of role configs, hooks, and skills (abstracting personalized operating patterns)
 - Safety findings (permission / hook gaps, sandbox-bypass paths, etc.)
 
+## Mirror scope (relationship to claude-org-ja)
+
+This repository is the English mirror of the upstream Japanese source of truth, `claude-org-ja`, kept in sync by an auto-mirror runtime. Before editing, know which paths are mirror-managed and which are out of scope:
+
+- **Translation-class** — hand-translated from the ja source of truth: `.claude/skills/**`, `docs/**`, `README.md`, and `CLAUDE.md`. Changes here are authored as English mirrors of the corresponding ja files.
+- **Runtime-class** — auto-mirrored from the ja source of truth through automated mirror PRs: `tools/**` and the other runtime code and config.
+- **Out of mirror scope** — `.dispatcher/**` and `.curator/**` are operational runbooks specific to the Japanese org deployment. They are neither translation-class nor runtime-class mirror targets and are not maintained as part of this mirror; do not translate or expand them here.
+
+This scope boundary was declared on 2026-07-05.
+
 ## Setup prerequisites
 
 Before starting development, satisfy the "Prerequisites" and "Installation" sections of [README.md](README.md). At minimum you need:
