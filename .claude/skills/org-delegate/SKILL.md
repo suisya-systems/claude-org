@@ -272,6 +272,11 @@ worker → Secretary peer message
   "
   ```
 - Append an event to the DB events table (`bash tools/journal_append.sh ...`)
+- **Notify the dispatcher of the completion receipt (monitoring suppression, Issue #658)**: After finishing the worker ack and the state updates above (REVIEW transition, events append), send `WORKER_COMPLETION_NOTED` to the dispatcher **best-effort and non-blocking (非 blocking)**. The dispatcher picks it up on its normal `/loop 3m` `check_messages`, reflects it into `completion_reported_at` in `worker-idle-state.json`, and suppresses the PANE_OUTPUT_WITHOUT_PEER_MSG detector (the false positive that misjudges a completed worker's normal review-wait idle as a silent dead-lock, [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2). **This is a monitoring-suppression receipt notice, not a "completion determination"** (the T4 completion transition is the secretary's responsibility; the dispatcher does not decide completion itself). **Do not wait (待たない) for a dispatcher reply** (a blocking wait is prohibited because it would create a new stop point in the T4 hand-off to human review). Include task_id and received_at (ISO-8601 UTC) in the body:
+  ```
+  mcp__renga-peers__send_message(to_id="dispatcher", message="WORKER_COMPLETION_NOTED: worker-<task_id> (task_id=<task_id>, received_at=<ISO-8601 UTC>)")
+  ```
+  The paired release is `WORKER_REOPENED` on T6 re-instruction ([`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c). Send it for both minimal and full completion reports (silent-dead-lock suppression does not depend on verification depth).
 - **Register update on dogfood pass completion (Issue #338)**: If the completed task was earmarked in the `dogfood_run_task_id` column of `registry/dogfood_pending.md`, transition that row's `status` from `open → consumed`. Defects are assumed to already be aggregated in the paired follow-up issue (the `dogfood_issue` column) — the format is specified in the dogfood pass worker's brief. The full protocol's SoT is Step 1.8 of this SKILL
 - **Emit awaiting_user notification (Issue #28)**: Just before reporting to the human → entering an approval-wait stop, inform the attention watcher that "the Secretary is stopping while awaiting the user's judgment":
   ```bash
