@@ -9,9 +9,11 @@
 set -uo pipefail
 
 if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
+  # Note: SKIP_SECRET_SCAN only skips the secret scan. Later guards
+  # (skill drift guard / Issue #652 etc.) still run. To silence every
+  # hook, use `git commit --no-verify` (humans only).
   echo "pre-commit: SKIP_SECRET_SCAN=1 set; secret scan skipped." >&2
-  exit 0
-fi
+else
 
 # Directories whose files are excluded from scanning. Only code directories
 # whose sole purpose is to host hook implementations or secret-shaped test
@@ -136,6 +138,80 @@ if (( ${#violations[@]} > 0 )); then
     echo "permissions.deny + PreToolUse hooks): git commit --no-verify"
   } >&2
   exit 1
+fi
+
+fi  # /SKIP_SECRET_SCAN gate (Issue #652: use if/else so later guards are not bypassed)
+
+# --- skill drift guard (Issue #652) -----------------------------------------
+# When only a rendered SKILL.md is staged while its source SKILL.md.in is not
+# staged in the same commit, stop it here in pre-commit before the CI gate
+# (test_production_manifest_no_drift) fails.
+#
+# Bypass: SKIP_SKILL_DRIFT_CHECK=1 git commit ...
+#
+# Logic:
+# - Enumerate staged paths matching ".claude/skills/<skill>/SKILL.md"
+#   (Add / Copy / Modify / Rename; Delete-only and Type-change are not drift).
+# - For each, check whether the sibling ".claude/skills/<skill>/SKILL.md.in"
+#   exists in the repo (i.e. git ls-files matches).
+# - If it exists and that ".in" is not staged in the same commit -> drift.
+# - If there is any drift, list every drift path, print an error, and exit 1.
+# - A skill with no ".in" (hand-written skill) is unaffected (skip).
+#
+# Note: include R/C in --diff-filter. With git rename detection active, a file
+# renamed from another path to ".claude/skills/<skill>/SKILL.md" must also be
+# considered for drift, otherwise the guard silently misses it
+# (Refs #652 codex review).
+
+if [[ "${SKIP_SKILL_DRIFT_CHECK:-0}" != "1" ]]; then
+  # Staged set (Add / Copy / Modify / Rename). --name-only returns the new
+  # path for rename/copy, so the current location of SKILL.md / SKILL.md.in
+  # can be used directly for lookup. Read NUL-separated into an array so
+  # paths containing spaces survive.
+  mapfile -t staged_files < <(git diff --cached --name-only --diff-filter=ACMR -z \
+    | tr '\0' '\n' | sed '/^$/d')
+
+  # Pack into an associative array for O(1) "is staged" lookups.
+  declare -A staged_set=()
+  for f in "${staged_files[@]}"; do
+    staged_set["$f"]=1
+  done
+
+  drift_paths=()
+  for f in "${staged_files[@]}"; do
+    # Only ".claude/skills/<skill>/SKILL.md". SKILL.md.in and other .md
+    # files (references/*.md etc.) pass through.
+    [[ "$f" == .claude/skills/*/SKILL.md ]] || continue
+
+    src="${f}.in"
+
+    # A skill whose source ".in" does not exist in the repo (hand-written
+    # skill) is out of scope. Pass -- to git ls-files and read only its exit code.
+    if ! git ls-files --error-unmatch -- "$src" >/dev/null 2>&1; then
+      continue
+    fi
+
+    # If the source is not in the staged set, it is drift.
+    if [[ -z "${staged_set[$src]:-}" ]]; then
+      drift_paths+=("$f")
+    fi
+  done
+
+  if (( ${#drift_paths[@]} > 0 )); then
+    {
+      echo ""
+      echo "pre-commit: skill SKILL.md / SKILL.md.in drift detected:"
+      for p in "${drift_paths[@]}"; do
+        echo "  - $p (source ${p}.in is not staged in the same commit)"
+      done
+      echo ""
+      echo "SKILL.md is a generated file. Edit the source SKILL.md.in, re-render with"
+      echo "  python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json --apply"
+      echo "then stage the .md and .md.in together."
+      echo "bypass: SKIP_SKILL_DRIFT_CHECK=1 git commit ..."
+    } >&2
+    exit 1
+  fi
 fi
 
 exit 0
