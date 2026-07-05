@@ -47,6 +47,15 @@ ${parallel_notes}
 ## ナレッジ参照
 ${references_knowledge_block}
 <!--END:references-->
+<!--BEGIN:python_src_layout-->
+
+## Python 検証規約（src-layout）
+
+このプロジェクトは Python の src-layout（パッケージ本体が `src/` 配下）である。venv に残った stale install が `src/` を shadow して古いコードを import する罠（phantom FAIL・新メソッドの AttributeError・「main が赤い」誤診断）を避けるため、以下を必ず守ること:
+
+- 検証（pytest 等）は `PYTHONPATH=src` を前置して実行する（例: `PYTHONPATH=src python -m pytest`）
+- 共有 venv への editable install（`pip install -e`）は禁止（venv の `.pth` に worktree 絶対パスが焼き込まれ、worktree 削除後に他ツールが ModuleNotFoundError で壊れる）
+<!--END:python_src_layout-->
 
 ## 権限
 - git commit: 可
@@ -67,7 +76,9 @@ codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev
 ```
 
 - **前景実行する**（背景化 `&` + ログ redirect は、完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招く）。応答が長く来ない稀なケースのみ中断して skip 可。
-- Blocker / Major は修正コミットを積み再レビュー、同一指摘カテゴリで 3 ラウンド消せない場合は設計問題と判断し窓口に仕様縮小の判断を仰ぐ
+- Blocker / Major は修正コミットを積み再レビュー。**round は既定上限 3**（この brief の実装ガイダンスで別値の明示指定があればそちらが優先）
+- **上限に達したら round N+1 に自走で入らない**。残っている Blocker / Major 指摘 + **自己評価**（設計問題化しているのか、別問題が順に露見する健全な収束の途中なのか）を添えて窓口に報告し、いったん停止して人間の続行判断を仰ぐ
+- **同一指摘が 3 ラウンド消えない場合は上限前でも即座に設計問題として報告**する。同じ指摘 / 箇所が修正しても再燃するのは修正アプローチ自体の問題のサインで、別問題が各 1 round で順に解消していく健全な収束（上限まで継続可）とは区別する
 - Minor / Nit は原則残置し PR 本文に既知制限として明記
 - **large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず遅くなる）。review surface は危険側 Major は守るが benign な safe-side false-negative / ReDoS 級を取りこぼしうる（深掘りが要る変更は窓口に design review 併用を相談）。詳細・実測根拠は claude-org リポジトリの `knowledge/curated/codex.md`
 - `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec review` / `codex exec` 系直打ちのみ）。`gpt-5.5-codex` / API キー surface は ChatGPT アカウントで実行不可（`-m gpt-5.5` 明示）

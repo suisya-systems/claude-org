@@ -38,8 +38,10 @@ This skill mechanically checks 3 dimensions (deprecation / consolidation / owner
 If neither condition below is met, **exit immediately** (no log, no report).
 
 ```bash
-# pending entries in the candidate queue
-cand_count=$(grep -c '^- \*\*status\*\*: pending' knowledge/skill-candidates.md 2>/dev/null || echo 0)
+# pending entries in the candidate queue (do not count template examples inside code fences)
+cand_count=$(awk '/^(```|~~~)/ { fence = !fence; next }
+  !fence && /^- \*\*status\*\*: pending[ \t]*$/ { n++ }
+  END { print n + 0 }' knowledge/skill-candidates.md 2>/dev/null || echo 0)
 
 # work-skill count (excluding org-*; aligns with the work-skill search surface that is the noise source)
 work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
@@ -53,10 +55,14 @@ Rationale for the numbers: N=5 / M=20 are the defaults. Adjust via PR if operati
 Why exclude `org-*`: the noise source is `org-delegate`'s work-skill search; the count of `org-*` skills does not directly affect search noise.
 
 > **Count-definition sync (important)**: the two count definitions above (pending = line match
-> on `^- \*\*status\*\*: pending`; work-skill = `find .claude/skills -maxdepth 2 -name SKILL.md
+> on `^- \*\*status\*\*: pending` **and outside code fences** (blocks opened/closed by a leading
+> `` ``` `` / `~~~` are excluded); work-skill = `find .claude/skills -maxdepth 2 -name SKILL.md
 > | grep -v '/org-'`) must be kept in **exact agreement** with the on-demand curator's
 > activation check [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py).
-> If you change one, update both
+> The pending-count semantics further form a **3-way sync** aligned with the operating-rule note
+> at the top of [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md)
+> (this Step 1 / check_curate_threshold.py / the top of skill-candidates.md).
+> If you change any one, update all three at once
 > (the parity test in `tools/test_check_curate_threshold.py` detects drift).
 
 ## Step 2: enumerate deprecation candidates
