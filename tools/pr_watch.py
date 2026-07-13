@@ -2,7 +2,7 @@
 """Watch GitHub PR CI checks and emit a journal event when finished.
 
 Cross-platform helper for the secretary role: after creating a PR,
-invoke this script to block on ``gh pr checks --watch`` and record a
+invoke this script to block until CI resolves and record a
 ``ci_completed`` event in ``.state/state.db`` (events table).
 
 Usage::
@@ -13,15 +13,31 @@ Behavior:
 
 * Resolves the repo via ``gh repo view --json nameWithOwner`` when
   ``--repo`` is omitted.
-* Spawns ``gh pr checks <PR> --watch --interval <SEC>`` and forwards
-  its stdout/stderr.
-* After the watch loop returns, queries
-  ``gh pr checks <PR> --json bucket,state,name`` for per-check
-  ``bucket`` (gh's documented bucket values are
-  ``{pass, fail, pending, skipping, cancel}``) so the journal status
-  reflects what CI actually decided rather than just the gh process'
-  exit code (gh exits non-zero on a transient watch error too, and
-  exit 8 specifically means "Checks pending", not "failed").
+* Issue #695: watches CI via a **self-poll loop** over
+  ``gh pr checks <PR> --json bucket,state,name`` (:func:`_fetch_checks`
+  / :func:`_self_poll_watch`) at ``--interval`` cadence, instead of
+  shelling out to ``gh pr checks --watch``. ``gh``'s own ``--watch``
+  loop does not treat the ``skipping`` bucket as terminal, so a PR
+  whose checks are entirely ``pass``/``skipping`` (no ``pending``) —
+  e.g. 4 passed + 2 skipped, 0 pending — never made ``--watch``
+  return, and ``ci_completed`` was never recorded (observed on kura
+  PR #38). The self-poll loop instead stops as soon as every check's
+  ``bucket`` is outside :data:`_PENDING_BUCKETS`
+  (``pass``/``skipping``/``fail``/``cancel``), matching what
+  :func:`_classify_from_checks` already treats as decided. gh's
+  documented ``bucket`` values are ``{pass, fail, pending, skipping,
+  cancel}``.
+* Once the self-poll loop observes a decided verdict, or bails out on
+  an inconclusive observation (an empty check list / an unparseable
+  probe — the Issue #413 freshly-created-PR race), the result is
+  classified via :func:`_classify_from_checks` /
+  :func:`_resolve_final_status` so the journal status reflects what CI
+  actually decided. :func:`_resolve_final_status`'s bounded
+  retry-with-backoff absorbs that inconclusive-observation race;
+  genuinely still-running checks (a real ``pending`` bucket) are
+  instead polled unbounded by the self-poll loop itself, at
+  ``--interval`` cadence — mirroring ``gh --watch``'s own indefinite
+  block while CI is actually running.
   Classifies as ``passed`` (all pass/skipping), ``failed``
   (≥1 fail/cancel), ``incomplete`` (checks parseable but at least one
   still pending / unknown bucket / empty list), ``indeterminate``
@@ -38,11 +54,11 @@ Behavior:
   (Issue #413 / Codex round-1 Major): ``passed``→0, ``failed``→1,
   ``canceled``→2, ``incomplete``→8, ``indeterminate``→8 (Issue #685:
   like ``incomplete`` it is not a clean pass/fail for ``$?`` callers).
-  The original ``gh`` exit code
-  is intentionally NOT propagated, because the resolver may upgrade
-  ``gh exit 8`` ("Checks pending") to a final ``passed`` verdict
-  via retry — returning 8 in that case would mislead shell callers
-  inspecting ``$?``. The post-CI merge-watch helper may further
+  Issue #695: since there is no longer a ``gh pr checks --watch``
+  subprocess exit code to consult, ``indeterminate`` (probe never
+  parsed at all) is the only fallback verdict when nothing could be
+  read — the resolver no longer has a raw gh exit code to upgrade into
+  an optimistic ``passed``. The post-CI merge-watch helper may further
   override 0 → 9 on its own failure modes (timeout / no_run /
   helper exception).
 
@@ -83,6 +99,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -113,6 +130,21 @@ MERGE_RESULT_HEAD_UNCONFIRMED = "merged_head_unconfirmed"
 # `incomplete` once, capturing the elapsed time honestly).
 RETRY_BUDGET_SEC = 60
 RETRY_INTERVAL_SEC = 5
+
+# Issue #695 (Codex review round 3, P2): the self-poll loop's own
+# handoff to `_resolve_final_status` (`_run_ci_watch_phase`, on an empty
+# / unparseable first observation) uses a WIDER budget than
+# `RETRY_BUDGET_SEC`. Pre-#695, `gh pr checks --watch` itself blocked
+# until check rows were visible before the JSON-probe race ever mattered
+# — that race was a narrow post-watch API-propagation lag, genuinely
+# bounded to a few seconds. With `--watch` removed, the very FIRST
+# observation for every freshly opened PR can be empty simply because no
+# CI system has registered a check yet (not a lag, an honest "hasn't
+# started"), and some external CI integrations can take longer than
+# `RETRY_BUDGET_SEC` to publish their first check row. Widening this
+# specific handoff's budget gives such integrations room without
+# resorting to unbounded polling on data that has never once appeared.
+CI_WATCH_EMPTY_RACE_BUDGET_SEC = 300
 
 # Issue #685: back off between JSON-probe retries so a persistently
 # flaky `gh pr checks --json` doesn't hammer the API. The sleep starts
@@ -159,6 +191,81 @@ def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
         return notify_peer(to_id, message)
     except Exception:  # noqa: BLE001
         return False
+
+
+def _configured_transport() -> "str | None":
+    """Return the configured transport name, or None if none is set.
+
+    ``broker`` when ``ORG_TRANSPORT=broker`` (raw env, matching
+    ``tools/peer_notify.notify_peer``'s dispatch), ``renga`` when
+    ``RENGA_SOCKET`` is set, else None. Used to decide whether a failed
+    peer push is a genuine delivery failure worth recording (fail-loud)
+    versus an expected no-op in a plain shell / CI where no transport is
+    configured by design.
+    """
+    if os.environ.get("ORG_TRANSPORT") == "broker":
+        return "broker"
+    if os.environ.get("RENGA_SOCKET"):
+        return "renga"
+    return None
+
+
+def _notify_or_record(
+    message: str,
+    *,
+    db_path: Path,
+    failed_kind: str,
+    pr: int,
+    to_id: str = _PEER_NOTIFY_TARGET,
+) -> bool:
+    """Push a terminal peer message, recording a ``notify_failed`` event
+    on failure (Refs #653 #658 — silent no-op elimination).
+
+    The historical bug (PR #73): a terminal peer push silently no-op'd in
+    a pane with no transport env, the ``bool`` return was discarded, and
+    nothing recorded the miss — so the secretary sat idle. This wrapper
+    keeps the low-latency push (path A) but makes a *configured*-transport
+    failure fail-loud: it writes a ``notify_failed`` event that the
+    dispatcher's outbox relay (path B) and the attention watcher (path C)
+    both surface. When NO transport is configured (plain shell / CI, the
+    documented best-effort no-op), it records nothing — that is expected
+    behavior, not a delivery gap. Either way the canonical terminal event
+    was already written before this call, so the dispatcher relay
+    guarantees delivery regardless of this push.
+
+    Never raises: a fail-loud recording error must not abort the watch.
+    """
+    ok = _notify_peer(message, to_id)
+    if ok:
+        return True
+    transport = _configured_transport()
+    if transport is None:
+        return False
+    try:
+        _record_event(
+            db_path=db_path,
+            kind="notify_failed",
+            payload={
+                "pr": pr,
+                "failed_kind": failed_kind,
+                "target": to_id,
+                "transport": transport,
+                "message": message,
+                # Diagnostic: which env the pane actually had, so a
+                # spawn-time injection regression is reverse-derivable
+                # from the recorded event (pairs with the pr-watch-pane
+                # env-prefix fix).
+                "env_present": {
+                    "ORG_TRANSPORT": bool(os.environ.get("ORG_TRANSPORT")),
+                    "ORG_BROKER_STATE_DIR": bool(
+                        os.environ.get("ORG_BROKER_STATE_DIR")),
+                    "RENGA_SOCKET": bool(os.environ.get("RENGA_SOCKET")),
+                },
+            },
+        )
+    except Exception:  # noqa: BLE001 — fail-loud must not itself abort the watch
+        pass
+    return False
 
 
 def _short_head(oid: "str | None") -> "str | None":
@@ -332,7 +439,11 @@ def _classify(exit_code: int) -> str:
     as merely pending when its probe happened to fail transiently.
 
     SIGINT raised in the parent (Python ``KeyboardInterrupt``) is
-    normalized to 2 in :func:`main` before reaching this function.
+    handled directly in :func:`_run_ci_watch_phase` as a ``canceled``
+    verdict and never reaches this function (Issue #695: there is no
+    longer a real gh process exit code carrying that signal — the
+    caller always passes the neutral ``8`` placeholder here on the
+    non-cancellation path).
 
     Note: as of Issue #224 the primary classifier is
     :func:`_classify_from_checks`, which inspects per-check JSON. This
@@ -458,13 +569,21 @@ def _resolve_final_status(
 ) -> dict:
     """Drive `_fetch_checks` until a final CI verdict is observed.
 
-    Issue #413: ``gh pr checks --watch`` occasionally returns
-    immediately when invoked on a freshly created PR — before any
-    check-run row has propagated. The first :func:`_fetch_checks`
-    response is then ``[]`` (transient empty), and the legacy code
+    Issue #413: on a freshly created PR, the very first
+    :func:`_fetch_checks` response can be ``[]`` (transient empty,
+    before any check-run row has propagated), and the legacy code
     classified that as ``incomplete`` and wrote it as the *final*
     ``ci_completed`` event with ``duration_sec=1`` (e.g. PRs #411 /
     #14 / #15 / #416 in a single session).
+
+    Issue #695: this function is now called only when
+    :func:`_self_poll_watch` (the self-poll loop that replaced the
+    blocking ``gh pr checks --watch`` subprocess) bails out on such an
+    inconclusive observation. ``exit_code`` is therefore a caller-
+    supplied placeholder (``8``, "Checks pending") rather than a real
+    gh process exit code — it is consulted only in the final fallback
+    branch below, when the JSON probe never parses at all within the
+    budget.
 
     Final-verdict semantics:
 
@@ -585,6 +704,87 @@ def _resolve_final_status(
     }
 
 
+def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
+    """Replace the blocking ``gh pr checks --watch`` subprocess (Issue #695).
+
+    ``gh``'s own ``--watch`` loop does not treat the ``skipping`` bucket
+    as terminal, so a PR whose checks are entirely ``pass``/``skipping``
+    (0 pending, e.g. 4 passed + 2 skipped) never made ``--watch``
+    return — ``ci_completed`` was never recorded (observed on kura PR
+    #38, the auto-merge gate never fired). This polls
+    :func:`_fetch_checks` directly at ``interval`` cadence and applies
+    the same terminal-bucket rule :func:`_classify_from_checks` already
+    uses (``pass``/``skipping``/``fail``/``cancel`` are all decided;
+    only :data:`_PENDING_BUCKETS` — or an unrecognized bucket — means
+    "still running").
+
+    Two distinct "not decided yet" observations are handled
+    differently:
+
+    * A non-empty checks list with at least one genuinely pending (or
+      unrecognized) bucket means CI is still running. This case loops
+      here, unbounded, at ``interval`` cadence — mirroring the
+      indefinite block ``gh --watch`` performed while checks were
+      pending, so a CI run that legitimately takes many minutes is
+      never prematurely declared ``incomplete``. Codex review (Issue
+      #695 round 2, P2): this holds even when a check has ALREADY
+      failed while a sibling check is still pending —
+      :func:`_summarize_checks` reports ``status="failed"`` the moment
+      any bucket is in :data:`_FAILED_BUCKETS`, regardless of
+      ``pending_count``, so the termination gate below checks
+      ``pending_count == 0`` directly rather than ``status !=
+      "incomplete"``. Otherwise a fast-failing check would make this
+      function return before ``gh pr checks --watch``'s own
+      wait-for-everything contract would have, missing whatever the
+      still-running sibling check goes on to report.
+    * An empty list (no check rows visible yet) or an unparseable probe
+      (:func:`_fetch_checks` returns ``None`` — a gh/network hiccup) is
+      inconclusive rather than "still running": this function returns
+      ``None`` immediately so the caller's existing
+      :func:`_resolve_final_status` bounded retry-with-backoff (Issue
+      #413 / #685) reconciles it, exactly as it did for the
+      post-``--watch`` race it was originally built for.
+
+    Returns a verdict dict shaped like :func:`_resolve_final_status`'s
+    return value (``status`` / ``fail_count`` / ``pending_count`` /
+    ``total_checks`` / ``probe_attempts``) once a decided verdict is
+    observed (every check's bucket is outside
+    :data:`_PENDING_BUCKETS`), or ``None`` to signal "inconclusive,
+    hand off". May raise ``KeyboardInterrupt`` (propagated from
+    ``time.sleep`` or the ``gh`` subprocess on SIGINT) — the caller
+    treats that as cancellation, matching the previous ``gh --watch``
+    Ctrl-C behavior.
+    """
+    probe_attempts = 0
+    while True:
+        checks = _fetch_checks(pr, repo)
+        probe_attempts += 1
+        if checks:
+            status, fail_count, pending_count, total = _summarize_checks(checks)
+            if pending_count == 0:
+                # Every check has left the "not yet decided" bucket set
+                # (pass / skipping / fail / cancel only) -- fully
+                # decided, whether that nets out to `passed` or
+                # `failed`.
+                return {
+                    "status": status,
+                    "fail_count": fail_count,
+                    "pending_count": pending_count,
+                    "total_checks": total,
+                    "probe_attempts": probe_attempts,
+                }
+            # At least one check is still pending (or an unrecognized
+            # bucket) -- genuinely still running, even if another check
+            # already failed. Fall through to the unbounded
+            # interval-cadence poll below.
+        else:
+            # checks is None (unparseable probe) or [] (no check rows
+            # visible yet) -- inconclusive; the bounded resolver is
+            # better suited to this than unbounded polling here.
+            return None
+        time.sleep(interval)
+
+
 def _watch_for_merge(
     *,
     pr: int,
@@ -689,16 +889,43 @@ def _watch_for_merge(
                         f"{_short_head(baseline_head)}; the merged head's CI "
                         "was never separately confirmed by pr_watch.\n"
                     )
-                    _notify_peer(
+                    # Refs #653 #658: write a canonical DB event BEFORE the
+                    # peer push so this terminal signal is never peer-only
+                    # (the dispatcher outbox relay reads the event; a lost
+                    # push can't strand it).
+                    _record_event(
+                        db_path=db_path,
+                        kind="pr_merged_head_unconfirmed",
+                        payload={
+                            "pr": pr, "repo": repo, "head": head_tag,
+                            "baseline_head": _short_head(baseline_head),
+                        },
+                    )
+                    _notify_or_record(
                         f"PR_MERGED_HEAD_UNCONFIRMED: PR #{pr} "
                         f"(head={head_tag}, last CI-confirmed head="
-                        f"{_short_head(baseline_head)})"
+                        f"{_short_head(baseline_head)})",
+                        db_path=db_path,
+                        failed_kind="pr_merged_head_unconfirmed",
+                        pr=pr,
                     )
                     return MERGE_RESULT_HEAD_UNCONFIRMED
                 if result == RESULT_NO_RUN:
-                    _notify_peer(f"PR_MERGED_NO_RUN: PR #{pr} (head={head_tag})")
+                    # Refs #653 #658: canonical event first (was peer-only).
+                    _record_event(
+                        db_path=db_path,
+                        kind="pr_merged_no_run",
+                        payload={"pr": pr, "repo": repo, "head": head_tag},
+                    )
+                    _notify_or_record(
+                        f"PR_MERGED_NO_RUN: PR #{pr} (head={head_tag})",
+                        db_path=db_path, failed_kind="pr_merged_no_run", pr=pr)
                 else:
-                    _notify_peer(f"PR_MERGED: PR #{pr} (head={head_tag})")
+                    # pr_merged canonical event is written by
+                    # run_complete_on_merge.py; here we only push + fail-loud.
+                    _notify_or_record(
+                        f"PR_MERGED: PR #{pr} (head={head_tag})",
+                        db_path=db_path, failed_kind="pr_merged", pr=pr)
                 return result
             # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
             # defensively as "keep polling".
@@ -729,11 +956,13 @@ def _watch_for_merge(
                 },
             )
             # Issue #326: surface the 24h bound to secretary so a stuck
-            # PR doesn't sit silently after the loop releases.
-            _notify_peer(
+            # PR doesn't sit silently after the loop releases. The
+            # pr_merge_watch_timeout event was already recorded above, so
+            # the dispatcher relay backstops a lost push (Refs #653 #658).
+            _notify_or_record(
                 f"PR_MERGE_WATCH_TIMEOUT: PR #{pr} "
-                f"(head={timeout_head or 'unknown'})"
-            )
+                f"(head={timeout_head or 'unknown'})",
+                db_path=db_path, failed_kind="pr_merge_watch_timeout", pr=pr)
             sys.stdout.write(
                 f"pr_watch: PR #{pr} merge-watch timed out after "
                 f"{max_seconds}s\n"
@@ -784,31 +1013,32 @@ def _run_ci_watch_phase(
 ) -> "tuple[str, int, str | None]":
     """Run one ci-watch round and record/emit its verdict (Issue #636).
 
-    Blocks on ``gh pr checks --watch`` for ``pr``, resolves the final
-    verdict, appends a single ``ci_completed`` event and emits one
-    ``CI_COMPLETED`` peer message — both tagged with the short head sha
-    so the secretary can tell which head the verdict belongs to.
-    Returns ``(status, exit_code, head_oid)`` where ``head_oid`` is the
-    full head OID observed at verdict time (or ``None``).
+    Self-polls (:func:`_self_poll_watch`, Issue #695) until a decided CI
+    verdict for ``pr`` is observed, resolves the final verdict, appends a
+    single ``ci_completed`` event and emits one ``CI_COMPLETED`` peer
+    message — both tagged with the short head sha so the secretary can
+    tell which head the verdict belongs to. Returns
+    ``(status, exit_code, head_oid)`` where ``head_oid`` is the full head
+    OID observed at verdict time (or ``None``).
 
     Returns ``("head_changed", 0, head)`` instead when the branch advances
     while we are resolving the verdict (see below); the caller treats that
     like the merge-watch loop-back and re-runs a fresh ci-watch round.
 
-    Head/verdict pairing (Codex review, rounds 1-6): both
-    ``gh pr checks --watch`` and ``_resolve_final_status``'s
-    ``gh pr checks --json`` observe the PR's *live* head, so a branch that
-    advances any time between the start of the watch and the end of
-    resolution can yield a verdict describing a different commit than the
-    one we tag. We bracket the *entire* watch+resolve phase with a head
-    read taken before the watch starts and one taken after the verdict
-    resolves: if they differ, we do NOT record a (possibly stale or
-    transiently-incomplete) verdict — we return ``head_changed`` so
-    :func:`main` restarts the *full* ci-watch (``gh pr checks --watch``
-    blocks until the new head's CI actually completes) rather than tagging
-    a verdict to a head it doesn't describe or short-circuiting on the
-    bounded JSON resolver. When the head is stable across the whole phase,
-    the recorded head is exactly the one whose checks the verdict describes.
+    Head/verdict pairing (Codex review, rounds 1-6): both the self-poll
+    loop and ``_resolve_final_status``'s ``gh pr checks --json`` observe
+    the PR's *live* head, so a branch that advances any time between the
+    start of the watch and the end of resolution can yield a verdict
+    describing a different commit than the one we tag. We bracket the
+    *entire* watch+resolve phase with a head read taken before the watch
+    starts and one taken after the verdict resolves: if they differ, we do
+    NOT record a (possibly stale or transiently-incomplete) verdict — we
+    return ``head_changed`` so :func:`main` restarts the *full* ci-watch
+    (self-poll blocks until the new head's CI actually completes) rather
+    than tagging a verdict to a head it doesn't describe or
+    short-circuiting on the bounded JSON resolver. When the head is stable
+    across the whole phase, the recorded head is exactly the one whose
+    checks the verdict describes.
 
     Factored out of :func:`main` so the head-poll loop (Issue #636) can
     re-run a fresh ci-watch round — re-emitting ``CI_COMPLETED`` — when the
@@ -818,26 +1048,57 @@ def _run_ci_watch_phase(
     # advance *during* the watch is caught when compared to the
     # post-resolution head below (Codex review round 6).
     head_before = _fetch_head_oid(pr, repo)
-    cmd = [
-        "gh", "pr", "checks", str(pr),
-        "--repo", repo,
-        "--watch",
-        "--interval", str(interval),
-    ]
     started = time.monotonic()
     canceled = False
+    verdict: "dict | None" = None
     try:
-        completed = subprocess.run(cmd)
-        exit_code = completed.returncode
+        # Issue #695: self-poll replaces the blocking `gh pr checks
+        # --watch` subprocess. Raises KeyboardInterrupt on SIGINT, same
+        # as the previous blocking subprocess.run(cmd) did.
+        #
+        # `_self_poll_watch` polls unbounded while genuinely pending, but
+        # bails out (returns None) on an *inconclusive* observation (an
+        # empty check list / an unparseable probe — the Issue #413
+        # freshly-created-PR race), handing off to
+        # `_resolve_final_status`'s bounded retry/backoff. That resolver
+        # applies the SAME bounded budget to any non-empty verdict it
+        # sees while a check is still pending -- including one where
+        # another check has already failed, since `_summarize_checks`
+        # reports `status="failed"` the moment any bucket is in
+        # `_FAILED_BUCKETS`, regardless of `pending_count` (Codex
+        # review, Issue #695 round 1 P1 / round 2 P2): without the loop
+        # below, a PR whose checks start out invisible and then take
+        # longer than the budget to finish -- or where one check fails
+        # fast while a sibling is still running -- would be wrongly
+        # finalized instead of watched to completion. So: only accept
+        # the resolver's verdict as final when `pending_count` is 0 (or
+        # unknown, i.e. the exit-code fallback with no parseable
+        # response at all); whenever real, still-pending check rows are
+        # observed, hand control back to the unbounded self-poll loop
+        # instead of giving up.
+        while True:
+            verdict = _self_poll_watch(pr, repo, interval)
+            if verdict is not None:
+                break
+            # Issue #695 round 3 (Codex review, P2): use the wider
+            # CI_WATCH_EMPTY_RACE_BUDGET_SEC here rather than the
+            # RETRY_BUDGET_SEC default -- see that constant's docstring
+            # for why the self-poll handoff needs more room than the
+            # narrow post-watch race `_resolve_final_status` was
+            # originally built for.
+            verdict = _resolve_final_status(
+                pr, repo, exit_code=8,
+                budget_sec=CI_WATCH_EMPTY_RACE_BUDGET_SEC,
+            )
+            if verdict["pending_count"]:
+                # Real, still-pending checks exist -- not an empty-race
+                # artifact, and not fully decided even if a sibling
+                # check already failed. Resume unbounded polling.
+                continue
+            break
     except KeyboardInterrupt:
-        # Normalize parent-side cancellation to gh's standard exit code 2
-        # so callers (and the journal status mapping) see a portable signal.
-        exit_code = 2
         canceled = True
 
-    # gh's documented cancellation exit code is 2 (parent SIGINT or
-    # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
-    # genuine cancellation with whatever the JSON probe returns.
     head_oid: "str | None" = None
     # Issue #685: per-bucket counts (parseable probe) and probe attempts,
     # threaded into the payload / peer message below. Stay None for the
@@ -846,7 +1107,7 @@ def _run_ci_watch_phase(
     pending_count: "int | None" = None
     total_checks: "int | None" = None
     probe_attempts = 0
-    if canceled or exit_code == 2:
+    if canceled:
         status = "canceled"
         # Skip the head probe on cancellation: the user is aborting, so a
         # second SIGINT during an extra subprocess would surface an ugly
@@ -854,13 +1115,16 @@ def _run_ci_watch_phase(
         # on). head_oid stays None → "unknown".
     else:
         # Resolve the verdict against a stable head (see the head/verdict
-        # pairing note above). Issue #224: gh exit 1 from a transient
-        # watch-loop error must not be conflated with "CI failed". Issue
-        # #413: a freshly created PR may have no check rows yet when
-        # --watch returns, so an empty / pending JSON response is "still
-        # observing" rather than the final verdict — _resolve_final_status
-        # drives the resolver until a final verdict (or its retry budget).
-        verdict = _resolve_final_status(pr, repo, exit_code)
+        # pairing note above). Issue #413: a freshly created PR may have
+        # no check rows yet, so an empty / unparseable JSON response is
+        # "still observing" rather than the final verdict.
+        # Issue #695: the loop above already drove `verdict` to a
+        # decided, non-None result — either directly from
+        # `_self_poll_watch`, or from `_resolve_final_status` (whose
+        # `exit_code=8` neutral "Checks pending" placeholder degrades a
+        # totally-unparseable probe to `indeterminate` rather than
+        # fabricating a passed/failed guess, per Issue #685 intent).
+        assert verdict is not None
         status = verdict["status"]
         fail_count = verdict["fail_count"]
         pending_count = verdict["pending_count"]
@@ -873,7 +1137,7 @@ def _run_ci_watch_phase(
             # the verdict may describe a different commit than the live
             # head, and the new head's checks may still be running. Don't
             # record it — hand control back to main to restart the full
-            # `gh pr checks --watch` for the new head (which blocks until it
+            # self-poll ci-watch for the new head (which blocks until it
             # completes), rather than tagging a stale head or
             # short-circuiting on the JSON resolver's budget.
             sys.stderr.write(
@@ -893,26 +1157,25 @@ def _run_ci_watch_phase(
     # transient-empty race no longer reports `1s`.
     duration = int(round(time.monotonic() - started))
 
-    # Codex review (round 1, Major): once the resolver picks the final
-    # verdict, the script's exit code must reflect that verdict, not
-    # whatever gh returned from the initial `--watch` invocation. With
-    # the retry loop, gh can exit ``8`` ("Checks pending") on the first
-    # observation and then a later JSON probe surfaces the actual
-    # ``passed`` state — returning ``8`` to the caller would falsely
-    # signal "incomplete" to shell-script consumers checking `$?`. The
-    # mapping below mirrors :func:`_classify` (gh's documented codes:
-    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. Issue
-    # #685: `indeterminate` (verdict undetermined) maps to 8 as well —
-    # like `incomplete` it is not a clean pass/fail for `$?` callers.
-    # The later merge-watch block can still override ``0`` → ``9`` when
-    # the post-CI loop itself fails.
+    # Codex review (round 1, Major): the script's exit code must reflect
+    # the resolved verdict. Issue #695: there is no longer a raw gh
+    # process exit code to consult at all (the self-poll loop only ever
+    # calls `gh pr checks --json`), so the mapping below is the sole
+    # source of truth. It mirrors :func:`_classify` (gh's documented
+    # codes: 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed.
+    # Issue #685: `indeterminate` (verdict undetermined) maps to 8 as
+    # well — like `incomplete` it is not a clean pass/fail for `$?`
+    # callers. `status` is always one of the five keys below, so the
+    # ``.get`` default is unreachable in practice. The later merge-watch
+    # block can still override ``0`` → ``9`` when the post-CI loop itself
+    # fails.
     exit_code = {
         "passed": 0,
         "failed": 1,
         "canceled": 2,
         "incomplete": 8,
         "indeterminate": 8,
-    }.get(status, exit_code)
+    }.get(status, 8)
 
     # Issue #685: additive payload enrichment. Per-bucket counts ride
     # along whenever the verdict came from a parseable probe; an
@@ -959,7 +1222,11 @@ def _run_ci_watch_phase(
         ci_msg += " [verdict undetermined; retry recommended]"
     elif status == "failed" and fail_count:
         ci_msg += f" [{fail_count} of {total_checks} checks failed]"
-    _notify_peer(ci_msg)
+    # Path A (low-latency push) with fail-loud recording; path B (the
+    # dispatcher outbox relay) guarantees delivery of the ci_completed
+    # event above regardless of whether this push lands.
+    _notify_or_record(ci_msg, db_path=db_path, failed_kind="ci_completed",
+                      pr=pr)
 
     sys.stdout.write(
         f"pr_watch: PR #{pr} {status} "
@@ -1055,9 +1322,49 @@ def main(argv: "list[str] | None" = None) -> int:
     # _watch_for_merge recomputes its own deadline on entry (a moving head
     # is a sign of active work, so resetting the human-intervention grace
     # is correct — Issue #636 design note 6).
+    merge_watch = bool(args.merge_watch and not args.no_merge_watch)
+    try:
+        return _watch_loop(pr=args.pr, repo=repo, interval=args.interval,
+                           merge_watch=merge_watch)
+    except Exception as exc:  # noqa: BLE001
+        # Refs #653 #658: a watcher that dies on an unexpected exception
+        # would otherwise leave no terminal record — the secretary never
+        # learns the watch stopped. Record a canonical pr_watch_aborted
+        # event (the dispatcher outbox relay surfaces it) and best-effort
+        # push, then re-raise so exit behavior is unchanged. KeyboardInterrupt
+        # (BaseException) is an intentional cancel and propagates untouched
+        # past this ``except Exception`` — a user Ctrl-C is not an abnormal
+        # watcher death, so we deliberately record nothing for it (any
+        # verdict resolved before the interrupt was already written as its
+        # own ci_completed row; an interrupt during the initial poll simply
+        # leaves no terminal record, which is the correct "user cancelled"
+        # outcome).
+        try:
+            _record_event(
+                db_path=JOURNAL_PATH,
+                kind="pr_watch_aborted",
+                payload={
+                    "pr": args.pr, "repo": repo,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            _notify_or_record(
+                f"PR_WATCH_ABORTED: PR #{args.pr} "
+                f"({type(exc).__name__}: {exc})",
+                db_path=JOURNAL_PATH, failed_kind="pr_watch_aborted",
+                pr=args.pr)
+        except Exception:  # noqa: BLE001 — never mask the original failure
+            pass
+        raise
+
+
+def _watch_loop(*, pr: int, repo: str, interval: int,
+                merge_watch: bool) -> int:
+    """The ci-watch → merge-watch loop, extracted so :func:`main` can wrap
+    it with pr_watch_aborted recording (Refs #653 #658)."""
     while True:
         status, exit_code, head_oid = _run_ci_watch_phase(
-            pr=args.pr, repo=repo, interval=args.interval,
+            pr=pr, repo=repo, interval=interval,
             db_path=JOURNAL_PATH,
         )
 
@@ -1075,14 +1382,13 @@ def main(argv: "list[str] | None" = None) -> int:
         # the downstream actor for the green-PR path and is invoked only
         # when `status == "passed"`. `incomplete` / `failed` /
         # `canceled` results never trigger merge-watch.
-        if not (status == "passed" and args.merge_watch
-                and not args.no_merge_watch):
+        if not (status == "passed" and merge_watch):
             return exit_code
 
         merge_result = _watch_for_merge(
-            pr=args.pr,
+            pr=pr,
             repo=repo,
-            interval=args.interval,
+            interval=interval,
             db_path=JOURNAL_PATH,
             baseline_head=head_oid,
         )
