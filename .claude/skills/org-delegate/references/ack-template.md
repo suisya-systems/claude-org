@@ -36,6 +36,8 @@ mcp__org-broker__send_message(
 )
 ```
 
+Beyond progress, all intermediate handoff reports — rebase reports, confirmation requests, and anything other than completion (2a) / judgment-escalation (0) / plan・prep handoff (the existing flow journaled under the dedicated kinds `plan_delivered` / `prep_delivered`) — use this ack. After the ack, following SKILL.md Step 5 (1), always do the `worker_reported` journal append (`bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<summary>"`) in addition to the Progress Log append (a missing entry causes the dispatcher's PANE_OUTPUT_WITHOUT_PEER_MSG false detection, Issue #699).
+
 ### Completion-report ack (PR not yet created)
 
 ```

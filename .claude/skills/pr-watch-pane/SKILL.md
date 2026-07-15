@@ -109,12 +109,23 @@ this skill does not change their shape):
    ```bash
    git rev-parse --show-toplevel                          # -> JA_ROOT (absolute path)
    gh repo view --json nameWithOwner -q .nameWithOwner    # -> OWNER/REPO
+   printenv ORG_TRANSPORT ORG_BROKER_STATE_DIR PATH       # -> transport env (Refs #653 #658)
    ```
 
    - If `gh repo view` fails, report to the user "cannot auto-resolve the repository; please specify
      `--repo OWNER/REPO`" and abort. pr-watch.sh itself also auto-resolves when `--repo` is omitted,
      but being explicit here **fixes the repo independently of the pane's cwd** (so the cwd trap does
      not spill into repo resolution).
+   - **Capturing transport env (Refs #653 #658 — env-trap absorption)**: use `printenv` to fix the Lead
+     (secretary) pane's `ORG_TRANSPORT` / `ORG_BROKER_STATE_DIR` / `PATH`. Because `mcp__org-broker__spawn_pane`
+     brings up a **generic CLI pane** with no env injection (the note at the top of this skill), **unless**
+     you prefix-inject these into Step 3's `command`, the spawned pane's `tools/peer_notify.py` falls to a
+     silent no-op with `ORG_TRANSPORT` unset (the direct cause of the PR #73 failure: not a single
+     `CI_COMPLETED` entered the broker queue and the Lead sat idle without noticing). By the same logic that
+     `cwd` absorbs the cwd trap, this env capture absorbs the **env trap**. If `ORG_TRANSPORT` is empty /
+     unset (the renga operational default or unset), **omit** `export ORG_TRANSPORT` in Step 3 (leave it
+     unset → `peer_notify` falls back to renga = does not break the renga opt-in path). Prefix
+     `ORG_BROKER_STATE_DIR` only when it is set.
 
 ## Step 2: idempotency check (prevent double monitoring of the same PR)
 
@@ -140,9 +151,30 @@ mcp__org-broker__spawn_pane(
   role="watcher",
   name="pr-watch-<PR>",
   cwd="<JA_ROOT absolute path>",
-  command="mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
+  command="export ORG_TRANSPORT='<ORG_TRANSPORT>'; export ORG_BROKER_STATE_DIR='<ORG_BROKER_STATE_DIR>'; export PATH='<PATH>'; mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
 )
 ```
+
+- **env prefix injection (Refs #653 #658 — mandatory. The root fix for the PR #73 failure)**: replace the
+  `export ORG_TRANSPORT=...; export ORG_BROKER_STATE_DIR=...; export PATH=...;` at the head of `command`
+  with the Lead pane's actual values captured via `printenv` in Step 1. Without this, the generic spawn
+  pane does not inherit the transport env, and both the broker/renga paths of `peer_notify` fall to the
+  unset branch so the **push becomes a silent no-op** (the `ci_completed` write to the events table
+  succeeds but does not reach the Lead = exactly the PR #73 failure). The `PATH` injection is so the pane's
+  PATH can resolve the `claude-org-runtime broker send` CLI (inside the venv) that the broker path shells
+  out to.
+  - **Conditional prefix (do not break the renga opt-in)**: if `ORG_TRANSPORT` is empty / unset, **omit the
+    whole** `export ORG_TRANSPORT=...` (pass it through unset = `peer_notify` falls back to renga). Prefix
+    `ORG_BROKER_STATE_DIR` only when it is set. Explicitly exporting an empty value as `''` causes the
+    broker path to grab the default state dir by mistake, so **if empty, do not write the export statement
+    at all**.
+  - **Positioning within defense-in-depth**: this env injection is a **repair of path A (the low-latency
+    push)**, not a standalone guarantee. Even if the injection is missed / the push fails, the (B)
+    dispatcher `event_deliveries` outbox relay directly scans canonical events such as `ci_completed` and
+    reliably relays them to the Lead, so "zero-miss" still holds (see the relay-scan step of
+    [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)).
+    Furthermore, when a push fails, `pr_watch` records a `notify_failed` event fail-loud (silent no-op
+    fully abolished).
 
 - `target="dispatcher"`: a stable anchor for the same-tab scope (like the attention watcher, it uses
   the dispatcher as the split origin). On broker each pane is a detached independent session, but to

@@ -10,6 +10,10 @@ allowed-tools:
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 tools/secretary_queue_watcher.py:*)
+  - Bash(py -3 tools/secretary_queue_watcher.py:*)
+  - Bash(rm -f .state/attention_pane.json)
+  - Bash(del .state\attention_pane.json)
   - mcp__renga-peers__*
 ---
 
@@ -22,6 +26,15 @@ Collect every worker's state, persist it to disk, and stop every pane.
 > appearing in `list_panes` / `list_peers` is not an anomaly. A curator pane exists only in
 > the transient case where "an on-demand curate triggered by a worker close was still running
 > when suspend overlapped it"; only then is it included in Phase 4's shutdown targets.
+
+> **Responsibility boundary (/org-suspend vs. [`/org-down`](../org-down/SKILL.md))**: /org-suspend is
+> responsible only up to "state save + stopping the ja-managed auxiliary processes (dashboard /
+> secretary_queue_watcher / attention watcher) and panes", and **does not call `claude-org-runtime org down`
+> (stopping the broker daemon)**. suspend alone is a pause on the premise of "resuming again with
+> `/org-start`", and leaves the broker daemon running (it survives so that even after you close the
+> terminal the daemon can resume immediately). Fully bringing it down including the daemon is the
+> responsibility of [`/org-down`](../org-down/SKILL.md), which runs `org down` only after confirming that
+> suspend succeeded.
 
 Pane operations go through the `{{FQ}}*` MCP tools. Lifecycle events equivalent to pane_exited are long-polled via `{{FQ}}poll_events`; screen scraping via `{{FQ}}inspect_pane`; raw key input via `{{FQ}}send_keys`.
 
@@ -106,6 +119,102 @@ For workers that did not reply:
 ```bash
 kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 ```
+
+> **Note**: this blind kill is left simple because it is "a pause on the premise of resuming with
+> /org-start". In [`/org-down`](../org-down/SKILL.md), which brings down the daemon too, it is replaced with
+> a stale-pid-safe stop that avoids mis-killing on pid recycle (`/proc` / `Get-CimInstance` CommandLine
+> matching).
+
+## Phase 3.6: stop the secretary_queue_watcher (broker only)
+
+Stop the backlog watcher that org-start Block C3 made resident via `run_in_background` on the broker rail
+(`ORG_TRANSPORT=broker`). **On renga the watcher does not exist** (it does not depend on queue.jsonl), so if
+the transport is `renga` **skip this Phase entirely**.
+
+At startup the watcher records its pid / cwd / cmdline / started_at / broker_state_dir into
+`.state/secretary_queue_watcher.json`. To stop it, **do not kill by pid alone**; SIGTERM only when (a) the
+recorded broker_state_dir matches the current `ORG_BROKER_STATE_DIR` (prevents mis-stopping a different org /
+broker's watcher) and (b) the pid is alive and the live argv (Linux/WSL: `/proc/<pid>/cmdline`, macOS/BSD:
+`ps -p <pid> -o args=` fallback) can be confirmed to be this watcher. If the match fails, do not kill; delete
+the sidecar as stale (mis-kill prevention). This matching logic lives in a helper, so on POSIX you just call
+one line:
+
+**Mac / Linux / WSL**:
+```bash
+python3 tools/secretary_queue_watcher.py --stop   # on Windows, use py -3 ... for the console python
+```
+Confirm the result from the one output line (`STOP: ...`) (`sent SIGTERM and stopped` / `deleted stale
+sidecar` / `already stopped`). exit 0 is the normal case (stop / stale cleanup / already-stopped are all 0).
+macOS can identity-check via the `ps` fallback, so `--stop` works as-is. exit 2 (identity unconfirmed) is a
+signal that appears only in environments with neither `/proc` nor `ps` (Windows native); in that case use the
+PowerShell procedure below.
+
+**Windows native (PowerShell)** — because there is no `/proc` and the helper's argv match is unavailable,
+identity-check via `Get-CimInstance Win32_Process`'s CommandLine before `Stop-Process` (a Windows-specific
+procedure, not a literal translation of `kill -0` / `kill -TERM`):
+```powershell
+$pf = ".state\secretary_queue_watcher.json"
+if (Test-Path $pf) {
+  $rec = Get-Content $pf -Raw | ConvertFrom-Json
+  $wpid = [int]$rec.pid
+  $ownOk = $false
+  try {
+    if ($env:ORG_BROKER_STATE_DIR) {
+      $ownOk = ((Resolve-Path $rec.broker_state_dir).Path -eq (Resolve-Path $env:ORG_BROKER_STATE_DIR).Path)
+    } else {
+      $ownOk = ((Resolve-Path $rec.cwd).Path -eq (Get-Location).Path)
+    }
+  } catch { $ownOk = $false }
+  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$wpid" -ErrorAction SilentlyContinue
+  $idOk = $proc -and ($proc.CommandLine -match 'secretary_queue_watcher\.py')
+  if ($ownOk -and $idOk) {
+    Stop-Process -Id $wpid -Force
+    Write-Output "secretary_queue_watcher (pid=$wpid) stopped"
+  } else {
+    Write-Output "watcher pid stale / different org / not running; not killing, removing stale sidecar"
+  }
+  Remove-Item $pf -ErrorAction SilentlyContinue
+}
+```
+
+## Phase 3.7: stop the attention watcher (before pane teardown)
+
+The attention watcher is a CLI pane resident in the right split of the dispatcher pane, so stop it **before
+Phase 4's bulk pane teardown** (closing the dispatcher first would orphan the attention pane / recycle its
+pane_id and break subsequent identification). In sessions where the attention watcher was not started, there
+is neither a sidecar nor a live pane, and this Phase is a no-op.
+
+Stopping uses the same **identity check** as [`/org-attention-stop`](../org-attention-stop/SKILL.md) (do not
+`close_pane` the sidecar's pane_id unverified; if the pane_id has been reassigned to a different pane it would
+kill an unrelated pane — Issue #468):
+
+1. With `{{FQ}}list_panes`, collect **all** live panes with `name="attention"` **or** `role="attention"`
+   (= the confirmed attention-pane set; note each **numeric pane_id**).
+2. If `.state/attention_pane.json` can be opened with `Read`, read its `pane_id` (= sidecar pane_id). If
+   absent, "no sidecar".
+3. Classify the sidecar pane_id by the **name/role returned by list_panes** (do not trust the name recorded
+   in the sidecar):
+   - **verified** (in the confirmed set) → that pane is still the real watcher. A close target.
+   - **recycled** (in list_panes but name/role is not attention) → the pane_id has been reassigned to a
+     different pane. **Never close it.**
+   - **gone** (not in list_panes) → already vanished. Do not close.
+4. `{{FQ}}close_pane(target="<id>")` each pane in the confirmed set by **numeric pane_id** (do not use the
+   `target="attention"` name form — so as not to hit a role-only orphan). Treat `[pane_not_found]` /
+   `[pane_vanished]` as already closed and skip.
+5. If there is a sidecar, **always delete it regardless of classification**:
+   ```bash
+   rm -f .state/attention_pane.json     # Windows native: del .state\attention_pane.json
+   ```
+6. Append one line to the journal. **Only when a pane was actually closed**, include the pane_id; if no close
+   was performed because of recycled / gone, use `reason=stale_sidecar` (prevents a false record of having
+   stopped an unrelated pane):
+   ```bash
+   bash tools/journal_append.sh attention_watch_stopped pane_id=<N>          # when a close was done
+   bash tools/journal_append.sh attention_watch_stopped reason=stale_sidecar # when no close was done
+   ```
+
+For the per-classification detailed behavior and report text, see
+[`/org-attention-stop`](../org-attention-stop/SKILL.md) (this Phase embeds its essence into the suspend flow).
 
 ## Phase 4: stop all panes
 

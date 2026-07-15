@@ -21,7 +21,7 @@ In this file (and in every skill) the peer-message and pane-control calls are wr
 The contractual source of truth is [`docs/contracts/backend-interface-contract.md`](./docs/contracts/backend-interface-contract.md) Surface 8 (broker auth & delivery, proposed and pending ratification); the design SoT is transport-lab `docs/design/ja-migration-plan.md` §5. **Default `renga` is never removed and remains permanently available as the opt-in fallback** (rollback safety). Broker live dogfood is in scope of Epic #6 Issue G and is not the default operational path of this file.
 
 ## Post-PR CI Monitoring
-- Immediately after creating a PR, run `tools/pr-watch.ps1 <PR number>` (Windows) or `tools/pr-watch.sh <PR number>` (POSIX). This starts `gh pr checks --watch` in blocking mode and appends one `ci_completed` event line to `.state/journal.jsonl` on completion. If `--repo OWNER/REPO` is omitted, the current repository is resolved automatically.
+- Immediately after creating a PR, launch [`/pr-watch-pane <PR>`](./.claude/skills/pr-watch-pane/SKILL.md) (add `--repo OWNER/REPO` for cross-repo). In a dedicated pane inside the broker tmux session, `tools/pr-watch.sh` runs at ja-root cwd, outside the sandbox, and records one `ci_completed` line to the events table on completion. **Do not invoke `tools/pr-watch.*` directly via Claude Code's Bash background launch**: a Claude Code background task tracks only the spawning shell, and the self-detached monitoring body is orphaned (official spec), so the monitoring can die silently on `/clear` or Lead session end. A manual `!` run is only for the emergency route where a human stays attached outside the pane.
 
 ## Next-task proposals after a PR merge (proactive next-dispatch)
 
@@ -83,7 +83,7 @@ Violation case: 2026-05-21, mixing a separate concern into the voice-v2-independ
 
 ## Always Return an Ack When Receiving a Worker Peer Message (Issue #312)
 
-When a completion / progress / Codex round / escalation-for-decision message arrives from a Worker over `renga-peers`, the Lead must **first send an ack to the worker** with `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)`. Without an ack, the worker stays idle in "keep pane open; waiting for next instruction" and deadlocks. See the canonical event flow and ack examples in [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) and [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md). **ack != user approval**: only issue push / `gh pr create` / `tools/pr-watch.*` after explicit user approval.
+When a completion / progress / Codex round / escalation-for-decision message arrives from a Worker over `renga-peers`, the Lead must **first send an ack to the worker** with `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)`. Without an ack, the worker stays idle in "keep pane open; waiting for next instruction" and deadlocks. See the canonical event flow and ack examples in [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) and [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md). **ack != user approval**: only issue push / `gh pr create` / `/pr-watch-pane` after explicit user approval.
 
 ## Notify when the Secretary is waiting on a user judgment (Issue #28)
 

@@ -94,6 +94,7 @@ Before entering task decomposition, check the request from the following angles.
 - When there is an ambiguous term: ask the user "Do you mean XX by YY?" before proceeding
 - For OS-specific tasks: include OS-specific preconditions in the Worker instructions when generating the payload
   - **For Windows worker + CLI / tool implementations with standard output**: include two points in the brief via `--impl-guidance` etc.: strings output to the CLI (argparse `help=` / `print()`) must use ASCII `-` and avoid cp932-unfriendly characters like em-dash, and `--help` should be smoke-tested once on a real terminal (the Windows notes in the rendered brief always carry this, but the Lead should consciously enforce it when delegating CLI tool work). Background: a pattern where the cp932 console cannot encode em-dash (U+2014) and `--help` crashes has fired twice (ja#537 / runtime#63). pytest passes because `redirect_stdout` captures as UTF-8; only the real terminal fails.
+- **Before delegating a suspected bug in a pin-managed internal package (`claude-org-runtime`, etc.)**: confirm that the day's [`/org-start`](../org-start/SKILL.md) Block C2 runtime drift check was clean (exit 0). If it detected drift (exit 1) or was "PyPI unconfirmed" (exit 2 = could not reach PyPI, e.g. run inside the sandbox), the old venv may be hitting a bug already fixed upstream, so first upgrade the venv + bump the pin window to bring it up to date, and confirm the issue still reproduces before delegating (prevents a phantom dispatch against an already-fixed bug). The pin lag is a session constant, so one check at org-start suffices; a per-delegation re-check is not needed (background: 2026-07-08 #119).
 
 ### Initial-step checklist for incorporation / sync tasks
 
@@ -273,18 +274,24 @@ worker -> Secretary peer message
   5. CI watch / next instruction -> [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
 ```
 
-- For the minimum ack contents and per-kind example texts, see [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md). **ack != user approval**: `git push` / `gh pr create` / `tools/pr-watch.*` are issued only after the user's explicit OK
+- For the minimum ack contents and per-kind example texts, see [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md). **ack != user approval**: `git push` / `gh pr create` / `/pr-watch-pane` are issued only after the user's explicit OK
 - The 2 -> 3 ordering follows the principle "reconcile internal state first, then report to the user"
 
 #### 0. Judgment request / scope expansion / blocker (identify with top priority)
 
 -> Trigger [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md). The Secretary does not pre-approve.
 
-#### 1. Progress report
+#### 1. Progress report (all intermediate handoff reports other than completion — progress, rebase reports, requests, etc.)
+
+This subsection applies not only to the literal word "progress" but to **all kinds of worker→secretary peer messages other than completion reports (2a) / judgment-escalation・blockers (0) / plan・prep handoff** (intermediate handoff reports such as progress sharing, rebase-completion reports, confirmation requests). plan / prep handoff stays on the existing flow of being journaled under their dedicated kinds (`plan_delivered` / `prep_delivered`, [`docs/journal-events.md`](../../../docs/journal-events.md)) and is not switched to `worker_reported` (the design-flow consumer side references the dedicated kinds).
 
 - Return ack to the worker (see the "progress report ack" section of [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md); before the Progress Log append). **Do not escalate progress reports to the user or wait for approval**
 - Append to the Progress Log of `.state/workers/worker-{task_id}.md`
-- Append an event to the DB events table (`bash tools/journal_append.sh ...`)
+- **Always append `worker_reported` to the DB events table (non-omittable, Issue #699)**:
+  ```bash
+  bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<summary>"
+  ```
+  Match the payload keys to the event catalog (the `worker_reported` row in [`docs/journal-events.md`](../../../docs/journal-events.md): `worker`, `task`, `summary`). Keep the kind unified as `worker_reported` (do not use aliases such as `worker_progress`). The dispatcher's PANE_OUTPUT_WITHOUT_PEER_MSG judgment ([`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2) references the `worker_reported` trace in the events table via SQL, so a missing journal entry for an intermediate handoff report creates a state of "the peer message arrived but there is no trace in events," which is a direct cause of a false positive that misdetects a healthy, running worker as a silent dead-lock (real example on 2026-07-08 kura conveyor).
 
 #### 2a. Completion report
 

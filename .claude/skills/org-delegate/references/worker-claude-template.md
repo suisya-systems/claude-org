@@ -82,6 +82,20 @@ Implementation guideline:
 
 Background: in a past probe task, the actual oauth_token from `cat ~/.config/gh/hosts.yml` was leaked to the dispatcher's stdout. Probe-class tasks have "reads themselves" as the attack surface, so the switch to testbed must be enforced as a pre-execution gate.
 
+## Rebase before the completion report (mandatory, `full` only; not needed for `minimal`)
+
+**Scope**: this section applies to "`full` tasks that open a PR on top of `origin/main` (= this branch's PR base) in an existing repository". For the `git init` new project in "Correct work procedure" above, or repositories with no `origin` remote / whose PR base is other than `origin/main` (`origin/develop`, etc.), read `origin/main` as **that branch's actual base upstream**. If the upstream remote itself does not exist (`git remote` is empty), this rebase gate itself does not apply (skip it and proceed to the next Codex self-review). The following is the procedure for the default case (base = `origin/main`):
+
+Before the completion report (and the Codex self-review below), always run the following (excessive for a `minimal`-depth trivial fix, so not applicable there):
+
+1. `git fetch origin` (`git fetch origin main` only fetches into `FETCH_HEAD` and does not reliably update the `origin/main` tracking ref, which can misjudge behind=0 against a stale `origin/main`. If the remote name / base differs, fetch the relevant upstream).
+2. `git rebase origin/main` (if the branch policy is merge-based, `git merge origin/main`; the default is rebase. If the base differs, read it as the relevant upstream).
+3. If there are conflicts, the worker resolves them (the result of other parallel PRs touching the same integration point = registry / CLI --source routing / `pyproject.toml` extras・markers / README / docs). During conflict resolution, confirm that the local tests (`pytest` / `make demo` / `make test-local` or whatever verification the repository defines) continue to stay green.
+4. After the rebase, confirm the branch is a descendant of `origin/main` (= the base upstream) and clean (behind=0): `git rev-list --count HEAD..origin/main` is `0`.
+5. Include the one line "rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`" in the completion report.
+
+Background (Refs: 2026-07-08 kura conveyor PR #46/#47 conflict fest): under parallel dispatch, when multiple workers edit the same integration point (`source/__init__.py` registry / CLI `--source` routing / `pyproject.toml` extras・markers / README / docs) from the main at dispatch time, whoever merges first wins and the survivor becomes CONFLICTING on GitHub and does not even start CI. By finishing rebase → conflict resolution → clean push at the worker stage, you avoid the Lead-side rebase cost (a semantic merge cannot be resolved without the worker's context and becomes double work) and the delay from CI not starting.
+
 ## Codex self-review procedure
 
 Follow the **"verification depth" line that is always included** in the dispatch instructions (`full` or `minimal`). If the value is missing or unclear, do not decide on your own — confirm with the Secretary (`secretary`).
@@ -148,6 +162,7 @@ When the work is done, **always** do the following:
    - **Fallback**: if `to_id="secretary"` returns `[pane_not_found]`, the Secretary pane may have been launched via a path other than `renga --layout ops`. In that case, send using the numeric pane id specified in the DELEGATE message body (e.g., `to_id="1"`). Once the Secretary side runs the `set_pane_identity` auto-repair in `/org-start` Step 0, `to_id="secretary"` will work again from then on.
    - What you completed.
    - Deliverables — files created, commits, PRs, etc.
+   - **rebase clean confirmation (mandatory)**: the one line "rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`" confirmed in "Rebase before the completion report" above (i.e., that it is `behind=0`).
    - Any remaining work or caveats.
 
 2. **Keep the pane alive after PR creation to wait for review comments**: even when the Secretary tells you that "push / PR creation is complete," do not close the pane. When PR review comments arrive on GitHub, stack the fix commits in the same pane (re-dispatching a new worker would pay the cost of rebuilding the Issue / diff / judgment boundaries). Stay in standby until you receive an explicit close instruction from the Secretary such as "you can close" / "merged."
