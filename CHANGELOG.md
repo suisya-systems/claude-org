@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-16
+
+Maintenance release of the English edition, tracking the Japanese upstream's
+`v1.1.0`. Since `v1.0.0` this edition picked up five machine-mirrored runtime
+changes from `claude-org-ja` plus one hand-translated documentation catch-up
+batch. The theme is operational hardening: a zero-miss CI-watch pipeline, a
+self-contained PR watcher, gap-filled shutdown paths with a new `/org-down`
+skill, and a de-flaked runtime drift check. Each entry references the upstream
+`ja#NNN` pull request and the mirroring PR in this repository.
+
+### Added
+
+- **Shutdown gap-fill and `/org-down`.** Filled the remaining teardown gaps with a
+  new `/org-down` skill that suspends the org and then stops it all the way down to
+  the broker daemon, plus explicit stop paths for the Secretary queue watcher and
+  the attention watcher (`tools/secretary_queue_watcher.py`, `tools/stop_dashboard.py`).
+  `/org-suspend` now covers the queue-watcher and attention-watcher stop phases, and
+  `org-start` gained the matching stop path. (ja#711, #500; docs #501/#504.)
+- **CI-watch outbox ledger.** Added an `event_deliveries` outbox ledger and a relay-scan
+  tool (`tools/relay_scan.py`, `tools/state_db/**`) underpinning the zero-miss CI-watch
+  redesign, together with the accompanying `state-schema-contract` §6 update.
+  (ja#703, #495; docs #496/#504.)
+- **English documentation catch-up (batch 1).** Translated the documentation- and
+  skill-class diffs behind seven of the nine open auto-mirror P2 tracking issues: the
+  runtime-drift-check host-exec notes, the worker-template pre-completion rebase, the
+  zero-miss CI-watch receive model, intermediate-handoff journaling, the broker-runbook
+  SIGINT-stop correction, the shutdown gap-fill skills, and pinning CI-monitoring launch
+  to `/pr-watch-pane`. Two P2 issues (the worker/curator model policy) remain deferred
+  pending a human decision. (#504.)
+
+### Changed
+
+- **Self-contained PR watcher.** Replaced `pr_watch`'s dependence on `gh ... --watch`
+  with a self-owned polling loop, removing the reliance on the external watch command
+  and its failure modes. (ja#701, #494.)
+
+### Fixed
+
+- **Zero-miss CI monitoring.** Redesigned the CI-watch pipeline into a multi-layer
+  ("layer D") receive model so a completed CI run is never missed, backed by the outbox
+  ledger and relay scan above. (ja#703, #495.)
+- **Runtime drift check no longer silently skipped.** Fixed the runtime-version drift
+  check that silently skipped inside the sandbox; it now runs via host exec with explicit
+  exit codes so a real drift surfaces instead of being swallowed. (ja#696, #491; docs
+  #492/#504.)
+- **Delegate payload placement.** Made `apply` place the base clone for new-URL projects
+  and generalized brief placement in `gen_delegate_payload`, so worker briefs and their
+  base clones land correctly across project layouts. (ja#716, #503.)
+
 ## [1.0.0] - 2026-07-06
 
 First stable release of **claude-org-ja**, the Japanese edition of the Claude Code
@@ -140,4 +189,5 @@ than listed commit-by-commit.
   core-harness resolution, permanently resolving fail-closed Bash on panes that do not
   inherit the venv.
 
+[1.1.0]: https://github.com/suisya-systems/claude-org/releases/tag/v1.1.0
 [1.0.0]: https://github.com/suisya-systems/claude-org/releases/tag/v1.0.0
