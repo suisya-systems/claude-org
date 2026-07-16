@@ -18,10 +18,10 @@ That said, claude-org is designed to **use different permission modes intentiona
 |---|---|---|---|
 | Lead | `auto` | Opus | Protected by narrowed permission entries in `settings.local.json` plus PreToolUse hooks |
 | Dispatcher | `bypassPermissions` | Sonnet | **Exception**. Reason below |
-| Curator | `auto` | Opus | Minimal permissions (mostly read, plus only writes needed for knowledge organization) |
+| Curator | `auto` | Sonnet | Minimal permissions (mostly read, plus only writes needed for knowledge organization). Knowledge curation is a lightweight/mechanical workload, so Sonnet suffices |
 | Worker | `auto` | Opus | Narrowed permission entries + role-specific hooks + per-task working-directory boundaries |
 
-The reason only the Dispatcher is fixed to `bypassPermissions` is a **direct consequence of cost optimization**. In Claude Code (TUI), `auto` mode only starts on Opus-family models, and Sonnet cannot use `auto` mode at all. If the Dispatcher runs on Sonnet, the practical `permission_mode` choice is only `bypassPermissions`. This is not bypassing classifier behavior; it is the only available mode in an environment where `auto` cannot be selected in the first place.
+The reason only the Dispatcher is fixed to `bypassPermissions` is that `auto` mode's safety classifier judges "child agent launch" (worker dispatch via `spawn_claude_pane`) as "Create Unsafe Agents" and blocks it, so worker dispatch cannot succeed under `auto`. The classifier runs on a dedicated model independent of the session model (https://www.anthropic.com/engineering/claude-code-auto-mode), so this is a constraint orthogonal to the model choice (Sonnet operation) — it is not a convenient evasion of classifier behavior, but the only available choice given that the Dispatcher's job (launching child agents) structurally conflicts with `auto`.
 
 ### Actual behavior of `bypassPermissions` (no euphemisms)
 
@@ -40,7 +40,7 @@ So the Dispatcher's effective defense layers are:
 
 Because PreToolUse hooks in (2) remain active even in bypass mode, history-rewriting commands such as `git push --force` and accidental writes to application code are still technically blocked. However, hooks are only loose matches against Bash command strings and do not catch extreme evasions through function definitions or shell variables. In that sense, "self-discipline based on the role contract" is still a necessary complement. Put plainly: there are multiple overlapping nets, but each net has coarse holes.
 
-**Alternative**: For each role, use the merged schema from the `claude-org-runtime` framework schema and the ja-side `tools/org_extension_schema.json` as the canonical source, and distribute `settings.local.json` through `/org-setup`. Permission entries and hooks are registered in the schema, and CI (`tools/check_role_configs.py`) detects configuration drift. The Dispatcher `bypassPermissions` exception itself will be re-evaluated once Sonnet supports `auto` mode.
+**Alternative**: For each role, use the merged schema from the `claude-org-runtime` framework schema and the ja-side `tools/org_extension_schema.json` as the canonical source, and distribute `settings.local.json` through `/org-setup`. Permission entries and hooks are registered in the schema, and CI (`tools/check_role_configs.py`) detects configuration drift. The Dispatcher `bypassPermissions` exception itself will be re-evaluated once `auto` mode's classifier stops blocking child-agent launches (worker dispatch).
 
 ---
 

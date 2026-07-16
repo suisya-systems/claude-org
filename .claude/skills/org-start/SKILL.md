@@ -363,14 +363,16 @@ Spawned by the dispatcher when a threshold fires at worker close ([`.dispatcher/
 
 - `cwd="../.curator"` (the caller is the dispatcher; relative resolution against cwd=`.dispatcher/`)
 - `permission_mode=auto`
-- `model="opus"`
+- `model="sonnet"`
+
+Rationale: auto mode's safety classifier runs on a dedicated model independent of the session model, so approval behavior does not depend on the session model (official: https://www.anthropic.com/engineering/claude-code-auto-mode). The curator's knowledge-curation workload classifies as lightweight/mechanical, so Sonnet suffices (a judgment independent of the workers' default-opus policy).
 
 ### Worker (used in org-delegate's Step 3)
 
-**`model="opus"` is required (sonnet forbidden).**
-Rationale: the worker's default permission_mode is `auto` (classifier-based). This safety classifier only operates stably on Opus. With sonnet, the classifier misjudges frequently, the approval flow breaks down, and work stalls. Only the dispatcher is fixed at `bypassPermissions` and thus bypasses the classifier, so sonnet operation is fine there (dispatcher is on sonnet for cost optimization; this does not apply to workers).
+**Default is `model="opus"` (quality-first). Sonnet 5 is allowed only for lightweight, mechanical tasks, and only when the Lead explicitly designates it.**
+Rationale: we previously forbade sonnet on the grounds that "the worker's default permission_mode `auto` has a safety classifier that only operates stably on Opus, and sonnet makes it misjudge frequently, breaking the approval flow" — this is now updated. The auto-mode classifier runs on a dedicated model (Sonnet 4.6) independent of the worker's session model, so approval judgments do not depend on whether the worker is opus or sonnet (official: https://www.anthropic.com/engineering/claude-code-auto-mode; a 2026-07-05 canary run also measured 0 classifier-origin blocks with a Sonnet 5 worker). We still **keep the default at opus** as a quality-first policy: Opus 4.8 wins on benchmarks for normal tasks involving implementation, debugging, and design judgment. Only for lightweight, mechanical tasks (boilerplate replacement, simple string fixes) may the Lead explicitly designate a Sonnet 5 worker. Only the dispatcher is fixed at `bypassPermissions` and thus bypasses the classifier, so it runs on sonnet as a cost optimization (that judgment does not auto-apply to workers).
 
 Typical:
 - `cwd="{workers_dir}/{task_id}"` (absolute path recommended)
 - `permission_mode=auto`
-- `model="opus"`
+- `model="opus"` (default; Sonnet 5 only for lightweight, mechanical tasks explicitly designated by the Lead)

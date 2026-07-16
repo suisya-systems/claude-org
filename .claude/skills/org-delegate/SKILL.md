@@ -181,6 +181,8 @@ For heavy-lane tasks at **M-class or above / involving design judgment / spannin
 
 Adding a dedicated flag to `gen_delegate_payload.py` is out of scope (the division of labor — permission via the `--impl-guidance` brief text, arming via the Dispatcher's send_keys — is sufficient). **Positioning**: ultracode is the **front stage** used for implementation and pre-Codex self-review convergence, not a replacement for the final Codex gate (independent review by a separate model, Blocker / Major zero). Do not permit ultracode for light-lane tasks or small single-file tasks.
 
+**Per-stage model selection (recommended)**: for tasks where ultracode workflow is permitted, the brief may encourage using different models per workflow stage. Route mechanical fan-out stages (boilerplate replacement, identical transforms across many files, simple collection — parallel work with no judgment) to Sonnet 5 via `agent(..., {model: 'sonnet'})` to optimize cost and speed, while judgment/verification/synthesis stages (review, design judgment, adversarial verify, synthesis) inherit the session model (default opus) to secure quality. Granularity is controlled via the Workflow tool's `agent()` opts.model (keep the per-stage note consistent with [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a).
+
 ## Step 1.7: Codex design review trigger (executed by the Lead, Issue #337)
 
 Decide whether to perform a Codex design review before `apply`. Run it only when one of the following applies:
