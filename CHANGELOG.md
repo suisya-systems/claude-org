@@ -56,7 +56,7 @@ skill, and a de-flaked runtime drift check. Each entry references the upstream
 
 ## [1.0.0] - 2026-07-06
 
-First stable release of **claude-org-ja**, the Japanese edition of the Claude Code
+First stable release of **claude-org**, the English edition of the Claude Code
 multi-role AI organization harness. This release consolidates the 426 commits made
 since the initial `v0.1.0` tag into a production-ready harness: a role-based
 organization (Lead / Dispatcher / Curator / Worker) driven over a pluggable peer
