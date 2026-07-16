@@ -169,20 +169,25 @@ In parallel with Block A's spawn firing. The dashboard server is a separate proc
 
 In parallel with Block A's spawn firing. Compare the installed version of `claude-org-runtime` to the latest on PyPI, and if there is drift, attach a one-line warning to the Step 4 startup-complete report. No auto-upgrade; notification only. **Do not hard-code version numbers in either this file or the script — use only values dynamically obtained via importlib.metadata and the PyPI JSON API** (to avoid the description going stale every time runtime releases).
 
-1. Run the drift check:
+> **Inside the sandbox PyPI is unreachable → run on the host (the true cause of #119)**: running this check inside Claude Code's Bash sandbox cannot reach PyPI due to network isolation. The old implementation **silently skipped** that unreachability (emitting nothing and exiting 0), so it misread a pin lag (venv left old) as "up to date" and caused a phantom dispatch of an already-fixed bug to a worker (2026-07-08 #119: hit a bug already fixed in runtime 0.1.36 on a 0.1.34 venv). The fix: (1) the script surfaces unreachability as **exit 2 + a stderr diagnostic**, and (2) this Block **runs on the host with `dangerouslyDisableSandbox: true`** (if it can only be run inside the sandbox, the result is exit 2 = "PyPI unconfirmed", and drift is treated as unverified until re-run on a network-reachable host).
+
+1. Run the drift check **on the host** (with the Claude Code Bash tool, attach `dangerouslyDisableSandbox: true`):
    ```bash
    py -3 tools/check_runtime_version.py   # Windows
    python3 tools/check_runtime_version.py # Mac/Linux
    ```
-2. Output branches:
-   - stdout is empty (exit 0): one of installed == latest, not installed, offline, PyPI response parse failure, pin parse failure, no release within the pin range. **Do not emit a warning line in the Step 4 report** (silent).
-   - stdout contains one line of `[runtime drift] ...`: drift detected. **Verbatim, transcribe that one line as a warning at the end of the Step 4 startup-complete report**.
+2. **Branch on the exit code** (stdout is the drift line only; diagnostics go to stderr):
+   - **exit 0** (up to date): installed == latest within the pin window. PyPI reachability confirmed, no drift. **No warning line.**
+   - **exit 1** (drift): transcribe stdout's `[runtime drift] ...` line **verbatim as a warning at the end of the Step 4 startup-complete report**.
+   - **exit 2** (unconfirmed): latest could not be determined — PyPI unreachable / abnormal response / outside the pin window / missing `packaging`, etc. A reason diagnostic is printed to stderr. Because **drift is unverified**, state "runtime drift: PyPI unconfirmed (re-run on host required)" explicitly in the Step 4 report (do not go silent). This is most often caused by running inside the sandbox, so re-run with `dangerouslyDisableSandbox: true`.
+   - **exit 3** (not installed): runtime cannot be imported from this Python (different venv / not installed). A note is printed to stderr. Emit "runtime not installed (needs checking)" in the Step 4 report.
 
 > Design notes:
-> - latest acquisition hits the PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) via urllib.request (timeout 3s). `pip index versions` is experimental and emits a warning on stderr, so it is not adopted.
-> - **pin window**: dynamically read the `claude-org-runtime` dependency constraint from ja's `pyproject.toml` via regex, and from the PyPI releases, only the latest satisfying that constraint is used as `latest` for comparison. This means that even if a higher major / higher minor is released to PyPI, an upgrade outside the window is not encouraged (uses `packaging.SpecifierSet`). On environments where `packaging` is not installed, silent skip.
-> - yanked releases are excluded from candidates (so that versions pip would not normally pick are not displayed as `latest`).
-> - Both "drift = older" and "drift = preview pulled in (installed > latest, release-channel skew)" are notified with the same one line. No auto-upgrade; the response is left to the user's judgment.
+> - latest acquisition hits the PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) via urllib.request (timeout 8s). `pip index versions` is experimental and emits a warning on stderr, so it is not adopted.
+> - **pin window**: dynamically read the `claude-org-runtime` dependency constraint from ja's `pyproject.toml` via regex, and from the PyPI releases, only the latest satisfying that constraint is used as `latest` for comparison (uses `packaging.SpecifierSet`). Even if a higher major / minor ships, an upgrade outside the window is not encouraged. Environments where `packaging` is not installed fall to **exit 2 (unconfirmed, stderr diagnostic)** — the old implementation's silent skip has been removed.
+> - yanked releases / prereleases are excluded from candidates (so that versions pip would not normally pick are not made `latest`).
+> - Both "drift = older" and "drift = preview pulled in (installed > latest, release-channel skew)" are notified with the same **exit 1** one line. No auto-upgrade; the response is left to the user's judgment.
+> - **stdout is the drift line only** (verbatim-transcribable to Step 4). Offline / unconfirmed / not-installed diagnostics all go to **stderr** (so the spliceable stdout is not polluted).
 > - The warning command embeds the pin constraint read from `pyproject.toml` verbatim, so even if the user pastes the warning command as is, it will not upgrade outside the window.
 > - Script body: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py).
 
@@ -198,6 +203,7 @@ On the broker transport there was previously a failure where "messages addressed
    py -3 tools/secretary_queue_watcher.py     # Windows
    ```
 2. Behavior: the watcher live-tails from the tail of `$ORG_BROKER_STATE_DIR/queue.jsonl` at startup, and if a subsequent `message_enqueued` addressed to the secretary goes past the threshold (default 120 seconds) without being `delivered`, it prints one line with the backlog count and elapsed seconds and **exits**. The background Bash exit event re-wakes the secretary, so when you see that output, drain via the `check_messages` of the transport in use (in broker, `mcp__org-broker__check_messages`). It does not count the running gap of past logs (a known past loss mixed in would cause a false positive, so only new records during this session are in scope).
+3. **Stop path**: at startup the watcher writes `.state/secretary_queue_watcher.json` (a sidecar recording pid / cwd / cmdline / broker_state_dir), and `/org-suspend` (Phase 3.6) / `/org-down` identity-check it before stopping (do not kill by pid alone, to avoid pid recycle / stopping a different broker's watcher). If it self-exits on backlog detection or is stopped via SIGTERM, the watcher itself cleans up the sidecar.
 
 > **sandbox note**: because it is a resident process, it cannot be started inside the sandbox (same as Block C); use host execution via `run_in_background`.
 
@@ -296,7 +302,7 @@ The dispatcher can declare "I will monitor with /loop 3m" in its first DELEGATE 
 
 Report concisely to the human. Only the dispatcher is launched (the curator is on-demand).
 
-**Handling Block C2's runtime drift output**: if Block C2's `tools/check_runtime_version.py` stdout emitted a single `[runtime drift] ...` line, then for any of the templates below **transcribe that one line verbatim at the end, separated by one blank line**. If stdout was empty, do not attach the warning line (installed == latest / not installed / offline / parse failure / no release within the pin range are all silent).
+**Handling Block C2's runtime drift output**: Block C2 returns its result via **exit code** (stdout is the drift line only; diagnostics go to stderr). On **exit 1** (drift), transcribe stdout's `[runtime drift] ...` line, for any of the templates below, **verbatim at the end, separated by one blank line**. **exit 0** (PyPI reachability confirmed, no drift) attaches no warning line. **exit 2** (PyPI unconfirmed = offline / inside the sandbox / abnormal response / outside the pin window / missing `packaging`) is **not silent** — attach a one-line "runtime drift: PyPI unconfirmed (re-run on host required)" to the report (to prevent the silent misread of #119). **exit 3** (runtime not installed) attaches "runtime not installed (needs checking)". Running inside the sandbox tends to produce exit 2, so run Block C2 on the host with `dangerouslyDisableSandbox: true`.
 
 > **Sidebar: dispatcher self-repair view startup guidance (broker frame only, optional)**
 >

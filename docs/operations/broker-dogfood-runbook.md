@@ -67,9 +67,23 @@ The startup form for production ja (Track 3, user hands-on) is the following. **
 # Start (default state-dir = .state/broker, tmux backend auto-selected)
 claude-org-runtime broker serve
 
-# Stop: Ctrl+C (SIGINT) on the foreground serve. The journal records one line of broker_stopped.
-# If started in the background, send SIGINT to the PID:
-#   kill -INT <pid>
+# Stop (branch by startup form):
+#   - Foreground serve (blocking in this shell): Ctrl+C. SIGINT to the foreground
+#     process raises KeyboardInterrupt via Python's default handler, so the graceful
+#     stop path = stop() runs in run()'s finally, one broker_stopped line is left at
+#     the tail of the journal, and the daemon.json / admin.token sidecars are removed.
+#   - detached daemon (started in the background via nohup ... & etc.): the canonical
+#     path is `org down` (via org lifecycle management) or sending SIGTERM:
+#       kill -TERM <pid>
+#     SIGINT (kill -INT) does not work on a background daemon and the process survives.
+#     The runtime's signal handler wires only SIGTERM / SIGBREAK and does not catch
+#     SIGINT, and the background process has no terminal carrying Ctrl+C so no
+#     KeyboardInterrupt is raised either (reproduced twice in the 2026-06-13 rollback
+#     drill; a later measurement also saw kill -INT unresponsive for 5s, then kill -TERM
+#     stopped it immediately). Stop the background form with SIGTERM or `org down`.
+#     Note SIGTERM does not go through run()'s finally, so broker_stopped is not emitted
+#     and the daemon.json / admin.token sidecars are left behind (explicitly disposed in §5(5)).
+#     Confirm background stop by "process gone + unread reconciliation + sidecar disposal" (§5(4)/(5)).
 ```
 
 ### 2.3 Test state-dir startup -> connectivity -> shutdown (procedure proving production `.state` is untouched)
@@ -101,7 +115,7 @@ From a separate terminal (or a driver script), hit the HTTP MCP with the token s
 | `tools/call send_message` (to self) | `{"ok": true, "delivered_to": "manual-test"}` |
 | `tools/call check_messages` | At-most-once drain of the `hello broker` you just sent |
 
-Stop by sending `SIGINT` to serve. **Clean shutdown returns exit code 0.**
+The §2.3 serve blocks in the foreground, so stop it with **Ctrl+C** (SIGINT to the foreground process). The foreground serve stops gracefully via Python's default SIGINT→KeyboardInterrupt through `run()`'s finally (**clean shutdown returns exit code 0**). **This path works only for the foreground serve**: SIGINT does not work on a background daemon (the runtime's signal handler wires only SIGTERM / SIGBREAK, §2.2), so if you ran it in the background, stop it with `kill -TERM` or `org down` (measured: kill -INT unresponsive for 5s → kill -TERM stopped it immediately).
 
 **Untouchability check on `.state` (mandatory)**: After verification, confirm that production `.state/broker/` was not created. The queue is written only to the test path you passed.
 
@@ -114,7 +128,7 @@ test -e "$CANON_ROOT/.state/broker" && echo "NG: production .state/broker was po
 test -e "$PWD/.state/broker" && echo "NG: .state/broker was created directly under the worktree" || echo "OK: worktree root unchanged"
 ```
 
-> **Verification log (2026-06-11, real hardware)**: Both `--no-nudge` and `--backend tmux` succeeded for the `initialize -> tools/list -> send_message -> check_messages` round trip and **exited with code 0** on `SIGINT`. `tools/list` returned the messaging 4 surface only on a worker tier. Production `.state/broker/` was not generated (`queue.jsonl` only under the test path). The tmux backend's adapter is lazily constructed and start / stop succeeds even without a live tmux server (the messaging probe is skipped because there is no child pane to actually inject nudges into).
+> **Verification log (2026-06-11, real hardware)**: Both `--no-nudge` and `--backend tmux` succeeded for the `initialize -> tools/list -> send_message -> check_messages` round trip and **exited with code 0 on Ctrl+C (SIGINT) to the foreground serve** (graceful via KeyboardInterrupt because it is in the foreground; SIGINT does not work on a background daemon, §2.2). `tools/list` returned the messaging 4 surface only on a worker tier. Production `.state/broker/` was not generated (`queue.jsonl` only under the test path). The tmux backend's adapter is lazily constructed and start / stop succeeds even without a live tmux server (the messaging probe is skipped because there is no child pane to actually inject nudges into).
 
 ---
 
