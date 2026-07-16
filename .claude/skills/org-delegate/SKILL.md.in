@@ -82,6 +82,8 @@ This section only handles routing judgment. If you chose the lightweight lane, d
 
 A dedicated flag in `gen_delegate_payload.py` is out of scope (permission via `--impl-guidance` brief wording and arming via dispatcher's send_keys suffices for the division of labor). **Positioning**: ultracode is the **front stage** used for implementation and pre-Codex self-review convergence, not a replacement for the final Codex gate (independent review by a separate model, zero Blocker / Major). Do not permit ultracode for the lightweight lane or single-file small tasks.
 
+**Per-stage model selection (recommended)**: for tasks where ultracode workflow is permitted, the brief may encourage using different models per workflow stage. Route mechanical fan-out stages (boilerplate replacement, identical transforms across many files, simple collection — parallel work with no judgment) to Sonnet 5 via `agent(..., {model: 'sonnet'})` to optimize cost and speed, while judgment/verification/synthesis stages (review, design judgment, adversarial verify, synthesis) inherit the session model (default opus) to secure quality. Granularity is controlled via the Workflow tool's `agent()` opts.model (keep the per-stage note consistent with [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a).
+
 ## Pre-delegation checklist (executed by the Lead)
 
 Before entering task decomposition, check the request from the following angles. If any apply, ask the user back.
