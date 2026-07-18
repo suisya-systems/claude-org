@@ -135,6 +135,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tools -p test_sync_classifier.py -v
+          # Validate the clone-URL restore tool here, while the checkout
+          # is still pristine — its tests assert the tracked installers
+          # carry the EN-canonical URL, which stops holding mid-mirror
+          # once ja content is copied over them (Issue #523).
+          python -m unittest discover -s tools -p test_restore_en_clone_url.py -v
           python tools/sync_classifier.py < changed_files.txt > classification.json
           cat classification.json
           translation_count="$(jq '.by_class.translation | length' classification.json)"
@@ -330,6 +335,24 @@ jobs:
                 f"skipped_missing_in_ja={skipped_missing} "
                 f"total_pr_entries={len(entries)}")
           PY
+
+          # 2b. Post-copy EN adaptation (Issue #523). The installer
+          # scripts are runtime-class and copied verbatim from ja, but
+          # their clone URL is EN-owned: ja points at claude-org-ja.git
+          # while EN smoke (install-scripts.yml) asserts claude-org.git,
+          # so an unrestored copy turns EN smoke deterministically red.
+          # Restore the EN-canonical URL on just-copied installers, then
+          # re-stage. Adaptation is minimal per established policy: clone
+          # URL only; banner/comments/TARGET_DIR stay ja. Gate on the
+          # staged (non-deleted) paths so a ja PR that does not touch the
+          # installers leaves them alone. (The tool's unit tests run in
+          # the classify step above, while the checkout is pristine.)
+          for f in scripts/install.sh scripts/install.ps1; do
+            if git diff --cached --name-only --diff-filter=d | grep -qxF "$f"; then
+              python tools/restore_en_clone_url.py "$f"
+              git add -- "$f"
+            fi
+          done
 
           # 3. Commit. If nothing actually staged (e.g. en already at the
           # same content), skip PR creation gracefully.
