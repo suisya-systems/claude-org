@@ -12,7 +12,7 @@ The "Path" column records the clone source for the project. The value drives how
 Note: this column is not the worker's output path (the worker operates inside `workers/{task_id}/`).
 The Markdown table below is machine-parsed by `dashboard/server.py:_parse_projects` before the worker is dispatched, so do not insert additional Markdown tables (with `|---|` separators) in this section. If you need to add explanations, use plain bullet lists.
 
-| Nickname | Project | Path | Description | Common tasks |
-|---|---|---|---|---|
-| Clock app | clock-app | - | A digital clock that runs in the web browser | Design changes, feature additions |
-| renga | renga | https://github.com/suisya-systems/renga | Rust-based terminal multiplexer (TUI) for Claude Code | Feature additions, bug fixes, issue triage |
+| Nickname | Project | Path | Description | Common tasks | triage |
+|---|---|---|---|---|---|
+| Clock app | clock-app | - | A digital clock that runs in the web browser | Design changes, feature additions | no |
+| renga | renga | https://github.com/suisya-systems/renga | Rust-based terminal multiplexer (TUI) for Claude Code | Feature additions, bug fixes, issue triage | no |

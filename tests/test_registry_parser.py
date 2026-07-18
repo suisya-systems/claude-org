@@ -279,6 +279,24 @@ class TestHeaderNameParsing(unittest.TestCase):
         self.assertEqual(projects[0].description, "desc")
         self.assertEqual(projects[0].triage, "on")
 
+    def test_en_registry_header_enters_header_mode(self):
+        # EN-mirror adaptation: the EN live registry's header row
+        # (`Nickname` / `Common tasks` instead of 通称 / よくある作業例)
+        # must provide both identity columns so header mode engages and
+        # the trailing `triage` column is populated.
+        text = (
+            "| Nickname | Project | Path | Description | Common tasks | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| Clock app | clock-app | - | Demo | tasks | no |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        p = projects[0]
+        self.assertEqual(p.nickname, "Clock app")
+        self.assertEqual(p.name, "clock-app")
+        self.assertEqual(p.common_tasks, "tasks")
+        self.assertEqual(p.triage, "no")
+
     def test_fully_english_header_falls_back_to_positional(self):
         # Regression (Codex P2): a legacy/fork English header with no 通称
         # column must NOT enter header mode — its `Name` alias would grab the

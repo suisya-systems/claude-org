@@ -55,11 +55,11 @@ _HEADER_KEYWORDS = frozenset({"プロジェクト名", "name", "project"})
 # columns by name); a header row that matches none falls back to positional
 # parsing so headerless snippets and legacy fork tables keep working.
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
-    "nickname": ("通称",),
+    "nickname": ("通称", "nickname"),
     "name": ("プロジェクト名", "name", "project"),
     "path": ("パス", "path"),
     "description": ("説明", "description"),
-    "common_tasks": ("よくある作業例",),
+    "common_tasks": ("よくある作業例", "common tasks"),
     "mirror_of": ("mirror_of",),
     "triage": ("triage",),
 }
