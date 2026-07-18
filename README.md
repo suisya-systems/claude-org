@@ -22,6 +22,7 @@ The minimum security settings required to provide these features are built in ah
 ## Quick start
 
 If the prerequisite tools (git / claude / gh / jq / Python) are installed, you can clone and set up with a single one-liner.
+The default launch transport (broker) uses tmux (Linux / WSL / macOS) or WezTerm (Windows) as its terminal backend, so install one of those as well. It is not needed when launching with renga (`ORG_TRANSPORT=renga`, described below).
 
 ```bash
 # macOS / Linux
