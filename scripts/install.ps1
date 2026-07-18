@@ -42,7 +42,7 @@ Options:
     return
 }
 
-$RepoUrl = 'https://github.com/suisya-systems/claude-org-ja.git'
+$RepoUrl = 'https://github.com/suisya-systems/claude-org.git'
 # CLAUDE_ORG_REF pins the clone to a specific branch or tag for
 # reproducibility. Default `main` preserves latest-features behaviour
 # when the env var is unset.

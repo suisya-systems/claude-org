@@ -20,7 +20,7 @@
 # permission prompts.
 set -euo pipefail
 
-REPO_URL="https://github.com/suisya-systems/claude-org-ja.git"
+REPO_URL="https://github.com/suisya-systems/claude-org.git"
 TARGET_DIR="claude-org-ja"
 DRY_RUN=0
 SKIP_MCP=0
