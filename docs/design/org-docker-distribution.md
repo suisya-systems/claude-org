@@ -2,7 +2,7 @@
 
 > Status: **design + PoC skeleton** (task org-docker-image-design-001). All findings of the pre-implementation Codex design review (Blocker 4 / Major 7 / Minor 3 / Nit 3) are incorporated. The PoC artifacts live under [`docker/`](../../docker/) (Dockerfile / compose.yaml / entrypoint.sh / Dockerfile.dockerignore / README.md and others).
 >
-> **EN mirror note**: the `docker/` PoC artifacts have **not been mirrored into this repository yet** — their sync classification is pending manual triage (tracking issues #513 / #520). Until that lands, every `docker/…` path in this document refers to the `docker/` tree in the ja repository (`suisya-systems/claude-org-ja`), and the build / verification steps below cannot be run from this repository alone.
+> **EN mirror note**: the `docker/` PoC artifacts are mirrored into this repository as-is from the ja repository at the ja#732 merge SHA (manual-triage decision on tracking issues #513 / #520: scripts imported mechanically, only `docker/README.md` hand-translated). The scripts therefore carry ja-language comments, following the same ride-along policy as runtime docstrings (`docs/canonical-ownership.md`).
 >
 > Audience: humans who build and operate the image, and workers who maintain docker/.
 >
