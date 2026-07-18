@@ -85,7 +85,7 @@ python3 tools/work_discovery_repos.py --format flags
 **1b. Run scan, pasting in the stdout (`--repo …`) from 1a** (only when exit 0):
 
 ```bash
-python3 tools/work_discovery_scan.py --trigger manual --repo suisya-systems/claude-org-ja
+python3 tools/work_discovery_scan.py --trigger manual --repo suisya-systems/claude-org
 ```
 
 (Paste the stdout of 1a verbatim as the `--repo …` part. When the opt-in spans multiple repos, multiple `--repo`

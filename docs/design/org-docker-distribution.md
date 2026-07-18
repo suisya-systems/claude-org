@@ -2,6 +2,8 @@
 
 > Status: **design + PoC skeleton** (task org-docker-image-design-001). All findings of the pre-implementation Codex design review (Blocker 4 / Major 7 / Minor 3 / Nit 3) are incorporated. The PoC artifacts live under [`docker/`](../../docker/) (Dockerfile / compose.yaml / entrypoint.sh / Dockerfile.dockerignore / README.md and others).
 >
+> **EN mirror note**: the `docker/` PoC artifacts have **not been mirrored into this repository yet** — their sync classification is pending manual triage (tracking issues #513 / #520). Until that lands, every `docker/…` path in this document refers to the `docker/` tree in the ja repository (`suisya-systems/claude-org-ja`), and the build / verification steps below cannot be run from this repository alone.
+>
 > Audience: humans who build and operate the image, and workers who maintain docker/.
 >
 > Primary inputs:
