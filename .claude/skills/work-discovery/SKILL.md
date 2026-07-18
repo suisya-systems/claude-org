@@ -85,11 +85,11 @@ python3 tools/work_discovery_repos.py --format flags
 **1b. Run scan, pasting in the stdout (`--repo …`) from 1a** (only when exit 0):
 
 ```bash
-python3 tools/work_discovery_scan.py --trigger manual --repo suisya-systems/claude-org
+python3 tools/work_discovery_scan.py --trigger manual --repo OWNER/REPO
 ```
 
-(Paste the stdout of 1a verbatim as the `--repo …` part. When the opt-in spans multiple repos, multiple `--repo`
-flags appear in sequence.)
+(`--repo OWNER/REPO` above is a placeholder, not the command to run: always replace it by pasting the stdout of 1a
+verbatim — do not hand-type a slug. When the opt-in spans multiple repos, multiple `--repo` flags appear in sequence.)
 - The resolver is read-only (`git remote get-url` and an optional `gh repo view` read only. No writes, spawns, or git changes).
 - `--trigger` is a context label. Use `manual` for manual triggering. When called from proactive next-dispatch
   after a PR merge, pass `--trigger post_merge`, and if possible also pass `--free-panes <number of free panes>`
