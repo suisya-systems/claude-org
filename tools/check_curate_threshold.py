@@ -54,15 +54,36 @@ Counting rules (Codex review M4 / m9):
   Codex review B3: their mere existence fires the
   ``legacy_marker_sweep`` reason so the sweep can't starve).
 * ``skill_candidates_pending`` — lines matching exactly
-  ``- **status**: pending`` in ``knowledge/skill-candidates.md``,
-  **excluding lines inside code fences** (blocks opened/closed by a
-  line starting with three backticks or ``~~~``) so the entry-format
-  template example at the head of the file can never inflate the
-  count. This fence-excluding semantics is kept in three-way sync
-  with the skill-audit Step 1 count command and the operational note
-  at the head of ``knowledge/skill-candidates.md`` — change one,
-  change all three (``tools/test_check_curate_threshold.py`` asserts
-  parity).
+  ``- **status**: pending`` **excluding lines inside code fences**
+  (blocks opened/closed by a line starting with three backticks or
+  ``~~~``) so the entry-format template example at the head of the
+  file can never inflate the count. The count is summed over **both**
+  candidate-entry files (Issue #755): the tracked, public
+  ``knowledge/skill-candidates.md`` — which now carries the entry
+  FORMAT definition only, its entry list always empty — and the
+  machine-local, gitignored ``knowledge/skill-candidates.local.md``
+  that holds the real (operator-private) entries so they never reach
+  the OSS repo. ``CANDIDATE_ENTRY_PATHS`` is the single source of
+  truth for that file list; each file is scanned with independent
+  code-fence state and a missing file counts as 0. This
+  fence-excluding, two-file semantics is kept in three-way sync with
+  the skill-audit Step 1 count command (which must read the SAME two
+  files in the SAME order) and the operational note at the head of
+  ``knowledge/skill-candidates.md`` — change one, change all three
+  (``tools/test_check_curate_threshold.py`` asserts parity, including
+  that the awk command references exactly ``CANDIDATE_ENTRY_PATHS``).
+
+  **Only ``pending`` counts — every other status is excluded by the
+  exact-match design (invariant relied on by Issue #753).** Because
+  the regex requires the literal ``pending`` token, entries carrying
+  ``deferred`` / ``approved`` / ``rejected`` / ``merged-into-*`` never
+  match and so never fire this reason. ``deferred`` in particular is
+  the "presented to the human, human chose to hold" state: marking a
+  candidate ``deferred`` is exactly how a shelved candidate stops
+  re-firing the threshold on every worker close (previously such
+  candidates, left ``pending``, spawned the on-demand curator
+  repeatedly). Do **not** relax the match to a prefix / substring on
+  ``status`` — that would recount ``deferred`` and reopen the bug.
 * ``work_skill`` — ``SKILL.md`` files at ``.claude/skills/*/SKILL.md``
   whose skill directory does **not** start with ``org-``. This matches
   skill-audit Step 1's
@@ -97,6 +118,20 @@ PENDING_THRESHOLD = 5
 WORK_SKILL_THRESHOLD = 20
 LEGACY_MARKER_THRESHOLD = 1
 
+# Single source of truth (Issue #755) for the files that hold
+# skill-candidate entries, in read order. The tracked public file
+# carries the entry-FORMAT definition only (its entry list is always
+# empty); real, operator-private entries live in the machine-local,
+# gitignored ``.local.md`` sibling so they never reach the OSS repo.
+# count_pending sums over both (each with independent fence state,
+# missing == 0). The skill-audit Step 1 awk MUST read these same two
+# files in this same order — three-way sync, asserted by
+# tools/test_check_curate_threshold.py.
+CANDIDATE_ENTRY_PATHS = (
+    Path("knowledge") / "skill-candidates.md",
+    Path("knowledge") / "skill-candidates.local.md",
+)
+
 LEGACY_MARKER = "<!-- curated -->"
 # How much of a file head we scan for the legacy marker. The historical
 # in-place marking wrote the marker as the very first line; 256 bytes
@@ -104,7 +139,11 @@ LEGACY_MARKER = "<!-- curated -->"
 _HEAD_BYTES = 256
 
 # Matched per line (not MULTILINE over the whole text) because fence
-# state is tracked line by line in count_pending.
+# state is tracked line by line in count_pending. The literal
+# ``pending`` token is load-bearing: it is what excludes ``deferred``
+# (and approved / rejected / merged-into-*) from the count so shelved
+# candidates stop re-firing the threshold (Issue #753). Keep it exact
+# — do not widen to a prefix/substring match on ``status``.
 _PENDING_RE = re.compile(r"^- \*\*status\*\*: pending\s*$")
 # A code fence opens/closes on a line *starting* with ``` or ~~~
 # (three-way sync: skill-audit Step 1 awk command and the operational
@@ -155,22 +194,30 @@ def count_raw(root: Path) -> tuple[int, int]:
     return active, legacy
 
 
-def count_pending(root: Path) -> int:
-    """Count ``- **status**: pending`` lines in skill-candidates.md.
+def _count_pending_in(path: Path) -> int:
+    """Count ``- **status**: pending`` lines in a single candidates file.
 
     Lines inside code fences (blocks delimited by lines starting with
     ``` or ``~~~``) are excluded: the entry-format template example at
-    the head of the file must never count as a real pending entry
-    (it once did, spuriously spawning the on-demand curator on every
-    worker close).
+    the head of the public file must never count as a real pending
+    entry (it once did, spuriously spawning the on-demand curator on
+    every worker close). Fence state is per-file, so this function is
+    called once per ``CANDIDATE_ENTRY_PATHS`` entry — a fence left open
+    at the end of one file can never bleed into the next.
 
-    A missing file counts as 0 (normal in fresh checkouts); any other
-    read error propagates so ``main`` reports ``status=error`` / exit 2
-    rather than masking a real queue behind a false 0.
+    Only the literal ``pending`` status counts. ``deferred`` (a
+    presented-then-shelved candidate), ``approved``, ``rejected`` and
+    ``merged-into-*`` all fail the exact match and are excluded — that
+    is precisely how a shelved candidate stops re-firing the threshold
+    (Issue #753).
+
+    A missing file counts as 0 (normal in fresh checkouts, and normal
+    for the machine-local ``.local.md`` sibling on a clean tree); any
+    other read error propagates so ``main`` reports ``status=error`` /
+    exit 2 rather than masking a real queue behind a false 0.
     """
-    candidates = root / "knowledge" / "skill-candidates.md"
     try:
-        text = candidates.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return 0
     count = 0
@@ -182,6 +229,21 @@ def count_pending(root: Path) -> int:
         if not in_fence and _PENDING_RE.match(line):
             count += 1
     return count
+
+
+def count_pending(root: Path) -> int:
+    """Sum pending entries across ``CANDIDATE_ENTRY_PATHS`` (Issue #755).
+
+    The tracked public ``knowledge/skill-candidates.md`` holds the entry
+    FORMAT definition only (its entry list is always empty); the
+    machine-local, gitignored ``knowledge/skill-candidates.local.md``
+    holds the real operator-private entries. Both are counted with the
+    same fence-excluding, exact-``pending``-match rule so the threshold
+    fires on the true queue depth without operator-private candidates
+    ever being committed. Missing files count as 0; non-missing read
+    errors propagate (via ``_count_pending_in``) to ``main``.
+    """
+    return sum(_count_pending_in(root / rel) for rel in CANDIDATE_ENTRY_PATHS)
 
 
 def count_work_skills(root: Path) -> int:
