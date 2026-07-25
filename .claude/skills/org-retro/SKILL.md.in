@@ -118,6 +118,9 @@ For `skill_recommend`, the skill itself appends to `knowledge/skill-candidates.m
 4. If the human picks "merge into an existing skill" (terminal status `merged-into-{existing-skill}`):
    - Identify the merge target and delegate to a skill-promotion worker via `org-delegate`: edit `.claude/skills/{existing-skill}/SKILL.md` to incorporate, and update the `knowledge/skill-candidates.md` entry's status to `merged-into-{existing-skill}` (fill the `merge target` field with the existing skill name).
    - Do not create a new skill file. The Lead / Dispatcher does not edit directly.
+5. If the human picks "shelve it for now" (status `deferred`, Issue #753):
+   - Updating the `knowledge/skill-candidates.md` entry's status from `pending` to `deferred` goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
+   - `deferred` is not terminal, but it is **excluded from the threshold count and from re-asking**. Do not move the candidate back to `pending` afterwards, and do not dredge it up again in a batch ask or via `/skill-audit` (this is the countermeasure for shelved candidates needlessly spawning the curator on every worker close). Only when the human explicitly wants to reconsider later should a separate entry be raised under a new date.
 
 #### decision == candidate_queue
 
