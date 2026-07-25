@@ -90,15 +90,35 @@ this skill does not change their shape):
   `.state/` paths and `tools/pr-watch.sh` relative to ja-root, **the skill absorbs the cwd trap**
   (Step 1 passes the absolute path from `git rev-parse --show-toplevel` explicitly as spawn_pane's
   `cwd`, so it resolves correctly even if the Lead's cwd has for some reason moved off ja-root).
-- **The assumed environment is a POSIX/tmux broker (WSL2 / Linux / macOS)**. Step 3's `command`
+- **The self-close implementation assumes a tmux backend**. Step 3's `command`
   depends on `bash` execution and self-close via `tmux kill-pane -t "$TMUX_PANE"` (**kill by naming
   the own pane explicitly with `$TMUX_PANE`**; the socket uses `$TMUX` inheritance as-is and is not
   pinned with `-L` = it hits the correct server on any transport, broker / renga / a non-default
   socket. This is a transport-neutral implementation of Issue #647 proposal 1's "explicit target
-  specification"). On a Windows native broker (a separate WezTerm GUI window, not going through tmux)
-  this skill's self-close does not work, so in that environment use the traditional manual path where
-  a human starts `tools/pr-watch.ps1 <PR>` via `!` (this skill does not block that path = the existing
-  manual start path is unchanged).
+  specification").
+- **Self-close is the tmux backend's low-latency path, and how well it works depends on the backend
+  (root fix for the herdr zombie residue, Issue #751)**. broker can take tmux / herdr / wezterm as its
+  backend (the resolved backend is held by the `daemon.json` sidecar; the renga opt-in is always tmux;
+  the contract is [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+  Surface 8):
+  - **tmux backend**: the `tmux kill-pane -t "$TMUX_PANE"` at the end of Step 3 removes the real pane
+    immediately = **a low-latency path where the watcher pane is auto-closed at the monitoring
+    terminus** (the existing behavior; it is preserved).
+  - **herdr / wezterm backend (including the Windows native broker's separate GUI window, which does
+    not go through tmux)**: the watcher pane is not a tmux pane, so `tmux kill-pane` is a **no-op**
+    (swallowed silently by `|| true`). Self-close does not take effect and **the pane remains as a
+    zombie after monitoring ends** (observed: on 2026-07-22 three watchers for PR #154 / #749 / #750
+    remained on the herdr backend and were cleaned up with `close_pane` (id target)). Because you
+    cannot rely on self-close on this backend, **the canonical path is for the Lead to close the
+    watcher pane event-driven at the monitoring terminus**
+    ([`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) fires it at each
+    terminus: post-merge cleanup / `PR_MERGE_WATCH_TIMEOUT` / CI-failure decision. The cleanup
+    procedure follows the (a)/(b) split of Step 5 below = close a live pane by the numeric pane_id
+    confirmed via list_panes, and use a name target only for a stale binding). `close_pane` covers
+    **both tmux and herdr** on the transport abstraction, and on a tmux backend where self-close has
+    already happened it returns `[pane_not_found]` (normal: already self-closed). The Windows native
+    manual start path (a human starting `tools/pr-watch.ps1 <PR>` via `!`) is likewise not blocked
+    (the existing path is unchanged).
 
 ## Step 1: resolve arguments and fix cwd / repo
 
@@ -283,15 +303,32 @@ Note down the N in the return value `"Spawned pane id=N."`.
    ```
    Started the CI / merge monitoring pane pr-watch-<PR> (id={N}) for PR #<PR>.
    - Log: .state/pr-watch-<PR>.log (also output to the tmux scrollback buffer)
-   - The pane closes automatically when monitoring ends (merge / CI failure decision / timeout).
+   - When monitoring ends (merge / CI failure decision / timeout), the pane closes itself on a
+     tmux backend. On a herdr / wezterm backend self-close does not take effect and the pane would
+     remain, so the Lead closes it event-driven at the monitoring terminus (the per-terminus
+     handling in org-pull-request).
      The decided CI verdict remains in the `ci_completed` row of `.state/state.db` and in the log,
      so the verdict is not lost even after the pane closes (the merge gate reads there).
    - To view it directly in tmux, use the `/org-attach` command.
    ```
 
-3. **Manual close (cleanup for cases that do not auto-close, Issue #647 proposal 3)**: self-close only
-   removes the tmux pane, and the broker registry's name binding can remain (see "self-close only cleans
-   up the tmux layer" above). Clean up in two cases:
+3. **Close at the monitoring terminus / manual close (Issue #647 proposal 3 / Issue #751)**: how well
+   self-close works is backend-dependent (the "Prerequisites" section above). **On a herdr / wezterm
+   backend self-close is a no-op and the watcher pane always remains**, so the canonical path is for
+   the Lead to clean up the watcher pane event-driven at the monitoring terminus (`PR_MERGED` /
+   `PR_MERGE_WATCH_TIMEOUT` / CI-failure decision)
+   (fired by each terminus handler of [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)).
+   On a tmux backend self-close removes the tmux pane, but the broker registry's name binding can
+   remain (see "self-close only cleans up the tmux layer" above). Cleanup follows the (a)/(b) split
+   below. **For the Lead's event-driven close (at the monitoring terminus), always combine the below
+   with a freshness gate that binds to the pane_id noted at spawn time plus the monitored head, and
+   closes only when the terminal event's head matches the instance being tracked** (if a terminal
+   event is delivered late / duplicated and the watcher for the same PR has already been restarted,
+   re-deriving the live pane by `name` resolves the new watcher, and closing that numeric pane_id
+   would wrongly close the replacement monitor. The SoT for the binding is the corresponding section
+   of [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)).
+   The (a)/(b) below, where a human manually closes the current pane, target the current instance and
+   are self-evident, so no freshness gate is needed:
 
    - **(a) the tmux pane remained live / you want to stop monitoring partway**: check the live pane with
      `name="pr-watch-<PR>"` via `mcp__org-broker__list_panes` and `mcp__org-broker__close_pane(target=<N>)` by its **numeric
