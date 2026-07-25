@@ -85,7 +85,16 @@ proposed_skill_name: <pattern_name>    # only for skill_recommend / candidate_qu
 
 ## Step 4: write to candidate queue (only on skill_recommend)
 
-Append the following entry to `knowledge/skill-candidates.md`. Do not write for `candidate_queue` or `curated_only`.
+Append the following entry to `knowledge/skill-candidates.local.md` (the machine-local file holding the real entries, Issue #755). Do not write for `candidate_queue` or `curated_only`.
+
+> **The append target is always `.local.md`, never the public file.** The public
+> [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) holds **the entry-format
+> definition only** and its entry list is kept **permanently empty**, so that operator-private
+> candidates never reach the OSS repository (`knowledge/skill-candidates.local.md` is gitignored).
+> The format definition, status vocabulary, and operating rules are read from the head of the public
+> file as the primary reference; only the real entries go into `.local.md`. If `.local.md` does not
+> exist yet, create a minimal file carrying the `## エントリ一覧` heading and append to that.
+> The threshold count (`tools/check_curate_threshold.py` / `/skill-audit`) reads both files summed.
 
 ```markdown
 ### {YYYY-MM-DD} {pattern-name}
@@ -122,7 +131,7 @@ This skill only decides and appends to the queue. Subsequent actions are the cal
 
 ## Handling duplicate calls
 
-If a pending entry for the same `pattern_name` already exists in `knowledge/skill-candidates.md`, Step 4 does not add a new entry; instead it merges-appends the new entry's "related tasks" / "related raw files" into the existing entry. Entries already in `approved` / `rejected` / `merged-into-*` are kept as history, and a new entry is added under a different date (so past rejection reasons are not lost).
+If a pending entry for the same `pattern_name` already exists in `knowledge/skill-candidates.local.md`, Step 4 does not add a new entry; instead it merges-appends the new entry's "related tasks" / "related raw files" into the existing entry (the duplicate check also reads `.local.md`, the file that holds the real entries — the public file is always empty). Entries already in `approved` / `rejected` / `merged-into-*` are kept as history, and a new entry is added under a different date (so past rejection reasons are not lost).
 
 ## When NOT to call this skill
 

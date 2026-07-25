@@ -5,6 +5,16 @@
 
 都度問い合わせよりバッチの方が意思決定コストが低い（Issue #68 方針）。
 
+> **This file is the format definition only — its entry list is always empty (Issue #755).** Real
+> entries are operator-private working knowledge and must not land in the OSS repository. They are
+> appended to the machine-local **`knowledge/skill-candidates.local.md`** (already gitignored).
+> This public file holds the **definitions** — entry format, status vocabulary, and operating rules —
+> and `## エントリ一覧` is kept empty. `skill-eligibility-check` Step 4's append target, and the
+> edit target for status transitions, are both the `.local.md` side.
+> The threshold count (`tools/check_curate_threshold.py` / `skill-audit`) reads **both files summed**
+> (the two files and their order are defined by `CANDIDATE_ENTRY_PATHS` in `check_curate_threshold.py`,
+> which is the source of truth).
+
 ## エントリフォーマット
 
 各候補は 3 レベル見出し `### {YYYY-MM-DD} {pattern-name}` で始まるブロックとする。
