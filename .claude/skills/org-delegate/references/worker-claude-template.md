@@ -119,10 +119,10 @@ Get-Command codex -ErrorAction SilentlyContinue
 ```
 
 - If `unavailable`: skip self-review and proceed directly to the completion report after commit (the round discipline / fix loop below does not apply).
-- If `available`: run the command below in the **foreground** (pass the branch's base, normally `main`, to `--base`. Close stdin explicitly with `< /dev/null`. Avoid background `&` + log redirect because it leads to reporting completion without waiting for or reading the findings, slipping past the gate).
+- If `available`: run the command below in the **foreground** (pass the branch's base, normally `origin/main`, to `--base`. Use the **remote-tracking `origin/main` rather than the local `main`** because a stale local `main` in a shared clone drags another task's diff into the review. Run `git fetch origin` once before referencing it (even if you pulled at the start, refresh it right before the review; if the fetch fails, the review still continues). Close stdin explicitly with `< /dev/null`. Avoid background `&` + log redirect because it leads to reporting completion without waiting for or reading the findings, slipping past the gate).
 
 ```bash
-codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
 
 - The review surface returns Blocker/Major-equivalent findings (P1/P2 etc.) from the built-in review prompt. **Read the output in the foreground before moving on** (you may interrupt and skip only in the rare case the response does not come back). **Do not raise the effort on a large diff (rule of thumb: over 100 lines)** (a high-effort review does not scale on large diffs and has been measured to be slower than the direct form).

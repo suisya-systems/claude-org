@@ -111,6 +111,19 @@ For incorporation / sync tasks that bring a source (review results / another bra
 
 Background: There have been past incidents where cp mechanically reverted destination-side fixes (a destination-side credential-exposure Blocker fix nearly got reverted). Require the Worker brief to specify "no cp as the initial step / state the incorporation strategy explicitly".
 
+### Pre-written brief wording for parallel delegations that edit the same file
+
+When you dispatch multiple Workers in parallel and you already know at brief-assembly time that they will **edit the same file (especially the same region)**, put wording to the following effect into `gen_delegate_payload.py`'s `--impl-guidance` up front:
+
+> The parallel task {parallel_task_id} is editing the same file {path}. The Lead will send a follow-up on merge order; only after receiving that follow-up, rebase onto the base upstream (normally `origin/main`) and then send your completion report.
+
+Two operational notes:
+
+- **The Lead does not send the follow-up merely because merge order has been decided.** Send it to the following Worker only after confirming that the preceding PR has been merged and is reflected in the base upstream (sending it right after the ordering decision makes the Worker rebase onto an upstream that does not yet contain the preceding change, so the conflict prevention does not hold).
+- **For how to read the rebase target and its applicable scope**, follow the "rebase before the completion report" rule in [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md) (`full` only; if the PR base is something other than `origin/main`, read it as the actual base upstream).
+
+An after-the-fact follow-up instruction (sent on via peer message) can also rescue the situation (the real example of the 2026-07-22 ja#747 / ja#748 parallel edits), but putting it in at the brief stage removes one Lead -> Worker round trip and prevents the integration-point conflict in advance. Combined with the existing practice of rebasing onto the base upstream before reporting completion, the Lead's remaining work shrinks to just deciding the merge order and sending the follow-up.
+
 ## Step 0: Project name resolution (executed by the Lead)
 
 Identify the project from the user's request:
