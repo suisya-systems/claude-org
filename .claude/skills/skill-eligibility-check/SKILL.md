@@ -5,9 +5,10 @@ description: >
   to a skill. Called from org-retro and org-curate; returns a 3-value
   verdict (skill_recommend / candidate_queue / curated_only) with
   rationale.
-  Does not auto-create skills. A "recommend" appends to
-  knowledge/skill-candidates.md, and the Lead later batch-asks the
-  human once the queue accumulates — a two-stage handoff.
+  Does not auto-create skills. A "recommend" appends to the
+  machine-local knowledge/skill-candidates.local.md, and the Lead
+  later batch-asks the human once the queue accumulates — a
+  two-stage handoff.
 effort: low
 allowed-tools:
   - Read

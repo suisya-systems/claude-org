@@ -109,7 +109,7 @@ context: curation
 pattern_name: <inferred skill name, kebab-case; derived from the theme>
 summary: <1–2 sentences on what is reusable in this theme>
 task_ids: []                    # optional. Leave empty if raw notes lack a task_id.
-raw_files: <array of paths to the raw/ files for this theme. Step 4 moves these to archive/, so record the post-move path (`knowledge/raw/archive/<entry>.md`) here. `skill-eligibility-check` persists this into `knowledge/skill-candidates.md`, so we want a stable, trackable final path.>
+raw_files: <array of paths to the raw/ files for this theme. Step 4 moves these to archive/, so record the post-move path (`knowledge/raw/archive/<entry>.md`) here. `skill-eligibility-check` persists this into the machine-local `knowledge/skill-candidates.local.md` (the real-entry file, Issue #755), so we want a stable, trackable final path.>
 steps_outline: <main steps extracted from the raw set>
 trigger_description: <situation in which this theme arises>
 decision_criteria: <decision criteria appearing in the theme>
@@ -120,7 +120,7 @@ output_format: <theme's artifact format>
 
 The decision determines what to do next. **Regardless of the decision, the Step-3 consolidation into curated/ proceeds normally**:
 
-- `skill_recommend` → the skill side has already auto-appended to `knowledge/skill-candidates.md`. No additional action here.
+- `skill_recommend` → the skill side has already auto-appended to the machine-local `knowledge/skill-candidates.local.md` (the real-entry file, Issue #755). No additional action here.
   The corresponding raw files are still **consolidated into curated/ in Step 3 and moved to `knowledge/raw/archive/` with a marker added in Step 4** (skill promotion and curated note coexist; the curated note remains as background, while a separate skill is created as procedure. Failing to do both leaves unsorted raw files behind and breaks the threshold check).
 - `candidate_queue` → consolidate into curated/ as usual in Step 3 (waiting for the next raw_reappearance).
 - `curated_only` → consolidate into curated/ as usual in Step 3.
