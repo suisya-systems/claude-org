@@ -111,15 +111,15 @@ For `skill_recommend`, the skill itself appends to `knowledge/skill-candidates.m
      - Template reference: `.claude/skills/org-retro/references/work-skill-template.md`.
      - The source (worker artifacts / raw learning files) and the policy of substituting task-specific values for placeholders.
      - That this is a skill-promotion delegation (one of the carve-outs of the Set A worker write-surface).
-   - The Dispatcher / Lead does **not** write directly to `.claude/skills/{skill-name}/` or `knowledge/skill-candidates.md`. Per Set E §1.4 / §2.4, the status transition in `skill-candidates.md` (move to `approved`, fill `decision date`) is also the same delegated worker's responsibility; include it in the instructions.
+   - The Dispatcher / Lead does **not** write directly to `.claude/skills/{skill-name}/` or `knowledge/skill-candidates.local.md` (the file holding the real entries, Issue #755). Per Set E §1.4 / §2.4, the status transition on the `.local.md` entry (move to `approved`, fill `decision date`) is also the same delegated worker's responsibility; include it in the instructions.
 3. If the human rejects:
    - Record the reason in `knowledge/raw/` for future use in similar judgments.
-   - Updating the `knowledge/skill-candidates.md` entry (status → `rejected`, append the rejection reason) also goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
+   - Updating the `knowledge/skill-candidates.local.md` entry (status → `rejected`, append the rejection reason) also goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
 4. If the human picks "merge into an existing skill" (terminal status `merged-into-{existing-skill}`):
-   - Identify the merge target and delegate to a skill-promotion worker via `org-delegate`: edit `.claude/skills/{existing-skill}/SKILL.md` to incorporate, and update the `knowledge/skill-candidates.md` entry's status to `merged-into-{existing-skill}` (fill the `merge target` field with the existing skill name).
+   - Identify the merge target and delegate to a skill-promotion worker via `org-delegate`: edit `.claude/skills/{existing-skill}/SKILL.md` to incorporate, and update the `knowledge/skill-candidates.local.md` entry's status to `merged-into-{existing-skill}` (fill the `merge target` field with the existing skill name).
    - Do not create a new skill file. The Lead / Dispatcher does not edit directly.
 5. If the human picks "shelve it for now" (status `deferred`, Issue #753):
-   - Updating the `knowledge/skill-candidates.md` entry's status from `pending` to `deferred` goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
+   - Updating the `knowledge/skill-candidates.local.md` entry's status from `pending` to `deferred` goes through worker delegation (`org-delegate`); the Lead / Dispatcher does not edit it directly (per Set E §1.4 owner definition).
    - `deferred` is not terminal, but it is **excluded from the threshold count and from re-asking**. Do not move the candidate back to `pending` afterwards, and do not dredge it up again in a batch ask or via `/skill-audit` (this is the countermeasure for shelved candidates needlessly spawning the curator on every worker close). Only when the human explicitly wants to reconsider later should a separate entry be raised under a new date.
 
 #### decision == candidate_queue
