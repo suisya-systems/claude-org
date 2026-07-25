@@ -71,4 +71,4 @@ Each scores 0 / 1 (binary); the total drives a 3-way branch.
 - 2 points: `candidate_queue`
 - 1 point or fewer: `curated_only`
 
-The 0/1 of each signal is returned to the caller as `matched_signals` and is also stored in the candidate queue `knowledge/skill-candidates.md`. This lets a later inventory pass (`skill-audit`) trace "which signal was weak".
+The 0/1 of each signal is returned to the caller as `matched_signals` and is also kept in the candidate queue's real-entry file `knowledge/skill-candidates.local.md` (machine-local, Issue #755). This lets a later inventory pass (`skill-audit`) trace "which signal was weak".

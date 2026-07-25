@@ -38,10 +38,15 @@ This skill mechanically checks 3 dimensions (deprecation / consolidation / owner
 If neither condition below is met, **exit immediately** (no log, no report).
 
 ```bash
-# pending entries in the candidate queue (do not count template examples inside code fences)
-cand_count=$(awk '/^(```|~~~)/ { fence = !fence; next }
-  !fence && /^- \*\*status\*\*: pending[ \t]*$/ { n++ }
-  END { print n + 0 }' knowledge/skill-candidates.md 2>/dev/null || echo 0)
+# pending entries in the candidate queue (do not count template examples inside code fences).
+# Summed over BOTH candidate-entry files, in this order (Issue #755): the tracked, public
+# knowledge/skill-candidates.md, which now carries the entry FORMAT definition only and whose
+# entry list is always empty, and the machine-local, gitignored
+# knowledge/skill-candidates.local.md that holds the real operator-private entries so they
+# never reach the OSS repo. Each file gets independent code-fence state; a missing file
+# counts as 0. Word-splitting goes through positional parameters (set -- / "$@") rather than
+# an unquoted $var, because zsh - the harness shell - does not word-split unquoted variables.
+cand_count=$(set --; for f in knowledge/skill-candidates.md knowledge/skill-candidates.local.md; do [ -f "$f" ] && set -- "$@" "$f"; done; if [ "$#" -gt 0 ]; then awk 'FNR==1 { fence=0 } /^(```|~~~)/ { fence=!fence; next } !fence && /^- \*\*status\*\*: pending[ \t]*$/ { n++ } END { print n+0 }' "$@" 2>/dev/null; else echo 0; fi)
 
 # work-skill count (excluding org-*; aligns with the work-skill search surface that is the noise source)
 work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
@@ -56,7 +61,10 @@ Why exclude `org-*`: the noise source is `org-delegate`'s work-skill search; the
 
 > **Count-definition sync (important)**: the two count definitions above (pending = line match
 > on `^- \*\*status\*\*: pending` **and outside code fences** (blocks opened/closed by a leading
-> `` ``` `` / `~~~` are excluded); work-skill = `find .claude/skills -maxdepth 2 -name SKILL.md
+> `` ``` `` / `~~~` are excluded), **summed over both candidate-entry files** — the tracked
+> `knowledge/skill-candidates.md` and the gitignored `knowledge/skill-candidates.local.md`,
+> read in that order, with a missing file counting as 0; work-skill =
+> `find .claude/skills -maxdepth 2 -name SKILL.md
 > | grep -v '/org-'`) must be kept in **exact agreement** with the on-demand curator's
 > activation check [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py).
 > The pending-count semantics further form a **3-way sync** aligned with the operating-rule note
