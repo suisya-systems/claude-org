@@ -29,6 +29,8 @@ allowed-tools:
   - Bash(powershell tools/pr-watch.ps1:*)
   - mcp__renga-peers__send_message
   - mcp__renga-peers__check_messages
+  - mcp__renga-peers__list_panes
+  - mcp__renga-peers__close_pane
 ---
 
 # org-pull-request: PR creation, review, and post-merge close
@@ -55,7 +57,7 @@ Triggered immediately after the user gives **explicit approval** such as "OK", "
   ```
   This calls `gh pr view <PR> --json url,headRefName` once and overwrites `runs.pr_url` and `runs.branch` via `StateWriter.set_run_pr`. Re-invocation is idempotent (overwrites with the same values, no events appended). Without this, the later `tools/run_complete_on_merge.py` cannot look up `runs.pr_url`, fails with `no_run` (exit 3), and the `-MergeWatch` auto-completion breaks.
 - Append events to the DB events table (push / PR open etc., `bash tools/journal_append.sh ...`).
-- Once the PR number is confirmed, monitor CI with [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) (add `--repo OWNER/REPO` for cross-repo). In a dedicated pane of the broker tmux session, `tools/pr-watch.sh` runs at ja-root cwd, outside the sandbox, and on completion `ci_completed` is automatically recorded in events. On CI completion / merge / timeout the pane auto-closes and does not synchronously occupy the Lead session (proceed to review-feedback loop 2c or manual close 2b-ii). **Do not invoke `tools/pr-watch.*` directly via Claude Code's Bash background launch**: a background task tracks only the spawning shell, and the self-detached monitoring body is orphaned and silently dies on `/clear` / session end (official spec; the old route actually had merge-watch die silently). The dedicated-pane route avoids this orphaning.
+- Once the PR number is confirmed, monitor CI with [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) (add `--repo OWNER/REPO` for cross-repo). In a dedicated pane of the broker tmux session, `tools/pr-watch.sh` runs at ja-root cwd, outside the sandbox, and on completion `ci_completed` is automatically recorded in events. On CI completion / merge / timeout the watcher pane self-closes on a tmux backend (on a herdr / wezterm backend self-close does not take effect and the pane remains, so the Lead closes it event-driven at the monitoring terminus - see the "Event-driven close of the watcher pane ... by the Lead at each monitoring terminus" section below and Issue #751); either way it does not synchronously occupy the Lead session (proceed to review-feedback loop 2c or manual close 2b-ii). **Do not invoke `tools/pr-watch.*` directly via Claude Code's Bash background launch**: a background task tracks only the spawning shell, and the self-detached monitoring body is orphaned and silently dies on `/clear` / session end (official spec; the old route actually had merge-watch die silently). The dedicated-pane route avoids this orphaning.
 {{> org-pull-request-recv-model }}
 - **Right before "CI_COMPLETED received -> ask user for merge approval", emit an awaiting_user notification (Issue #28)**: this tells the attention watcher that the user is stopped while awaiting merge approval:
   ```bash
@@ -101,10 +103,92 @@ The **canonical signal for CI completion is the `ci_completed` row in the events
 
 The canonical route for the Lead to start CI monitoring is [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md), not the route of invoking `tools/pr-watch.*` directly via a Claude Code Bash tool background launch. A Claude Code background task tracks only the spawning shell, and the self-detached monitoring body (including `nohup ... &` + `disown`) is orphaned (official spec), so in a fresh session right after `/clear` / [`/secretary-resume`](../secretary-resume/SKILL.md) or at session end the monitoring dies silently along with it, and neither the CI-completion event nor the peer notification fires at all (the process disappears quietly and only an empty log file is left, which is hard to notice). **A Bash wrapper's completion notification (with exit code) does not mean the monitoring body completed**: even after the wrapper returns, the orphaned monitoring may have died silently, so do not treat the completion notification as a signal of CI-monitoring completion — always confirm via the `ci_completed` row in the events table. The dedicated-pane route runs outside the sandbox and independently of the Lead session, so it structurally avoids this orphaning.
 
+### Event-driven close of the watcher pane (`pr-watch-<PR>`) by the Lead at each monitoring terminus (root fix for the herdr zombie residue, Issue #751)
+
+The watcher pane (`name="pr-watch-<PR>"`) spawned by [`/pr-watch-pane`](../pr-watch-pane/SKILL.md)
+**self-closes** via the trailing `tmux kill-pane` when the monitoring body (`tools/pr-watch.sh`)
+exits. That self-close, however, is **a low-latency path that only works on a tmux backend**: in an
+environment where broker runs on a **herdr / wezterm backend**, `tmux kill-pane` becomes a no-op and
+**the watcher pane remains as a zombie** (observed: on 2026-07-22 three watchers for PR #154 / #749 /
+#750 remained on the herdr backend. For the backend-dependence details see the "Prerequisites"
+section of [`/pr-watch-pane`](../pr-watch-pane/SKILL.md)).
+
+For that reason, **the canonical path is for the Lead to clean up the watcher pane event-driven at
+each monitoring terminus** (the tmux self-close is preserved as the low-latency path; to keep double
+cleanup harmless, treat `[pane_not_found]` as a normal response):
+
+- **Terminal triggers (any of them) and cleanup timing**: at every terminus the watcher body
+  (`tools/pr-watch.sh`) has **already exited by the time that terminal event is emitted**, so
+  **clean up the pane immediately on receipt of the terminal event** (independently of the run.status
+  transition gate or the human-confirmation gate. Delaying cleanup to a later step leaves a zombie on
+  a herdr backend for the entire wait). The termini: `PR_MERGED` (-> then the 2b-ii post-merge
+  cleanup) / `PR_MERGE_WATCH_TIMEOUT` (-> clean up immediately on receipt, below) / a CI-failure
+  decision (-> clean up immediately at the entrance to the 2c feedback loop) /
+  `PR_MERGED_HEAD_UNCONFIRMED` and `PR_MERGED_NO_RUN` (-> **clean up immediately without waiting for
+  human confirmation**, leaving only the run-completion judgment at the human-confirmation gate).
+- **Bind the cleanup target to the watcher instance noted at spawn time (do not re-derive it by
+  `name`)**: terminal events (`PR_MERGED` / a CI-failure decision etc.) carry the **PR number and head
+  SHA** in the body but **not the pane_id**. Meanwhile a watcher gets a **new pane_id** on every
+  restart even for the same PR (a CI failure -> re-push spawns a new `pr-watch-<PR>`, etc.). If
+  cleanup **re-derives** the live pane by `name="pr-watch-<PR>"`, an **old** terminal event delivered
+  late / duplicated resolves the **already-restarted new watcher**, and closing that numeric pane_id
+  **wrongly closes the replacement monitor** (converting name -> id does not escape the same trap). To
+  avoid this, the Lead **keeps the pane_id noted when `/pr-watch-pane` was started (Step 3's "Spawned
+  pane id=N") and the monitored head as the watcher instance's identity, and binds cleanup to that
+  identity**:
+  - **freshness gate (the root fix for wrong closes)**: confirm that **the watcher's monitored head**
+    indicated by the terminal event (= the pushed SHA that watcher was tracking CI for) **matches the
+    monitored head of the watcher instance currently being tracked**. Note that **the field the
+    monitored head is read from differs by event kind**:
+    - the CI-completion family (`ci_completed` / `CI_COMPLETED`) / `PR_MERGE_WATCH_TIMEOUT` /
+      `PR_MERGED` / `PR_MERGED_NO_RUN`: the body's `head` (the same ground truth as the events-DB
+      `head` match; see the "CI-completion detection, the canonical path" section).
+    - **`PR_MERGED_HEAD_UNCONFIRMED`: the body's `head` is the newly merged SHA and differs from the
+      monitored head**, so match the `last CI-confirmed head` (baseline) field as the monitored head
+      instead (deciding on `head` always mismatches, so cleanup would be wrongly skipped as
+      superseded and a zombie would stay on herdr for the whole human-confirmation wait - avoid this
+      mix-up).
+    Treat only old / duplicate events whose monitored head does not match as superseded and do not
+    close them (= do not kill an already-restarted new watcher). On a match, close as below. If the
+    tracking is already gone (that instance was already cleaned up), it is a no-op.
+  - **identifier-bound close**: on a match, verify with `{{FQ}}list_panes` that the noted **numeric
+    pane_id** still points at `name="pr-watch-<PR>"` and `role="watcher"` (an identity check against
+    pane_id recycling; if it has been reassigned to another pane, do not close it), and when it
+    agrees, close with `{{FQ}}close_pane(target=<the noted pane_id>)` and clear the tracking.
+    `[pane_not_found]` / `[pane_vanished]` are the normal responses for already self-closed on tmux /
+    already cleaned up on herdr, and are skipped.
+  - **use a name target only for a stale registry binding**: only when the noted pane_id is already
+    gone **and** a same-named spawn is rejected with `[name_taken]`, use a **name target**
+    `{{FQ}}close_pane(target="pr-watch-<PR>")` to pop the registry (there is no live pane in this case,
+    so there is no room for a wrong close).
+  - `close_pane` covers **both tmux and herdr** on the transport abstraction. The SoT for the case
+    split is [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5.
+- **A different operation from the worker pane's `CLOSE_PANE`**: closing the worker Claude pane in
+  2b-ii is requested from the dispatcher with `CLOSE_PANE: {pane_id}`, but the watcher pane is a CLI
+  pane the Lead spawned, so the Lead cleans it up directly with `close_pane` (the Lead holds the
+  `spawn_pane` ops tier; contract Surface 8).
+
+### On receiving `PR_MERGE_WATCH_TIMEOUT` (a monitoring terminus with the merge unconfirmed, Issue #751)
+
+When `pr-watch --merge-watch` cannot observe a merge even 24h after CI went green and emits
+`PR_MERGE_WATCH_TIMEOUT`, **monitoring terminates with the merge unconfirmed** (do not proceed to the
+2b-ii post-merge cleanup - no merge has happened). The Lead does the following:
+
+- **Clean up the watcher pane immediately**: use the procedure of the "Event-driven close of the
+  watcher pane ... by the Lead at each monitoring terminus" section above (bind to the pane_id noted
+  at spawn time plus the head freshness gate and close after the identity check; do not re-derive by
+  `name`). This is required because self-close does not take effect on a herdr backend and the pane
+  would remain (on a tmux backend `[pane_not_found]` = already self-closed, which is normal).
+- **Do not touch run.status**: because the merge is unconfirmed, leave it at REVIEW and do not call
+  `update_run_status(..., 'completed')` (the 2b-ii close conditions are not met). Present to the user
+  whether the merge is merely delayed or has stalled, and if monitoring is to resume, restart
+  [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) (cleanup is done, so the spawn is idempotent).
+
 ### On receiving `PR_MERGED_HEAD_UNCONFIRMED` (human-confirmation gate, Issue #639 / pr-watch #638)
 
 When you receive `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last CI-confirmed head=<baseline_short>)` from pr-watch, **do not proceed to post-merge cleanup (2b-ii); ask the human for confirmation**. This is the terminal case where a push and a merge slip in simultaneously between pr-watch's polls and the PR is merged at a CI-unconfirmed head (a merge is irreversible so loopback is impossible; pr-watch emits it fail-closed with exit 9; design in PR #638). It is an independent signal parallel to `PR_MERGED` / `PR_MERGED_NO_RUN` — do not auto-advance on the `PR_MERGED` prefix.
 
+- **Clean up the watcher pane (`pr-watch-<PR>`) immediately, without waiting for human confirmation (Issue #751)**: the watcher body has already exited at this point, so clean it up independently of the human-confirmation gate, following the procedure of the "Event-driven close of the watcher pane ... by the Lead at each monitoring terminus" section above (delaying cleanup until human confirmation leaves a zombie on a herdr backend for the entire confirmation wait). **In the freshness gate, match `last CI-confirmed head` (baseline) as the monitored head, not this event's `head` (the merge SHA)** (deciding on `head` always mismatches and wrongly skips cleanup). Leave only the run-completion judgment to the human-confirmation gate below.
 - **Human-presentation text (example)**: `PR #<n> was merged at a CI-unconfirmed head (<merged_short>). The last CI-confirmed head is <baseline_short>. Manually verify the head sha and decide whether post-merge cleanup may proceed.`
 - **Append a journal event** (for attention notification; the same emit shape as the "notify when the secretary is waiting on a user decision" section of CLAUDE.md):
   ```bash
@@ -118,6 +202,7 @@ When you receive `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last
 
 If a human provides feedback / fix instructions, or if CI fails and the user says "have them fix it":
 
+- **When monitoring terminates on a CI-failure decision, the Lead cleans up the watcher pane (`pr-watch-<PR>`) (Issue #751)**: on a CI-failure decision (`ci_completed` with `status='failed'`) `tools/pr-watch.sh` terminates monitoring (even with `--merge-watch` it exits without waiting for the merge). **On a herdr / wezterm backend self-close does not take effect and the watcher pane remains**, so the Lead cleans it up before entering the fix instructions (bind to the pane_id noted at spawn time plus the head freshness gate and close after the identity check; do not re-derive by `name`. For details see the "Event-driven close of the watcher pane (`pr-watch-<PR>`) by the Lead at each monitoring terminus" section above). If it has already self-closed on a tmux backend you get `[pane_not_found]` (normal: already self-closed, fine to skip). On the re-push after the fix, start [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) again and re-track its new pane_id / head (duplicate delivery of the old event is judged superseded on the head mismatch and does not wrongly close the new watcher).
 - **Release the dispatcher's monitoring flag before the re-instruction (Issue #658, T6 monitoring-resume contract)**: If the worker has already reported completion (at completion, the secretary sent `WORKER_COMPLETION_NOTED` to the dispatcher per §2a, so `completion_reported_at` is set), then **before** sending the additional instruction, send `WORKER_REOPENED` to the dispatcher **best-effort and non-blocking**, clearing `completion_reported_at` to `null`. Because the re-instruction is a direct secretary→worker send with the dispatcher off the path, this explicit release is the **fast-path release** for the dispatcher's PANE_OUTPUT_WITHOUT_PEER_MSG detector ([`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2 — maintained in the upstream ja repository, not mirrored here; see CONTRIBUTING "Mirror scope"). Do not wait for a dispatcher reply (the dispatcher reflects it on its normal `/loop 3m` `check_messages`). Without the release the skip stays sticky and misses a real silent dead-lock during the awaiting_review→in_progress review fix. **Even if `WORKER_REOPENED` is dropped, the `run.status='in_use'` transition immediately below (written deterministically by StateWriter) acts as a reliable backstop: the dispatcher observes `runs.status == 'in_use'` and self-heal-resumes monitoring** (so the release does not depend on the best-effort notice alone and does not fail unsafe, Issue #658 P2). Include task_id and reopened_at (ISO-8601 UTC) in the body:
   ```
   {{FQ}}send_message(to_id="dispatcher", message="WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)")
@@ -155,8 +240,9 @@ Actions to perform:
 - Final-update the worker's state file (append the last Progress Log entry, etc.).
 - **The worker state file (`.state/workers/worker-{task_id}.md`) is automatically moved to `.state/workers/archive/` by StateWriter's post-commit on `update_run_status('<task_id>', 'completed')`** (Issue #284. `archive/` is lazily created if absent; re-invocation is idempotent. The dashboard does not treat files in this directory as live workers (Issue #264). They are not deleted, in case the journal / retro needs to reference history.)
 - Append events to the DB events table (`bash tools/journal_append.sh ...`).
-- Ask the dispatcher to close the pane:
+- Ask the dispatcher to close the pane (**the worker Claude pane**):
   `CLOSE_PANE: please close pane {pane_id}.`
+- **The Lead cleans up the CI-monitoring watcher pane (`pr-watch-<PR>`) (Issue #751)**: separately from the worker pane, the Lead cleans up the watcher pane spawned by `/pr-watch-pane` (bind to the pane_id noted at spawn time plus the head freshness gate and close after the identity check; do not re-derive by `name`. The SoT for the procedure is the "Event-driven close of the watcher pane (`pr-watch-<PR>`) by the Lead at each monitoring terminus" section above). `close_pane` covers **both tmux and herdr** on the transport abstraction, and it is required in post-merge cleanup because **self-close does not take effect on a herdr / wezterm backend and the pane remains**. If it has already self-closed on a tmux backend you get `[pane_not_found]` (normal: already self-closed, fine to skip).
 - **Post-processing per directory pattern** (do at the same time):
   - Pattern A (project directory): keep the directory (reused for the next task).
   - Pattern B (worktree): run `git -C {workers_dir}/{project_slug}/ worktree remove --force .worktrees/{task_id}`. Keep the branch (do not delete the branch even after merge, for PR history).
