@@ -18,26 +18,30 @@
 - **関連 raw ファイル**: {raw_files のパス列}
 - **呼び出し元**: {post_retro | curation}
 - **提案 skill 名**: {kebab-case 名}
-- **status**: pending
+- **status**: {pending | deferred | approved | rejected | merged-into-*}
 - **決定日**: 未定
 - **却下理由**: （status が `rejected` に遷移したとき記入、それ以外は省略）
 - **統合先**: （status が `merged-into-*` のとき記入、それ以外は省略）
 ```
 
-## status の遷移
+## Status transitions
 
-- `pending`: 人間に未問い合わせ。`skill-audit` の発火条件 N=5 でカウントされる
-- `approved`: 人間が skill 化を承認。対応する `.claude/skills/{name}/SKILL.md` を作成
-- `rejected`: 人間が却下。却下理由を「却下理由」フィールドで追記
-- `merged-into-{existing-skill}`: 既存 skill に統合された。新規作成はしない
+- `pending`: not yet put to the human. Counted by `skill-audit`'s N=5 trigger condition.
+- `deferred`: **presented to the human, and the human decided to shelve it for now.** Not terminal (neither approved nor rejected), but it is **excluded from the threshold count** and **is never re-asked**. Because the line does not match the `- **status**: pending` line form, it is automatically excluded from the pending count in `tools/check_curate_threshold.py`'s `count_pending` and in `skill-audit` Step 1. This is the countermeasure for shelved candidates re-firing the threshold on every worker close and needlessly spawning the curator (Issue #753).
+- `approved`: the human approved promotion to a skill. Create the corresponding `.claude/skills/{name}/SKILL.md`.
+- `rejected`: the human rejected it. Record why in the rejection-reason field.
+- `merged-into-{existing-skill}`: merged into an existing skill. Do not create a new one.
 
-`approved` 以降のエントリは履歴として**削除せず保持**する。
-同じ `pattern_name` が再び上がってきた時の参考になる。
+**`deferred` is never returned to `pending`** (it is out of scope for re-asking). Shelving is decided once, so the same candidate is not dredged up again. If the human later does want to promote it after all, do **not** rewrite the `deferred` entry — raise a **separate entry under a new date** (the same history-preserving practice as `approved` / `rejected`).
+
+Entries at `deferred` and beyond are **kept, not deleted**, as history.
+They are useful reference when the same `pattern_name` comes up again.
 
 ## 運用メモ
 
 - `skill-eligibility-check` は判定時にこのファイルを自動追記する（同スキル Step 4）
 - 同 `pattern_name` で既に `pending` エントリがある場合は新規追加せずマージ（関連タスク・raw ファイルの追記のみ）
+- If a `deferred` entry already exists for the same `pattern_name`, **do not add it again** (do not return `deferred` to `pending`, and do not raise a fresh `pending` either). The principle is that shelved candidates are not dredged up. Only when the human explicitly wants to reconsider should a separate entry be raised under a new date.
 - 既に `approved` / `rejected` / `merged-into-*` のエントリがある場合は、新しい日付で別エントリを作る（過去の決定を履歴として残すため）
 
 ## エントリ一覧

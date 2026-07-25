@@ -124,6 +124,8 @@ This skill only decides and appends to the queue. Subsequent actions are the cal
 
 If a pending entry for the same `pattern_name` already exists in `knowledge/skill-candidates.md`, Step 4 does not add a new entry; instead it merges-appends the new entry's "related tasks" / "related raw files" into the existing entry. Entries already in `approved` / `rejected` / `merged-into-*` are kept as history, and a new entry is added under a different date (so past rejection reasons are not lost).
 
+If an entry for the same `pattern_name` is already `deferred` (a candidate the human was shown and chose to shelve), Step 4 **neither re-adds it nor moves it back to `pending`** (shelving is treated as settled, so the same candidate is not dredged up — Issue #753). `deferred` is excluded from the threshold count and from re-asking. Only when the human explicitly wants to reconsider should a separate entry be raised under a new date.
+
 ## When NOT to call this skill
 
 - A worker simply wants to memo "a useful function" → recording in `knowledge/raw/` is enough. The 5 input fields (especially `steps_outline` and `trigger_description`) cannot be filled.
