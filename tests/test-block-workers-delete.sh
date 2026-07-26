@@ -1,16 +1,36 @@
 #!/usr/bin/env bash
 # block-workers-delete.sh のテスト
-# 実行: bash .hooks/test-block-workers-delete.sh
+# 実行: bash tests/test-block-workers-delete.sh
 
 set -euo pipefail
 
-HOOK=".hooks/block-workers-delete.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK="$REPO_ROOT/.hooks/block-workers-delete.sh"
 PASS=0
 FAIL=0
+
+# Portable realpath -m (matches hook fallback: GNU realpath → python3 → python)
+portable_realpath() {
+  local target="$1"
+  if result=$(command realpath -m "$target" 2>/dev/null); then
+    echo "$result"
+  elif result=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target" 2>/dev/null); then
+    echo "$result"
+  elif result=$(python -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target" 2>/dev/null); then
+    echo "$result"
+  else
+    echo "FATAL: realpath -m も python も利用できません" >&2
+    exit 1
+  fi
+}
+
 # hook と同じ流儀で workers パスを解決する（registry/org-config.md の workers_dir は
-# ORG_ROOT 起点の相対パスとして定義されているため、CLAUDE_ORG_PATH があれば優先する）
-TEST_ORG_ROOT="${CLAUDE_ORG_PATH:-$(pwd)}"
-WORKERS_DIR=$(realpath -m "$TEST_ORG_ROOT/../workers")
+# ORG_ROOT 起点の相対パスとして定義されている）。既定は REPO_ROOT で、hook 側にも
+# 同じ値を CLAUDE_ORG_PATH として明示的に渡すことで、ランナーの cwd に依存せず
+# テストと hook の workers パス解決を一致させる。
+TEST_ORG_ROOT="${CLAUDE_ORG_PATH:-$REPO_ROOT}"
+WORKERS_DIR=$(portable_realpath "$TEST_ORG_ROOT/../workers")
 
 run_test() {
   local description="$1"
@@ -18,7 +38,7 @@ run_test() {
   local expected_exit="$3"  # 0=許可, 2=ブロック
 
   actual_exit=0
-  echo "$input_json" | bash "$HOOK" >/dev/null 2>&1 || actual_exit=$?
+  echo "$input_json" | CLAUDE_ORG_PATH="$TEST_ORG_ROOT" bash "$HOOK" >/dev/null 2>&1 || actual_exit=$?
 
   if [[ "$actual_exit" -eq "$expected_exit" ]]; then
     echo "  PASS: $description"
@@ -97,6 +117,46 @@ run_test "rm --force --recursive (長オプション複数)" \
 
 echo ""
 
+# --- renga 例外の回避経路 (Issue #777) ---
+# 「コマンド列のどこかに renga トークンがある」だけで例外が成立していた頃の回避を固定する。
+# 例外はトップレベルの全セグメントが renga 起動である場合にのみ成立する。
+echo "[renga 例外の回避防止]"
+
+run_test "echo renga ; rm -rf workers (無害な renga トークン混入)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo renga ; rm -rf ${WORKERS_DIR}\"}}" \
+  2
+
+run_test "renga 起動に破壊的コマンドを後続連結 (renga ... && rm -rf workers)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test && rm -rf ${WORKERS_DIR}/dummy-test\"}}" \
+  2
+
+run_test "renga 起動をパイプ後段に置いた rm -rf workers" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga list | grep -q x ; rm -rf ${WORKERS_DIR}/WI-016\"}}" \
+  2
+
+run_test "コメントに renga を書いた rm -rf workers" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf ${WORKERS_DIR}/WI-016 # renga cleanup\"}}" \
+  2
+
+# コマンド置換 / プロセス置換は renga 起動前にシェルが実行するため、renga 例外の内側でも
+# 破壊的コマンドの実行経路になる。展開が起きる形では例外を成立させない。
+SUBST_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"\$(rm -rf ${WORKERS_DIR}/dummy-test)\""
+run_test "renga 起動の引数内 \$( ) コマンド置換" \
+  "$(jq -n --arg cmd "$SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+BACKTICK_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"\`rm -rf ${WORKERS_DIR}/dummy-test\`\""
+run_test "renga 起動の引数内バッククォート置換" \
+  "$(jq -n --arg cmd "$BACKTICK_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+PROCSUB_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p x <(rm -rf ${WORKERS_DIR}/dummy-test)"
+run_test "renga 起動の <( ) プロセス置換" \
+  "$(jq -n --arg cmd "$PROCSUB_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+echo ""
+
 # --- 許可されるべきケース ---
 echo "[許可対象]"
 
@@ -124,6 +184,41 @@ run_test "renga new-tab で workers パスを含むコマンド (偽陽性防止
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --command \\\"cd ${WORKERS_DIR}/dummy-test && claude -p 'rm -rf test'\\\"\"}}" \
   0
 
+# 正当なワーカー起動: 先頭が renga で、引用符の内側に workers パスと rm が同居する形。
+# 引用符内の ; / && では分割しないため、1 セグメント = renga 起動として例外が成立する。
+run_test "renga 起動 (--cwd workers/... + -p 内に rm、引用符内に区切り文字)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'cd ${WORKERS_DIR}/dummy-test && rm -rf build; make'\"}}" \
+  0
+
+run_test "renga 起動を renga コマンドのみで連結 (全セグメント renga)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga list && renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp'\"}}" \
+  0
+
+run_test "環境変数プレフィックス付き renga 起動 (VAR=value renga ...)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ORG_TRANSPORT=broker renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp'\"}}" \
+  0
+
+# シングルクォート内の $( ) はシェルに展開されないため不活性 = 例外は成立する
+SQ_SUBST_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'echo \$(rm -rf ${WORKERS_DIR}/dummy-test)'"
+run_test "renga 起動のシングルクォート内 \$( ) (不活性なので許可)" \
+  "$(jq -n --arg cmd "$SQ_SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  0
+
+# リダイレクトの & は区切りではない (2>&1 で余計なセグメントを作らない)
+run_test "renga 起動 + 2>&1 リダイレクト (& を区切りにしない)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' > /dev/null 2>&1\"}}" \
+  0
+
+run_test "renga 起動 + &> リダイレクト (& を区切りにしない)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' &> /dev/null\"}}" \
+  0
+
+# ダブルクォート内のエスケープ済み引用符 \" で引用符状態を誤って閉じない
+ESCQ_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"echo \\\"x\\\" && rm -rf build\""
+run_test "renga 起動の -p 内にエスケープ済み引用符 + && (偽陽性防止)" \
+  "$(jq -n --arg cmd "$ESCQ_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  0
+
 run_test "ls workers ディレクトリ (削除ではない)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls ${WORKERS_DIR}/\"}}" \
   0
@@ -149,10 +244,11 @@ echo ""
 # CLAUDE_ORG_PATH 起点で config / workers パスを解決していることを担保する。
 echo "[cwd 非依存性 (CLAUDE_ORG_PATH 起点解決)]"
 
-HOOK_ABS="$(realpath "$HOOK")"
+# HOOK は REPO_ROOT 起点で組み立て済みなので既に絶対パス。
 # .dispatcher 配下を擬似 cwd として使う。ORG_ROOT は TEST_ORG_ROOT に揃える
 # （WORKERS_DIR と整合した workers パス解決を hook 側で起こすため）
-ALT_CWD="$(pwd)/.dispatcher"
+HOOK_ABS="$HOOK"
+ALT_CWD="$REPO_ROOT/.dispatcher"
 
 if [[ ! -d "$ALT_CWD" ]]; then
   echo "  SKIP: .dispatcher ディレクトリが無いため cwd 非依存テストを省略"
@@ -193,5 +289,5 @@ else
 fi
 
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+echo "# $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1
