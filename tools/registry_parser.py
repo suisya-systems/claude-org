@@ -55,11 +55,11 @@ _HEADER_KEYWORDS = frozenset({"プロジェクト名", "name", "project"})
 # columns by name); a header row that matches none falls back to positional
 # parsing so headerless snippets and legacy fork tables keep working.
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
-    "nickname": ("通称", "nickname"),
+    "nickname": ("通称",),
     "name": ("プロジェクト名", "name", "project"),
     "path": ("パス", "path"),
     "description": ("説明", "description"),
-    "common_tasks": ("よくある作業例", "common tasks"),
+    "common_tasks": ("よくある作業例",),
     "mirror_of": ("mirror_of",),
     "triage": ("triage",),
 }
@@ -89,11 +89,12 @@ class Project:
     # this empty and the resolver falls through to the conventional A/B/C
     # decision tree.
     mirror_of: str = ""
-    # Issue #729: raw value of the `triage` opt-in column (header mode only;
-    # positional fallback always leaves this empty). Kept verbatim — the
-    # opt-in interpretation (`yes`/`true`/`on` after case-fold + trim) lives
-    # in the work-discovery repo resolver, not here, so the parser stays a
-    # dumb SoT and forks/tests can assert on the literal cell value.
+    # Issue #729 / #801: raw value of the `triage` opt-out column (header
+    # mode only; positional fallback always leaves this empty). Kept
+    # verbatim -- the opt-out interpretation (`no`/`off`/`false` after
+    # case-fold + trim mark a row as excluded; anything else is included)
+    # lives in the work-discovery repo resolver, not here, so the parser
+    # stays a dumb SoT and forks/tests can assert on the literal cell value.
     triage: str = ""
 
 
