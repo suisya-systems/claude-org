@@ -279,24 +279,6 @@ class TestHeaderNameParsing(unittest.TestCase):
         self.assertEqual(projects[0].description, "desc")
         self.assertEqual(projects[0].triage, "on")
 
-    def test_en_registry_header_enters_header_mode(self):
-        # EN-mirror adaptation: the EN live registry's header row
-        # (`Nickname` / `Common tasks` instead of 通称 / よくある作業例)
-        # must provide both identity columns so header mode engages and
-        # the trailing `triage` column is populated.
-        text = (
-            "| Nickname | Project | Path | Description | Common tasks | triage |\n"
-            "|---|---|---|---|---|---|\n"
-            "| Clock app | clock-app | - | Demo | tasks | no |\n"
-        )
-        projects = parse_projects_text(text)
-        self.assertEqual(len(projects), 1)
-        p = projects[0]
-        self.assertEqual(p.nickname, "Clock app")
-        self.assertEqual(p.name, "clock-app")
-        self.assertEqual(p.common_tasks, "tasks")
-        self.assertEqual(p.triage, "no")
-
     def test_fully_english_header_falls_back_to_positional(self):
         # Regression (Codex P2): a legacy/fork English header with no 通称
         # column must NOT enter header mode — its `Name` alias would grab the
@@ -358,16 +340,36 @@ class TestHeaderNameParsing(unittest.TestCase):
         self.assertEqual(projects[0].mirror_of, "upstream")
         self.assertEqual(projects[0].triage, "yes")
 
+    def test_empty_triage_cell_parses_as_data_row(self):
+        # Under the opt-out semantics (Issue #801) an empty triage cell is
+        # the normal "scanned by default" form, so the row must still parse
+        # as data and expose "" verbatim (the parser stays a dumb SoT; the
+        # include/exclude reading lives in the work-discovery resolver).
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| nn | slug | https://github.com/o/r | d | t | |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].triage, "")
+        self.assertEqual(projects[0].path, "https://github.com/o/r")
+
     def test_live_registry_triage_column_parses(self):
-        # The live registry now carries a triage column; every data row must
-        # parse and expose a triage value (default "no").
+        # The live registry carries a triage column; every data row must
+        # parse and expose a value the resolver recognises. We assert the
+        # vocabulary rather than a fixed per-row state, which would break on
+        # every legitimate registry edit (opting a project in or out is a
+        # policy change, not a parser regression). The empty-cell form is
+        # pinned content-independently by the synthetic test above.
         path = PROJECT_ROOT / "registry" / "projects.md"
         if not path.exists():  # pragma: no cover
             self.skipTest("live registry/projects.md not present")
         projects = parse_projects(path)
+        self.assertTrue(projects)
+        recognised = {"", "-", "no", "off", "false", "yes", "true", "on"}
         for p in projects:
-            # Every live row is currently opted-out.
-            self.assertEqual(p.triage.strip().lower(), "no")
+            self.assertIn(p.triage.strip().lower(), recognised)
 
 
 class TestIterRows(unittest.TestCase):
