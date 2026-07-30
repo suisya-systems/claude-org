@@ -47,20 +47,12 @@ class TestParseProjects(unittest.TestCase):
             self.assertTrue(p.nickname)
             self.assertTrue(p.name)
 
-    def test_live_registry_smoke(self):
-        # Smoke check: the live registry/projects.md (which may diverge per
-        # repo/fork) must remain parseable and yield at least one well-formed
-        # row. We do NOT assert specific project names here — that is the
-        # fixture-based test's job.
-        path = PROJECT_ROOT / "registry" / "projects.md"
-        if not path.exists():  # pragma: no cover - safety for fork checkouts
-            self.skipTest("live registry/projects.md not present")
+    def _assert_registry_parses_cleanly(self, path):
         # parse_projects must not raise and must not emit malformed-row
-        # warnings against the live file. An empty registry is valid (fresh
-        # checkout / fork) — but if the file *contains* table data rows, at
-        # least one must parse cleanly, otherwise the registry is silently
-        # corrupt (e.g. separator dropped → every row classified as
-        # non_table and parser returns []).
+        # warnings. An empty registry is valid (fresh checkout / fork) — but
+        # if the file *contains* table data rows, at least one must parse
+        # cleanly, otherwise the registry is silently corrupt (e.g. separator
+        # dropped → every row classified as non_table and parser returns []).
         text = path.read_text(encoding="utf-8")
         with self.assertNoLogs("tools.registry_parser", level="WARNING"):
             projects = parse_projects(path)
@@ -79,9 +71,37 @@ class TestParseProjects(unittest.TestCase):
         if pipe_lines >= 2:
             self.assertGreater(
                 len(projects), 0,
-                "live registry has pipe-table lines but none parsed — "
+                f"{path.name} has pipe-table lines but none parsed — "
                 "likely separator/header corruption",
             )
+        return projects
+
+    def test_template_registry_smoke(self):
+        # Issue #811: registry/projects.md is now operator-local and
+        # gitignored, so on CI it does not exist and the live-file test below
+        # skips. The tracked template is what every fresh checkout generates
+        # the live registry FROM, so it is the artifact that must stay
+        # parseable — assert against it so this coverage runs in CI instead
+        # of silently evaporating.
+        path = PROJECT_ROOT / "registry" / "projects.example.md"
+        projects = self._assert_registry_parses_cleanly(path)
+        self.assertTrue(
+            projects, "the shipped template must carry sample rows"
+        )
+
+    def test_live_registry_smoke(self):
+        # Smoke check on the operator's generated registry when present. It
+        # is absent on CI and on fresh clones (Issue #811 — gitignored,
+        # created by /org-start), and divergence-allowed per
+        # docs/sync-policy.md, so we assert shape only, never names.
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():
+            self.skipTest(
+                "registry/projects.md not present (operator-local, generated "
+                "by /org-start) — template coverage lives in "
+                "test_template_registry_smoke"
+            )
+        self._assert_registry_parses_cleanly(path)
 
     def test_happy_path(self):
         text = _build(
@@ -279,24 +299,6 @@ class TestHeaderNameParsing(unittest.TestCase):
         self.assertEqual(projects[0].description, "desc")
         self.assertEqual(projects[0].triage, "on")
 
-    def test_en_registry_header_enters_header_mode(self):
-        # EN-mirror adaptation: the EN live registry's header row
-        # (`Nickname` / `Common tasks` instead of 通称 / よくある作業例)
-        # must provide both identity columns so header mode engages and
-        # the trailing `triage` column is populated.
-        text = (
-            "| Nickname | Project | Path | Description | Common tasks | triage |\n"
-            "|---|---|---|---|---|---|\n"
-            "| Clock app | clock-app | - | Demo | tasks | no |\n"
-        )
-        projects = parse_projects_text(text)
-        self.assertEqual(len(projects), 1)
-        p = projects[0]
-        self.assertEqual(p.nickname, "Clock app")
-        self.assertEqual(p.name, "clock-app")
-        self.assertEqual(p.common_tasks, "tasks")
-        self.assertEqual(p.triage, "no")
-
     def test_fully_english_header_falls_back_to_positional(self):
         # Regression (Codex P2): a legacy/fork English header with no 通称
         # column must NOT enter header mode — its `Name` alias would grab the
@@ -358,16 +360,140 @@ class TestHeaderNameParsing(unittest.TestCase):
         self.assertEqual(projects[0].mirror_of, "upstream")
         self.assertEqual(projects[0].triage, "yes")
 
-    def test_live_registry_triage_column_parses(self):
-        # The live registry now carries a triage column; every data row must
-        # parse and expose a triage value (default "no").
-        path = PROJECT_ROOT / "registry" / "projects.md"
-        if not path.exists():  # pragma: no cover
-            self.skipTest("live registry/projects.md not present")
+    def test_empty_triage_cell_parses_as_data_row(self):
+        # Under the opt-out semantics (Issue #801) an empty triage cell is
+        # the normal "scanned by default" form, so the row must still parse
+        # as data and expose "" verbatim (the parser stays a dumb SoT; the
+        # include/exclude reading lives in the work-discovery resolver).
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| nn | slug | https://github.com/o/r | d | t | |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].triage, "")
+        self.assertEqual(projects[0].path, "https://github.com/o/r")
+
+    _RECOGNISED_TRIAGE = {
+        "", "-", "no", "off", "false", "yes", "true", "on",
+    }
+
+    def test_template_registry_triage_column_parses(self):
+        # Issue #811: the tracked template is the CI-visible carrier of the
+        # triage column, so pin the vocabulary here. We assert the vocabulary
+        # rather than a fixed per-row state, which would break on every
+        # legitimate registry edit (opting a project in or out is a policy
+        # change, not a parser regression). The empty-cell form is pinned
+        # content-independently by the synthetic test above.
+        path = PROJECT_ROOT / "registry" / "projects.example.md"
         projects = parse_projects(path)
+        self.assertTrue(projects)
         for p in projects:
-            # Every live row is currently opted-out.
-            self.assertEqual(p.triage.strip().lower(), "no")
+            self.assertIn(p.triage.strip().lower(), self._RECOGNISED_TRIAGE)
+
+    def test_live_registry_triage_column_parses(self):
+        # Same assertion against the operator's generated registry when it
+        # exists (absent on CI / fresh clones — see Issue #811).
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():
+            self.skipTest(
+                "registry/projects.md not present (operator-local, generated "
+                "by /org-start)"
+            )
+        projects = parse_projects(path)
+        self.assertTrue(projects)
+        for p in projects:
+            self.assertIn(p.triage.strip().lower(), self._RECOGNISED_TRIAGE)
+
+
+class TestBaseBranchColumn(unittest.TestCase):
+    """Issue #808: optional `base_branch` column declares a project's standard
+    cut point / merge target (e.g. `develop` on a two-track repo). The header
+    is the live ja registry's shape: `triage` then `base_branch`.
+
+    The load-bearing property under test is backwards compatibility: every row
+    written before the column existed must keep parsing, unedited, with
+    ``base_branch == ""`` (= "unset", which the delegation pipeline maps back
+    to the historical ``origin/HEAD`` behaviour).
+    """
+
+    _LIVE_HEADER = (
+        "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage "
+        "| base_branch |\n"
+        "|---|---|---|---|---|---|---|\n"
+    )
+
+    def test_base_branch_column_populates_raw_value(self):
+        text = self._LIVE_HEADER + (
+            "| くら | kura | https://github.com/x/kura | K | t |  | develop |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "kura")
+        self.assertEqual(projects[0].base_branch, "develop")
+        # The neighbouring column must not be shifted by the addition.
+        self.assertEqual(projects[0].triage, "")
+
+    def test_raw_value_is_preserved_verbatim(self):
+        # Normalization (trim / `origin/` prefix / `-` placeholder) belongs to
+        # gen_delegate_payload.normalize_base_branch, not to the parser, so a
+        # fork can assert on the literal cell. Only the generic cell-level
+        # strip applies.
+        text = self._LIVE_HEADER + (
+            "| n | slug | / | d | t |  | origin/develop |\n"
+        )
+        self.assertEqual(parse_projects_text(text)[0].base_branch, "origin/develop")
+
+    def test_empty_cell_normalizes_to_empty(self):
+        text = self._LIVE_HEADER + "| n | slug | / | d | t | no |  |\n"
+        projects = parse_projects_text(text)
+        self.assertEqual(projects[0].base_branch, "")
+        self.assertEqual(projects[0].triage, "no")
+
+    def test_row_short_of_the_column_still_parses(self):
+        """The no-edit compatibility contract: a pre-#808 row that simply
+        stops before the new column is valid, not a mismatch."""
+        text = self._LIVE_HEADER + "| n | slug | / | d | t | no |\n"
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "slug")
+        self.assertEqual(projects[0].triage, "no")
+        self.assertEqual(projects[0].base_branch, "")
+
+    def test_header_without_the_column_leaves_base_branch_empty(self):
+        # A fork registry that hasn't adopted the column at all.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | t | no |\n"
+        )
+        self.assertEqual(parse_projects_text(text)[0].base_branch, "")
+
+    def test_column_order_does_not_matter_in_header_mode(self):
+        # Header mode maps by name, so an operator who inserts base_branch
+        # before triage gets the same result.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | base_branch | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | develop | no |\n"
+        )
+        project = parse_projects_text(text)[0]
+        self.assertEqual(project.base_branch, "develop")
+        self.assertEqual(project.triage, "no")
+
+    def test_positional_fallback_never_populates_base_branch(self):
+        # Alias-less header -> positional mode, which owns cells[0..5] only and
+        # must not mistake a 7th cell for base_branch.
+        text = (
+            "| a | b | c | d | e | f | g |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | t | upstream | develop |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].mirror_of, "upstream")
+        self.assertEqual(projects[0].base_branch, "")
 
 
 class TestIterRows(unittest.TestCase):
