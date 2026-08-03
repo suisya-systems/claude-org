@@ -8,9 +8,14 @@ the real schema + real permissions.md still agree lives in
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -589,6 +594,634 @@ class IsGitTrackedFailClosedTests(unittest.TestCase):
             )
 
 
+HOOK_PATH_SCHEMA: dict = {
+    "version": 1,
+    "global": {"forbidden_allow_exact": [], "forbidden_allow_regex": []},
+    "required_hook_scripts": ["block-workers-delete.sh"],
+    "roles": {"secretary": {"docs_section": "窓口", "settings_paths": []}},
+}
+
+
+def _md_with_secretary_hook(command: str) -> str:
+    block = {
+        "permissions": {"allow": []},
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": command}],
+                }
+            ]
+        },
+    }
+    return (
+        "# perms\n\n## 窓口 (`<repo>/.claude/settings.local.json`)\n\n"
+        "```json\n" + json.dumps(block, indent=2) + "\n```\n"
+    )
+
+
+class HookCommandPathTests(unittest.TestCase):
+    """Hook commands must normalize to ``<org root>/.hooks/<script>``.
+
+    Issue #768: ``required_hooks.command_contains`` matches the bare
+    script basename anywhere in the command string, so a relative
+    ``bash .hooks/x.sh`` and the absolute quoted form are the same to
+    it -- but the relative form silently no-ops for any role whose cwd
+    is not the org root. Every ``_flagged`` case below passes
+    ``command_contains``; only this check rejects them.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".hooks").mkdir()
+        (self.root / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _run(self, command, schema=None):
+        md = self.root / "permissions.md"
+        md.write_text(_md_with_secretary_hook(command), encoding="utf-8")
+        return crc.check_hook_command_paths(
+            schema or HOOK_PATH_SCHEMA, md, self.root
+        )
+
+    def _assert_flagged(self, command, needle="not anchored at the org root"):
+        findings = self._run(command)
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertEqual(findings[0].severity, "ERROR")
+        self.assertIn(needle, findings[0].message)
+
+    def _assert_clean(self, command):
+        findings = self._run(command)
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_relative_hooks_dir_is_flagged(self):
+        # The literal Issue #768 shape.
+        self._assert_flagged("bash .hooks/block-workers-delete.sh")
+
+    def test_bare_filename_is_flagged(self):
+        # Cheapest reintroduction of #768, and the case a ``.hooks/``-keyed
+        # trigger would skip entirely.
+        self._assert_flagged("bash block-workers-delete.sh")
+
+    def test_dot_slash_filename_is_flagged(self):
+        self._assert_flagged("bash ./block-workers-delete.sh")
+
+    def test_other_directory_is_flagged(self):
+        self._assert_flagged("bash scripts/block-workers-delete.sh")
+
+    def test_quoted_bare_filename_is_flagged(self):
+        self._assert_flagged('bash "block-workers-delete.sh"')
+
+    def test_cd_then_bare_filename_is_flagged(self):
+        self._assert_flagged(
+            'cd "{claude_org_path}" && bash block-workers-delete.sh'
+        )
+
+    def test_anchored_command_with_unanchored_fallback_is_flagged(self):
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"'
+            " || bash block-workers-delete.sh"
+        )
+
+    def test_missing_separator_is_flagged(self):
+        self._assert_flagged('bash "{claude_org_path}block-workers-delete.sh"')
+
+    def test_foreign_absolute_root_is_flagged(self):
+        # A leading-slash ``command_contains`` fragment would pass this.
+        self._assert_flagged(
+            'bash "/some/other/root/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_parent_traversal_is_flagged(self):
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/../../etc/block-workers-delete.sh"'
+        )
+
+    def test_missing_script_is_flagged(self):
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-does-not-exist.sh"',
+            needle="does not exist",
+        )
+
+    def test_placeholder_absolute_form_passes(self):
+        self._assert_clean(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_windows_backslash_form_passes(self):
+        self._assert_clean(
+            'bash "{claude_org_path}\\.hooks\\block-workers-delete.sh"'
+        )
+
+    def test_command_without_hook_reference_is_ignored(self):
+        self._assert_clean("echo hello")
+
+    def test_operator_custom_hook_is_ignored(self):
+        # Not a required hook script and not under .hooks/: operator-owned.
+        self._assert_clean('bash "{claude_org_path}/mytools/my-own-lint.sh"')
+
+    def test_suffix_glued_to_quoted_path_is_flagged(self):
+        # The shell joins the quote to what abuts it, so this really runs
+        # ...block-workers-delete.sh.bak, which does not exist -> guard dead.
+        # Validating the quoted segment alone would call this anchored.
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh".bak',
+            needle="does not exist",
+        )
+
+    def test_prefix_glued_to_quoted_path_is_flagged(self):
+        self._assert_flagged(
+            'bash /wrong"{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_symlinked_root_is_accepted(self):
+        # A checkout reached through a symlink is lexically different but
+        # identifies the same script; it must not be reported.
+        link = Path(self.td.name).parent / (self.root.name + "-link")
+        try:
+            link.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        try:
+            md = self.root / "permissions.md"
+            md.write_text(
+                _md_with_secretary_hook(
+                    'bash "' + link.as_posix()
+                    + '/.hooks/block-workers-delete.sh"'
+                ),
+                encoding="utf-8",
+            )
+            findings = crc.check_hook_command_paths(
+                HOOK_PATH_SCHEMA, md, self.root
+            )
+        finally:
+            link.unlink()
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_worker_roles_template_is_checked(self):
+        schema = dict(HOOK_PATH_SCHEMA)
+        schema["worker_roles"] = {
+            "$comment": "string entries must be skipped, not crashed on",
+            "default": {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "bash .hooks/block-workers-delete.sh",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        }
+        findings = self._run(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"', schema
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("worker_roles.default", findings[0].source)
+
+    def test_non_org_source_root_returns_no_findings(self):
+        # Guard against a false-positive storm: pointing the check at a
+        # directory that ships no .hooks/ must not flag every template.
+        with tempfile.TemporaryDirectory() as bare:
+            md = self.root / "permissions.md"
+            md.write_text(
+                _md_with_secretary_hook("bash .hooks/block-workers-delete.sh"),
+                encoding="utf-8",
+            )
+            findings = crc.check_hook_command_paths(
+                HOOK_PATH_SCHEMA, md, Path(bare)
+            )
+        self.assertEqual(findings, [])
+
+
+class OnDiskHookPathTests(unittest.TestCase):
+    """Root-anchoring check for *generated* settings files.
+
+    Opt-in: only the ``--include-local`` / ``--role`` paths run it, so
+    the CI invocation stays byte-identical. Real ``settings.local.json``
+    files are gitignored, so this is the only mechanical way to confirm
+    an installed terminal was actually migrated.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".hooks").mkdir()
+        (self.root / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        self.settings = self.root / ".claude" / "settings.local.json"
+        self.settings.parent.mkdir()
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _config(self, command):
+        return {
+            "permissions": {"allow": []},
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": command}],
+                    }
+                ]
+            },
+        }
+
+    def _run(self, command):
+        return crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            self.settings,
+            "secretary",
+            self._config(command),
+            self.root,
+        )
+
+    def test_relative_command_on_disk_is_flagged(self):
+        findings = self._run("bash .hooks/block-workers-delete.sh")
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("not anchored at the org root", findings[0].message)
+
+    def test_resolved_absolute_command_passes(self):
+        cmd = (
+            'bash "' + self.root.resolve().as_posix()
+            + '/.hooks/block-workers-delete.sh"'
+        )
+        self.assertEqual(self._run(cmd), [])
+
+    def test_claude_project_dir_variable_passes(self):
+        # Claude Code expands this itself; tracked .claude/settings.json
+        # legitimately uses it.
+        self.assertEqual(
+            self._run(
+                'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+            ),
+            [],
+        )
+
+    def test_unresolved_prune_placeholder_on_disk_is_flagged(self):
+        # The "pasted the permissions.md sample without resolving it" case:
+        # the literal placeholder is not a real path, so the guard is dead.
+        findings = self._run(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("not anchored at the org root", findings[0].message)
+
+    def test_declared_org_path_anchors_a_worktree_worker(self):
+        # A worker in a worktree has root=<worktree> but its hooks correctly
+        # point at the central checkout named by env.CLAUDE_ORG_PATH.
+        # Anchoring on root would flag every valid hook.
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        config = self._config(
+            'bash "' + self.root.resolve().as_posix()
+            + '/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_declared_org_path_still_flags_a_relative_command(self):
+        config = self._config("bash .hooks/block-workers-delete.sh")
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA, self.settings, "worker", config, self.root
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+
+    def test_project_dir_variable_resolves_to_the_project_not_the_org_root(self):
+        # ${CLAUDE_PROJECT_DIR} expands to the directory holding the settings
+        # file. When that differs from the org root, a script that exists only
+        # centrally makes this command dead and it must be reported.
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        config = self._config(
+            'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+
+    def test_project_dir_variable_passes_when_script_is_present(self):
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        (worktree / ".hooks").mkdir()
+        (worktree / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        config = self._config(
+            'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_stale_declared_org_path_is_reported(self):
+        # A moved / deleted checkout leaves every absolute hook command dead;
+        # silently skipping would hide a broken installation.
+        config = self._config("bash /gone/.hooks/block-workers-delete.sh")
+        config["env"] = {"CLAUDE_ORG_PATH": str(self.root / "gone")}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA, self.settings, "worker", config, self.root
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("no .hooks/", findings[0].message)
+
+    def test_skipped_when_root_ships_no_hooks_dir(self):
+        with tempfile.TemporaryDirectory() as bare:
+            findings = crc.check_on_disk_hook_paths(
+                HOOK_PATH_SCHEMA,
+                self.settings,
+                "secretary",
+                self._config("bash .hooks/block-workers-delete.sh"),
+                Path(bare),
+            )
+        self.assertEqual(findings, [])
+
+    def _check_on_disk(self, include_untracked):
+        schema = {
+            **HOOK_PATH_SCHEMA,
+            "roles": {
+                "secretary": {
+                    "docs_section": "窓口",
+                    "settings_paths": [".claude/settings.local.json"],
+                }
+            },
+        }
+        self.settings.write_text(
+            json.dumps(self._config("bash .hooks/block-workers-delete.sh")),
+            encoding="utf-8",
+        )
+        return crc.check_on_disk(
+            schema,
+            self.root,
+            include_untracked=include_untracked,
+            role_override="secretary",
+        )
+
+    def test_opt_in_path_reports_the_finding(self):
+        messages = [f.message for f in self._check_on_disk(True)]
+        self.assertTrue(
+            any("not anchored at the org root" in m for m in messages),
+            messages,
+        )
+
+    def test_default_path_does_not_report_the_finding(self):
+        # CI does not pass --include-local / --role, so its result must be
+        # unchanged by this feature.
+        messages = [f.message for f in self._check_on_disk(False)]
+        self.assertFalse(
+            any("not anchored at the org root" in m for m in messages),
+            messages,
+        )
+
+
+class NonOrgAuditRootTests(unittest.TestCase):
+    """``--root`` pointing outside an org checkout must stay non-fatal.
+
+    ``check_hook_command_paths`` validates the SoT templates, which ship
+    next to ``.hooks/``, so ``run()`` anchors it at ``REPO_ROOT`` rather
+    than the audit root. Without that, every template command would be
+    reported as a missing script whenever ``--root`` is elsewhere.
+    """
+
+    def test_docs_only_run_with_foreign_root_is_clean(self):
+        with tempfile.TemporaryDirectory() as bare:
+            findings = crc.run(
+                schema_path=crc.DEFAULT_SCHEMA,
+                permissions_md=crc.DEFAULT_PERMISSIONS_MD,
+                root=Path(bare),
+                include_on_disk=False,
+            )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
+    def test_main_docs_only_with_foreign_root_exits_zero(self):
+        with tempfile.TemporaryDirectory() as bare:
+            rc = crc.main(["--docs-only", "--root", bare])
+        self.assertEqual(rc, 0)
+
+
+class ExitCodeContractTests(unittest.TestCase):
+    """``main()``'s exit codes are a consumed contract (Issue #818).
+
+    ``/org-start``'s Block C4 preflight branches on them: 0 = clean (no
+    warning line in the startup report), 1 = drift (transcribe the
+    ``[role config drift]`` stdout line), 2 = the checker never ran. If
+    2 collapses back into 1, a broken checker reports as measured drift
+    and the whole point of the preflight -- surfacing a guard that died
+    silently -- is lost. stdout must stay spliceable, so the exit-2
+    diagnosis belongs on stderr only.
+    """
+
+    def _run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = crc.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_clean_run_exits_zero_without_drift_line(self):
+        rc, out, _ = self._run_main(["--docs-only"])
+        self.assertEqual(rc, crc.EXIT_OK)
+        self.assertNotIn("[role config drift]", out)
+
+    def test_drift_exits_one_with_spliceable_summary_line(self):
+        # A settings file whose allow list is pure garbage relative to the
+        # schema guarantees findings without depending on any particular
+        # real-world drift.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            rc, out, err = self._run_main(
+                ["--root", tmp, "--role", "secretary"]
+            )
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        summary = [
+            ln for ln in out.splitlines() if ln.startswith("[role config drift]")
+        ]
+        self.assertEqual(len(summary), 1, msg=out)
+        # Step 4 transcribes the last stdout line verbatim.
+        self.assertEqual(out.splitlines()[-1], summary[0])
+        self.assertIn("error(s)", summary[0])
+        self.assertIn("role_configs:", err)
+
+    def test_unreadable_schema_exits_two_with_clean_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist.json"
+            rc, out, err = self._run_main(["--schema", str(missing)])
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED)
+        self.assertEqual(out, "", msg=out)
+        self.assertIn("FileNotFoundError", err)
+
+    def test_missing_role_config_is_drift_under_include_local(self):
+        # The worst case Block C4 must catch: a role whose settings file
+        # was never distributed runs with no hook layer at all. Skipping
+        # it silently made an org with zero guards report "OK".
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, _ = self._run_main(["--root", tmp, "--include-local"])
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        self.assertIn("settings file not found", out)
+
+    def test_unstattable_role_config_is_unverified_not_drift(self):
+        # A settings file that exists but cannot be stat'd must not be
+        # reported as "not found". Python 3.14 made Path.is_file() return
+        # False for *any* OSError (3.10-3.13 propagate non-ENOENT ones),
+        # and ja supports >=3.10 -- so under 3.14 a permission-denied
+        # config would read as measured drift (exit 1) instead of
+        # unverified (exit 2), inverting the distinction Block C4 exists
+        # to make.
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses the directory permission bit")
+        with tempfile.TemporaryDirectory() as tmp:
+            locked = Path(tmp) / ".claude"
+            locked.mkdir()
+            (locked / "settings.local.json").write_text("{}", encoding="utf-8")
+            os.chmod(locked, 0o000)
+            try:
+                rc, out, err = self._run_main(
+                    ["--root", tmp, "--include-local"]
+                )
+            finally:
+                os.chmod(locked, 0o755)
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED, msg=out)
+        self.assertNotIn("settings file not found", out)
+        self.assertIn("PermissionError", err)
+
+    def test_missing_role_config_is_silent_without_include_local(self):
+        # Backward-compat lock for the CI invocation
+        # (.github/workflows/tests.yml): it passes neither --include-local
+        # nor --role, and every settings.local.json is gitignored, so a
+        # missing one is the normal state in a fresh checkout. Reporting it
+        # there would turn CI permanently red.
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = crc.run(
+                schema_path=crc.DEFAULT_SCHEMA,
+                permissions_md=crc.DEFAULT_PERMISSIONS_MD,
+                root=Path(tmp),
+                include_on_disk=True,
+            )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
+    def test_summary_line_survives_an_ascii_only_stdout(self):
+        # The summary line is the Block C4 contract: if it dies on a
+        # cp932 / PYTHONIOENCODING=ascii console, drift is detected but
+        # /org-start attaches no warning -- worse than not checking.
+        env = dict(os.environ, PYTHONIOENCODING="ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "tools" / "check_role_configs.py"),
+                    "--root",
+                    tmp,
+                    "--role",
+                    "secretary",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, crc.EXIT_DRIFT, msg=proc.stderr)
+        self.assertIn("[role config drift]", proc.stdout)
+
+    def test_summary_line_carries_no_rerun_command(self):
+        # The summary deliberately stops at counts. A rerun command cannot
+        # be made correct here: the pasteable form depends on the shell the
+        # reader happens to use (cmd.exe / PowerShell / Git Bash all want
+        # incompatible quoting) and the process cannot know which. The
+        # canonical command is fixed text in org-start's SKILL.md instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            rc, out, _ = self._run_main(["--root", tmp, "--role", "secretary"])
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        summary = out.splitlines()[-1]
+        self.assertNotIn("rerun", summary)
+        self.assertNotIn(sys.executable, summary)
+        self.assertNotIn("--include-local", summary)
+
+    def test_unimportable_core_harness_exits_two(self):
+        # Regression lock: the dependency import sits at module level, so
+        # it fails *before* main()'s try block. Left unguarded, a missing
+        # core_harness exits 1 with empty stdout -- which Block C4 would
+        # read as "drift detected" while the guard never actually ran.
+        # Shadow the package with one that raises on import so the check
+        # holds regardless of how core_harness is installed here.
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / "core_harness"
+            shadow.mkdir()
+            (shadow / "__init__.py").write_text(
+                'raise ImportError("simulated missing dependency")',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = tmp + os.pathsep + env.get("PYTHONPATH", "")
+            proc = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "tools" / "check_role_configs.py")],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, crc.EXIT_UNVERIFIED, msg=proc.stderr)
+        self.assertEqual(proc.stdout, "", msg=proc.stdout)
+        self.assertIn("core_harness", proc.stderr)
+
+    def test_malformed_schema_exits_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "broken.json"
+            broken.write_text("{not json", encoding="utf-8")
+            rc, out, _ = self._run_main(["--schema", str(broken)])
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED)
+        self.assertEqual(out, "", msg=out)
+
+
 class RealRepoSmokeTests(unittest.TestCase):
     """Sanity check: the real schema + real permissions.md must pass.
 
@@ -602,6 +1235,18 @@ class RealRepoSmokeTests(unittest.TestCase):
             permissions_md=crc.DEFAULT_PERMISSIONS_MD,
             root=crc.REPO_ROOT,
             include_on_disk=True,
+        )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
+    def test_real_repo_hook_commands_are_root_anchored(self):
+        # Named regression lock for Issue #768: a reintroduced relative hook
+        # command fails here with a legible test name, not only inside the
+        # aggregate projection smoke above.
+        schema = crc.load_schema(crc.DEFAULT_SCHEMA)
+        findings = crc.check_hook_command_paths(
+            schema, crc.DEFAULT_PERMISSIONS_MD, crc.REPO_ROOT
         )
         self.assertEqual(
             findings, [], msg="\n".join(f.format() for f in findings)
