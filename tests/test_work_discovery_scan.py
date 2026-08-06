@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -462,6 +463,25 @@ class TestEffortLearning(unittest.TestCase):
         b = wds.estimate_effort(_issue(1, body="short"), None)
         self.assertEqual(a, b)
 
+    def test_learning_signals_ascii_only(self):
+        # Issue #546: the learning path's *generated* strings (reason /
+        # degenerate_signals / effort signals) must be ASCII-only so the
+        # stdout JSON (ensure_ascii=False for Japanese GitHub titles) never
+        # crashes a cp932 console on typographic chars like ≤ / ρ / — / →.
+        models = [
+            wds.learn_effort_model([]),  # zero training pairs
+            wds.learn_effort_model(self._correlated(9)),  # gate fires
+            wds.learn_effort_model(self._correlated(4)),  # insufficient n
+            wds.learn_effort_model(self._uncorrelated()),  # gate declines
+        ]
+        for m in models:
+            for s in [m["reason"], *m["degenerate_signals"]]:
+                s.encode("ascii")  # raises UnicodeEncodeError on regression
+            for body in ("short", "x" * 5000):
+                _, _, sig = wds.estimate_effort(_issue(1, body=body), m)
+                for s in sig:
+                    s.encode("ascii")
+
     # --- sample building ---------------------------------------------
     def test_build_samples_single_issue_join(self):
         prs = [
@@ -493,6 +513,67 @@ class TestEffortLearning(unittest.TestCase):
             {"closingIssuesReferences": [{"number": 7}]},  # empty body
         ]
         self.assertEqual(wds._build_effort_samples(prs, {7: ""}), [])
+
+    # --- cross-repo closing join (Issue #545) -------------------------
+    @staticmethod
+    def _pr_closing(num, owner=None, name=None):
+        ref = {"number": num}
+        if owner is not None:
+            ref["repository"] = {"name": name, "owner": {"login": owner}}
+        return {
+            "closingIssuesReferences": [ref],
+            "additions": 10, "deletions": 5, "changedFiles": 2,
+            "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+            "mergedAt": "2026-06-01T01:00:00Z",
+        }
+
+    def test_build_samples_excludes_cross_repo_closing(self):
+        # A PR in repo A closing an issue in repo B must NOT become one of
+        # repo A's training pairs — even when the issue NUMBER collides with
+        # a closed issue in repo A (the join keys by (repo, number)).
+        prs = [self._pr_closing(5, "suisya-systems", "claude-org-runtime")]
+        samples = wds._build_effort_samples(
+            prs, {5: "home issue body"}, "suisya-systems/claude-org-ja"
+        )
+        self.assertEqual(samples, [])
+
+    def test_build_samples_same_number_two_repos(self):
+        # ja#5 and runtime#5: only the home-repo closing joins; the
+        # cross-repo one with the colliding number is excluded.
+        prs = [
+            self._pr_closing(5, "suisya-systems", "claude-org-ja"),
+            self._pr_closing(5, "suisya-systems", "claude-org-runtime"),
+        ]
+        samples = wds._build_effort_samples(
+            prs, {5: "home issue body"}, "suisya-systems/claude-org-ja"
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["issue"], 5)
+        self.assertEqual(samples[0]["body_len"], len("home issue body"))
+
+    def test_build_samples_same_repo_closing_unchanged(self):
+        # Normal same-repo closings (with the repository field gh always
+        # returns) keep joining exactly as before; the repo match is
+        # case-insensitive (GitHub owner/repo names are).
+        prs = [self._pr_closing(5, "Owner", "Repo")]
+        samples = wds._build_effort_samples(
+            prs, {5: "issue body text"}, "owner/repo"
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["changed_lines"], 15)
+
+    def test_build_samples_missing_repository_field_treated_as_home(self):
+        # Back-compat: a ref without repository info (hand-built fixtures;
+        # gh always provides it) is treated as home, not dropped.
+        prs = [self._pr_closing(5)]
+        samples = wds._build_effort_samples(prs, {5: "b"}, "owner/repo")
+        self.assertEqual(len(samples), 1)
+
+    def test_single_closing_issue_cross_repo_returns_none(self):
+        pr = self._pr_closing(7, "other", "repo")
+        self.assertIsNone(wds._single_closing_issue(pr, "owner/repo"))
+        # without a home repo (pure-fixture mode) the number still extracts
+        self.assertEqual(wds._single_closing_issue(pr), 7)
 
     def test_hours_between_basic_and_bad(self):
         self.assertEqual(
@@ -846,7 +927,10 @@ class TestCliWiring(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertIn("input_truncated", data)
         self.assertEqual(
-            data["input_truncated"], {"open_issues": False, "open_prs": False}
+            data["input_truncated"],
+            # `base_merges` joined the coverage flags with Issue #830 (the
+            # base-branch completion window can cut off older merges).
+            {"open_issues": False, "open_prs": False, "base_merges": False},
         )
 
     def test_top_n_zero_rejected_as_error(self):
@@ -1080,6 +1164,77 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
         self.assertEqual(model["coverage"]["single_issue_linked_prs"], 2)
         self.assertEqual(model["coverage"]["usable_samples"], 1)
         self.assertEqual(model["coverage"]["dropped_missing_body"], 1)
+        self.assertEqual(model["coverage"]["dropped_cross_repo"], 0)
+
+    def test_build_effort_model_excludes_cross_repo_closings(self):
+        # Issue #545: a PR closing an issue in ANOTHER repo must not feed
+        # this repo's training samples, and the drop must be disclosed in
+        # coverage (not silent, not misattributed).
+        def _ref(num, owner, name):
+            return {
+                "number": num,
+                "repository": {"name": name, "owner": {"login": owner}},
+            }
+
+        prs = [
+            {  # home-repo closing: stays a sample
+                "closingIssuesReferences": [_ref(5, "owner", "repo")],
+                "additions": 10, "deletions": 5, "changedFiles": 2,
+                "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T01:00:00Z",
+            },
+            {  # cross-repo closing (same number as a home closed issue!)
+                "closingIssuesReferences": [_ref(5, "owner", "other-repo")],
+                "additions": 900, "deletions": 900, "changedFiles": 40,
+                "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T01:00:00Z",
+            },
+        ]
+        with mock.patch.object(wds, "fetch_effort_history", return_value=prs), \
+             mock.patch.object(
+                 wds, "fetch_closed_issue_bodies", return_value={5: "issue body"}
+             ), \
+             mock.patch.object(
+                 wds, "_resolve_home_repo", return_value="owner/repo"
+             ):
+            model = wds.build_effort_model("owner/repo", 60)
+        self.assertEqual(model["coverage"]["single_issue_linked_prs"], 1)
+        self.assertEqual(model["coverage"]["usable_samples"], 1)
+        self.assertEqual(model["coverage"]["dropped_missing_body"], 0)
+        self.assertEqual(model["coverage"]["dropped_cross_repo"], 1)
+
+    def test_resolve_home_repo_passthrough_and_gh_default(self):
+        # Explicit --repo: no gh call. None: one read-only `gh repo view`.
+        with mock.patch.object(wds, "_run_gh_json") as gh:
+            self.assertEqual(
+                wds._resolve_home_repo("owner/repo"), "owner/repo"
+            )
+        gh.assert_not_called()
+        with mock.patch.object(
+            wds, "_run_gh_json", return_value={"nameWithOwner": "o/r"}
+        ) as gh:
+            self.assertEqual(wds._resolve_home_repo(None), "o/r")
+        self.assertEqual(gh.call_args[0][0][:2], ["repo", "view"])
+
+    def test_resolve_home_repo_normalizes_host_qualified_forms(self):
+        # gh --repo also accepts HOST/OWNER/REPO and full URLs; the join key
+        # must still be bare owner/repo (what closingIssuesReferences
+        # carries), or same-repo closings would misclassify as cross-repo.
+        for given in (
+            "github.com/owner/repo",
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo/",
+        ):
+            self.assertEqual(wds._resolve_home_repo(given), "owner/repo")
+
+    def test_resolve_home_repo_bad_payload_raises(self):
+        # An unusable `gh repo view` payload must raise GhError (degrades
+        # learning to the static heuristic non-fatally in main), never
+        # silently fall back to a number-only join.
+        for payload in ({}, {"nameWithOwner": ""}, ["x"], None):
+            with mock.patch.object(wds, "_run_gh_json", return_value=payload):
+                with self.assertRaises(wds.GhError):
+                    wds._resolve_home_repo(None)
 
     def test_effort_history_zero_disables_learning(self):
         with mock.patch.object(wds, "fetch_open_issues", return_value=[_issue(1, body="b")]), \
@@ -1558,6 +1713,1373 @@ class TestBundleValidation(unittest.TestCase):
         self.assertEqual(proc.returncode, wds.EXIT_NO_CANDIDATES)
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "no_candidates")
+
+
+# ----------------------------------------------------------------------
+# Cross-repo triage (Issue #528, design §10)
+# ----------------------------------------------------------------------
+
+JA = "suisya-systems/claude-org-ja"
+RT = "suisya-systems/claude-org-runtime"
+
+
+class TestCrossRepoExtraction(unittest.TestCase):
+    """The cross-repo blocking extractor is keyword-gated and leading-run
+    anchored exactly like the home one (§11-3): real cross-repo refs live in
+    non-blocking notations (Epic:/Refs:/Found by) and must NOT be excluded."""
+
+    def test_owner_repo_blocked_by(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Blocked by {RT}#60", is_epic=False
+            ),
+            [(RT, 60)],
+        )
+
+    def test_github_url_blocked_by(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Depends on https://github.com/{RT}/issues/42", is_epic=False
+            ),
+            [(RT, 42)],
+        )
+
+    def test_github_pull_url(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Requires https://github.com/{JA}/pull/7", is_epic=False
+            ),
+            [(JA, 7)],
+        )
+
+    def test_mixed_home_and_cross_run(self):
+        # A run mixing home `#1` and cross `RT#2`: the cross extractor pulls
+        # only the cross ref; the home one is left to extract_blocking_refs.
+        text = f"Blocked by #1, {RT}#2"
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(text, is_epic=False), [(RT, 2)]
+        )
+        self.assertEqual(wds.extract_blocking_refs(text, is_epic=False), [1])
+
+    def test_epic_notation_not_a_blocker(self):
+        # §11-3 cross-repo: `Epic: owner/repo#6` is tracking, not a blocker.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                "Epic: suisya-systems/claude-org-transport-lab#6", is_epic=False
+            ),
+            [],
+        )
+
+    def test_refs_and_found_by_not_blockers(self):
+        body = (
+            f"Refs {JA}#467, suisya-systems/claude-org#264\n"
+            f"Found by Codex during {JA}#467\n"
+            f"Design source: {JA}#443\n"
+        )
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(body, is_epic=False), []
+        )
+
+    def test_negated_cross_ref_not_a_blocker(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"no longer blocked by {RT}#60", is_epic=False
+            ),
+            [],
+        )
+
+    def test_prose_before_cross_ref_not_extracted(self):
+        # Leading-run anchored: prose before the ref → not the immediate run.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Blocked by the runtime work, see {RT}#60", is_epic=False
+            ),
+            [],
+        )
+
+    def test_bare_repo_shorthand_not_resolved(self):
+        # `ja#467` (no owner) is ambiguous — deliberately not a cross ref.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                "Blocked by ja#467", is_epic=False
+            ),
+            [],
+        )
+
+    def test_cross_task_list_pure_ref(self):
+        body = f"- [ ] {RT}#11\n- [ ] {RT}#12 を参考に\n"
+        # Only the pure-ref item counts; the prose-annotated one is dropped.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(body, is_epic=False), [(RT, 11)]
+        )
+
+    def test_cross_task_list_ignored_for_epic(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"- [ ] {RT}#11", is_epic=True
+            ),
+            [],
+        )
+
+
+class TestQualifiedRefHelpers(unittest.TestCase):
+    def test_ref_to_json_home_is_bare_int(self):
+        self.assertEqual(wds._ref_to_json((None, 5)), 5)
+
+    def test_ref_to_json_cross_is_string(self):
+        self.assertEqual(wds._ref_to_json((RT, 5)), f"{RT}#5")
+
+    def test_issue_blocking_refs_q_unifies_self_ref(self):
+        # A cross ref naming the issue's own repo dedups with home keying.
+        issue = {"number": 1, "title": "t", "body": f"Blocked by #2 and {JA}#2"}
+        self.assertEqual(
+            wds.issue_blocking_refs_q(issue, JA), [(JA, 2)]
+        )
+
+
+class TestCrossRepoScan(unittest.TestCase):
+    """End-to-end cross-repo behaviour through ``scan_repos``."""
+
+    def _bundle(self, repo, issues, prs=None, merges=None):
+        return {
+            "repo": repo,
+            "issues": issues,
+            "open_pr_numbers": prs or [],
+            "recent_merges": merges or [],
+        }
+
+    def test_blocked_by_open_cross_repo_issue_excluded(self):
+        ja = self._bundle(
+            JA, [_issue(60, body=f"Blocked by {RT}#60")]
+        )
+        rt = self._bundle(RT, [_issue(60, body="open runtime work")])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand_keys = {(c["repo"], c["issue"]) for c in result["candidates"]}
+        self.assertNotIn((JA, 60), cand_keys)  # ja#60 excluded
+        self.assertIn((RT, 60), cand_keys)  # runtime#60 is itself a candidate
+        excluded = {(e["repo"], e["issue"]): e for e in result["excluded_blocked"]}
+        self.assertIn((JA, 60), excluded)
+        self.assertEqual(excluded[(JA, 60)]["blocking_refs"], [f"{RT}#60"])
+
+    def test_blocked_by_closed_cross_repo_issue_resolved(self):
+        # runtime#60 is NOT open (not in runtime's issue list) → resolved.
+        ja = self._bundle(JA, [_issue(60, body=f"Blocked by {RT}#60")])
+        rt = self._bundle(RT, [])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand_keys = {(c["repo"], c["issue"]) for c in result["candidates"]}
+        self.assertIn((JA, 60), cand_keys)
+
+    def test_issue_number_collision_across_repos(self):
+        # ja#60 and runtime#60 are distinct candidates — no collision.
+        ja = self._bundle(JA, [_issue(60, body="ja work")])
+        rt = self._bundle(RT, [_issue(60, body="runtime work")])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        keys = sorted((c["repo"], c["issue"]) for c in result["candidates"])
+        self.assertEqual(keys, [(JA, 60), (RT, 60)])
+
+    def test_candidates_carry_repo_field(self):
+        result = wds.scan_repos(
+            [self._bundle(JA, [_issue(1, body="b")])], wds.ScanConfig()
+        )
+        self.assertEqual(result["candidates"][0]["repo"], JA)
+        self.assertEqual(result["recommendation"]["repo"], JA)
+
+    def test_unblocked_by_recent_cross_repo_merge(self):
+        # ja#72 Depends on runtime#80; a runtime merge Closes #80 → unblocked.
+        ja = self._bundle(JA, [_issue(72, body=f"Depends on {RT}#80")])
+        rt = self._bundle(
+            RT, [], merges=[{"number": 900, "title": "x", "body": "Closes #80"}]
+        )
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 72)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+        self.assertTrue(
+            any(f"{RT}#80" in s for s in cand["signals"])
+        )
+
+    def test_recent_merge_qualified_by_repo(self):
+        # A *ja* merge `Closes #80` must NOT unblock a dep on runtime#80.
+        ja = self._bundle(
+            JA,
+            [_issue(72, body=f"Depends on {RT}#80")],
+            merges=[{"number": 900, "title": "x", "body": "Closes #80"}],
+        )
+        rt = self._bundle(RT, [])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 72)
+        self.assertFalse(cand["unblocked_by_recent_merge"])
+
+    def test_unscanned_repo_ref_resolved_with_signal(self):
+        # Blocked by a repo not in the scan set → resolved (誤除外<誤包含) but
+        # the silent resolution is surfaced as an auditable signal (§10).
+        ja = self._bundle(JA, [_issue(71, body="Blocked by Shin-sibainu/ccmux#4")])
+        result = wds.scan_repos([ja], wds.ScanConfig())
+        cand = result["candidates"][0]
+        self.assertTrue(
+            any("un-scanned repo" in s for s in cand["signals"])
+        )
+
+    def test_cross_repo_merge_closes_other_repo_issue(self):
+        # A runtime PR that explicitly Closes ja#5 unblocks a dep on ja#5.
+        ja = self._bundle(JA, [_issue(5, body="dep target")])
+        ja2 = self._bundle(JA, [_issue(6, body=f"Depends on {JA}#5")])
+        # Note: #5 open → #6 would be blocked. Use a separate scenario where #5
+        # is closed but a recent cross-repo merge referenced it.
+        rt = self._bundle(
+            RT, [], merges=[{"number": 901, "title": "x", "body": f"Closes {JA}#5"}]
+        )
+        # #5 is open in ja, so #6 is blocked regardless; assert the cross-close
+        # was parsed by checking an issue depending on a *closed* ja ref.
+        ja3 = self._bundle(JA, [_issue(7, body=f"Depends on {JA}#999")])
+        rt2 = self._bundle(
+            RT, [], merges=[{"number": 902, "title": "x", "body": f"Closes {JA}#999"}]
+        )
+        result = wds.scan_repos([ja3, rt2], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 7)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+
+    def test_deterministic_order_on_collision(self):
+        # Full tie across axes: order is (repo, issue) ascending, stable.
+        ja = self._bundle(JA, [_issue(60, body="b")])
+        rt = self._bundle(RT, [_issue(60, body="b")])
+        r1 = wds.scan_repos([ja, rt], wds.ScanConfig())
+        r2 = wds.scan_repos([rt, ja], wds.ScanConfig())  # reversed input order
+        self.assertEqual(
+            [(c["repo"], c["issue"]) for c in r1["candidates"]],
+            [(c["repo"], c["issue"]) for c in r2["candidates"]],
+        )
+
+
+class TestCrossRepoCli(unittest.TestCase):
+    """`--from-file` multi-repo shape + `--repo` repeatable wiring."""
+
+    def _run_text(self, text):
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_xrepo_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), "--from-file", name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        finally:
+            os.unlink(name)
+
+    def test_multi_repo_bundle_end_to_end(self):
+        bundle = json.dumps(
+            {
+                "repos": [
+                    {
+                        "repo": JA,
+                        "issues": [
+                            {"number": 60, "title": "t", "body": f"Blocked by {RT}#60"},
+                            {"number": 61, "title": "free", "body": "indep"},
+                        ],
+                        "open_pr_numbers": [],
+                        "recent_merges": [],
+                    },
+                    {
+                        "repo": RT,
+                        "issues": [{"number": 60, "title": "rt", "body": "w"}],
+                        "open_pr_numbers": [],
+                        "recent_merges": [],
+                    },
+                ]
+            }
+        )
+        proc = self._run_text(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        data = json.loads(proc.stdout)
+        excluded = {(e["repo"], e["issue"]) for e in data["excluded_blocked"]}
+        self.assertIn((JA, 60), excluded)
+        cand_keys = {(c["repo"], c["issue"]) for c in data["candidates"]}
+        self.assertEqual(cand_keys, {(JA, 61), (RT, 60)})
+
+    def test_multi_repo_bad_repo_type_errors(self):
+        proc = self._run_text('{"repos": [{"repo": 5, "issues": []}]}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("repos[0].repo", data["error"])
+
+    def test_multi_repo_repos_not_list_errors(self):
+        proc = self._run_text('{"repos": {"not": "a list"}}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("repos", data["error"])
+
+    def test_multi_repo_bad_issue_number_errors(self):
+        proc = self._run_text(
+            '{"repos": [{"repo": "o/r", "issues": [{"title": "no num"}]}]}'
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("repos[0].issues[0]", data["error"])
+
+    def test_effort_samples_not_applied_in_multi_repo_offline(self):
+        # Effort learning is repo-calibrated: a top-level effort_samples must
+        # NOT be applied across a genuine multi-repo (2+) offline scan (uniform
+        # with the gh-path single-repo guard) — effort_model is null, visible.
+        samples = [
+            {"body_len": 100 * i, "changed_lines": 50 * i, "changed_files": i,
+             "criteria": 0, "review_rounds": 0, "hours_to_merge": None}
+            for i in range(1, 12)
+        ]
+        bundle = json.dumps({
+            "effort_samples": samples,
+            "repos": [
+                {"repo": JA, "issues": [{"number": 1, "title": "a", "body": "b"}],
+                 "open_pr_numbers": [], "recent_merges": []},
+                {"repo": RT, "issues": [{"number": 1, "title": "c", "body": "d"}],
+                 "open_pr_numbers": [], "recent_merges": []},
+            ],
+        })
+        proc = self._run_text(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNone(json.loads(proc.stdout)["effort_model"])  # not applied
+
+    def test_effort_samples_applied_in_single_repo_offline(self):
+        # The single-repo offline shape keeps the learned model (back-compat
+        # with #529's offline effort path).
+        samples = [
+            {"body_len": 100 * i, "changed_lines": 50 * i, "changed_files": i,
+             "criteria": 0, "review_rounds": 0, "hours_to_merge": None}
+            for i in range(1, 12)
+        ]
+        bundle = json.dumps({
+            "effort_samples": samples,
+            "issues": [{"number": 1, "title": "a", "body": "b"}],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        })
+        proc = self._run_text(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNotNone(json.loads(proc.stdout)["effort_model"])  # applied
+
+    def test_malformed_effort_samples_errors_even_in_multi_repo(self):
+        # The samples are validated regardless of repo shape — a malformed one
+        # errors (exit 2) even when it would not be applied.
+        proc = self._run_text(
+            '{"effort_samples": [{"body_len": "x"}], "repos": ['
+            '{"repo": "o/r", "issues": [], "open_pr_numbers": [], '
+            '"recent_merges": []}]}'
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        self.assertIn("effort_samples", json.loads(proc.stdout)["error"])
+
+    def test_repo_arg_is_repeatable(self):
+        # `--repo` uses action=append; two of them must parse to a 2-list and
+        # reach the (mocked) fetchers once each, then scan_repos over both.
+        calls = []
+
+        def _fake_issues(repo, limit=wds.DEFAULT_OPEN_LIMIT):
+            calls.append(repo)
+            return []
+
+        with mock.patch.object(wds, "fetch_open_issues", _fake_issues), \
+             mock.patch.object(wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
+             mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []):
+            rc = wds.main(["--repo", JA, "--repo", RT])
+        self.assertEqual(calls, [JA, RT])
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+
+
+class TestCrossRepoOrderIndependence(unittest.TestCase):
+    """Regression: a leading cross ref must not hide a trailing home `#N`
+    (and vice versa). One shared run isolator feeds both extractors, so order
+    inside a mixed run is irrelevant."""
+
+    def test_home_ref_after_cross_ref_blocking(self):
+        # cross-first: `Blocked by RT#2, #1` — home `#1` must still be found.
+        text = f"Blocked by {RT}#2, #1"
+        self.assertEqual(wds.extract_blocking_refs(text, is_epic=False), [1])
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(text, is_epic=False), [(RT, 2)]
+        )
+
+    def test_home_ref_after_cross_ref_in_scan_excludes(self):
+        # ja#9 `Blocked by RT#2, #1` with home #1 open → must be excluded.
+        ja = {
+            "repo": JA,
+            "issues": [
+                _issue(9, body=f"Blocked by {RT}#2, #1"),
+                _issue(1, body="open home dep"),
+            ],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        }
+        result = wds.scan_repos([ja], wds.ScanConfig())
+        excluded = {e["issue"] for e in result["excluded_blocked"]}
+        self.assertIn(9, excluded)
+
+    def test_recent_merge_home_close_after_cross_close(self):
+        # cross-first close: `Closes RT#81, #80` must still capture home #80.
+        self.assertEqual(wds._pr_close_refs(f"Closes {RT}#81, #80"), {80})
+
+    def test_recent_merge_home_close_after_cross_in_scan(self):
+        # A home merge `Closes RT#81, #80` unblocks a dep on home #80.
+        bundle = {
+            "repo": JA,
+            "issues": [_issue(7, body="Depends on #80")],
+            "open_pr_numbers": [],
+            "recent_merges": [
+                {"number": 900, "title": "x", "body": f"Closes {RT}#81, #80"}
+            ],
+        }
+        result = wds.scan_repos([bundle], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 7)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+
+
+class TestSingleRepoBackCompat(unittest.TestCase):
+    """A single-repo scan keys candidates as the home repo (`repo: null`,
+    home blocking_refs as bare ints) even when `--repo` names it explicitly —
+    the original `scan()` contract (design §5.1 / §10)."""
+
+    def _run_main_capture(self, argv, issue):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(
+            wds, "fetch_open_issues", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: [issue]
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", lambda r, k: []
+        ):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue())
+
+    def test_single_explicit_repo_keys_as_null(self):
+        rc, data = self._run_main_capture(["--repo", JA], _issue(1, body="b"))
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNone(data["candidates"][0]["repo"])
+        self.assertIsNone(data["recommendation"]["repo"])
+
+    def test_single_explicit_repo_home_blocking_refs_are_ints(self):
+        # home blocker `#5` open → excluded with bare int [5], not "JA#5".
+        issue = _issue(10, body="Blocked by #5")
+        dep = _issue(5, body="open")
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(
+            wds, "fetch_open_issues", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: [issue, dep]
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", lambda r, k: []
+        ):
+            with redirect_stdout(buf):
+                wds.main(["--repo", JA])
+        data = json.loads(buf.getvalue())
+        excl = {e["issue"]: e for e in data["excluded_blocked"]}
+        self.assertEqual(excl[10]["blocking_refs"], [5])
+
+    def test_duplicate_repo_arg_fetched_once(self):
+        # `--repo JA --repo JA` de-dups → JA fetched once, single-repo (null).
+        calls = []
+        with mock.patch.object(
+            wds, "fetch_open_issues",
+            lambda r, limit=wds.DEFAULT_OPEN_LIMIT: (calls.append(r) or [_issue(1, body="b")]),
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", lambda r, k: []
+        ):
+            import io
+            from contextlib import redirect_stdout
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                wds.main(["--repo", JA, "--repo", JA])
+            data = json.loads(buf.getvalue())
+        self.assertEqual(calls, [JA])  # fetched once, not twice
+        self.assertEqual(data["candidate_count"], 1)
+        self.assertIsNone(data["candidates"][0]["repo"])
+
+
+class TestSingleRepoSelfReferenceKeying(unittest.TestCase):
+    """Round-2 regression: a single-repo scan keys by the *real* repo (so a
+    self-reference by full name resolves) while still *displaying* as home
+    (`repo: null`, int blocking_refs) via collapse_repo (design §10)."""
+
+    def _bundle(self, repo, issues, merges=None):
+        return {
+            "repo": repo,
+            "issues": issues,
+            "open_pr_numbers": [],
+            "recent_merges": merges or [],
+        }
+
+    def test_self_ref_full_name_excludes_when_open(self):
+        # `Blocked by JA#5` in a JA scan, #5 open → blocked (keyed by real JA),
+        # displayed as home: repo null, blocking_refs int, note `#5 ...`.
+        b = self._bundle(
+            JA,
+            [_issue(10, body=f"Blocked by {JA}#5"), _issue(5, body="open")],
+        )
+        result = wds.scan_repos([b], wds.ScanConfig(), collapse_repo=JA)
+        excl = {e["issue"]: e for e in result["excluded_blocked"]}
+        self.assertIn(10, excl)
+        self.assertIsNone(excl[10]["repo"])  # displayed as home
+        self.assertEqual(excl[10]["blocking_refs"], [5])  # int, not "JA#5"
+        self.assertNotIn(10, {c["issue"] for c in result["candidates"]})
+
+    def test_self_ref_recent_merge_unblocks(self):
+        # `Depends on JA#80` + a JA merge `Closes JA#80` → unblocked (keyed
+        # real), displayed home.
+        b = self._bundle(
+            JA,
+            [_issue(7, body=f"Depends on {JA}#80")],
+            merges=[{"number": 900, "title": "x", "body": f"Closes {JA}#80"}],
+        )
+        result = wds.scan_repos([b], wds.ScanConfig(), collapse_repo=JA)
+        cand = next(c for c in result["candidates"] if c["issue"] == 7)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+        self.assertIsNone(cand["repo"])  # displayed home
+
+    def test_collapse_does_not_affect_other_repo_ref(self):
+        # A cross ref to a *different* repo in a collapsed single scan still
+        # renders as "owner/repo#N" and carries the un-scanned signal.
+        b = self._bundle(JA, [_issue(71, body=f"Blocked by {RT}#9")])
+        result = wds.scan_repos([b], wds.ScanConfig(), collapse_repo=JA)
+        cand = result["candidates"][0]
+        self.assertIsNone(cand["repo"])
+        self.assertEqual(cand["blocking_refs"], [f"{RT}#9"])  # not collapsed
+        self.assertTrue(any("un-scanned" in s for s in cand["signals"]))
+
+    def test_multi_repo_not_collapsed(self):
+        # collapse_repo is None for a genuine multi-repo scan → real repos kept.
+        ja = self._bundle(JA, [_issue(1, body="b")])
+        rt = self._bundle(RT, [_issue(1, body="b")])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig(), collapse_repo=None)
+        repos = {c["repo"] for c in result["candidates"]}
+        self.assertEqual(repos, {JA, RT})
+
+
+class TestDuplicateRepoBundleDedup(unittest.TestCase):
+    """A repo bundle appearing twice (offline `repos:[A, A]`) must not
+    double-count candidates / excluded entries."""
+
+    def test_duplicate_bundle_dedups_candidates(self):
+        b = {
+            "repo": JA,
+            "issues": [_issue(1, body="b"), _issue(2, body="Blocked by #3")],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        }
+        dep = {"repo": JA, "issues": [_issue(3, body="open")], "open_pr_numbers": [], "recent_merges": []}
+        result = wds.scan_repos([b, dict(b), dep], wds.ScanConfig())
+        keys = [(c["repo"], c["issue"]) for c in result["candidates"]]
+        self.assertEqual(keys.count((JA, 1)), 1)  # not duplicated
+        self.assertEqual(result["candidate_count"], len(set(keys)))
+        excl_keys = [(e["repo"], e["issue"]) for e in result["excluded_blocked"]]
+        self.assertEqual(excl_keys.count((JA, 2)), 1)  # excluded not duplicated
+
+
+class TestAllRegistryRepos(unittest.TestCase):
+    """`--all-registry-repos` resolves the repo set in-process (Issue #829).
+
+    The flag exists so no caller has to word-split a `--format flags`
+    string: zsh (the org panes' login shell) leaves an unquoted expansion
+    intact, so the old `scan $REPO_FLAGS` reached argparse as ONE argument
+    and every worker-close scan died with exit 2. These lock the three
+    properties that make the new path shell-proof and non-silent: the repos
+    come from the registry, a resolution failure is fatal (never a
+    fall-through to the implicit current-repo scan), and the resolver's
+    audit lands in the output on both the success and the failure path."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        (self.root / "registry").mkdir()
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _write_registry(self, rows):
+        lines = [
+            "# Projects Registry",
+            "",
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [f"| {row} |" for row in rows]
+        (self.root / "registry" / "projects.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def _run(self, argv, issues_by_repo=None):
+        """Run main() with the fetchers mocked; return (rc, json, fetched)."""
+        fetched = []
+
+        def _issues(repo, limit=wds.DEFAULT_OPEN_LIMIT):
+            fetched.append(repo)
+            return (issues_by_repo or {}).get(repo, [])
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(wds, "fetch_open_issues", _issues), \
+             mock.patch.object(
+                 wds, "fetch_open_pr_numbers",
+                 lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
+             mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue()), fetched
+
+    def test_registry_repos_are_scanned(self):
+        self._write_registry(
+            [
+                f"ja | ja | https://github.com/{JA} | d | x |",
+                f"rt | rt | https://github.com/{RT} | d | x |",
+            ]
+        )
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)],
+            {JA: [_issue(1, body="b")]},
+        )
+        self.assertEqual(fetched, [JA, RT])  # one fetch per resolved repo
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(data["repo_resolution"]["repos"], [JA, RT])
+        # 2+ repos → a genuine cross-repo scan, so candidates keep real names.
+        self.assertEqual(data["candidates"][0]["repo"], JA)
+
+    def test_opted_out_row_is_not_scanned_but_is_audited(self):
+        self._write_registry(
+            [
+                f"ja | ja | https://github.com/{JA} | d | x |",
+                f"rt | rt | https://github.com/{RT} | d | x | no",
+            ]
+        )
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(fetched, [JA])
+        self.assertEqual(
+            [r["repo"] for r in data["repo_resolution"]["opted_out"]], [RT]
+        )
+
+    def test_resolution_failure_is_fatal_and_never_falls_back(self):
+        # Empty registry → resolver error. The scan must NOT quietly degrade
+        # to the implicit gh-current-repo scan (that is exactly the silent
+        # skip Issue #829 is about): no fetch, exit 2, error explains why.
+        self._write_registry([])
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(fetched, [])
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("repo resolution failed", data["error"])
+        # The audit survives onto the error envelope.
+        self.assertEqual(data["repo_resolution"]["repos"], [])
+        self.assertIn("error", data["repo_resolution"])
+
+    def test_trigger_is_preserved_on_resolution_failure(self):
+        # The delivery layer records `generated_for`; a resolution failure
+        # must not relabel a worker_close scan as "manual".
+        self._write_registry([])
+        rc, data, _ = self._run(
+            [
+                "--all-registry-repos",
+                "--claude-org-root", str(self.root),
+                "--trigger", "worker_close",
+            ]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(data["generated_for"], "worker_close")
+
+    def test_conflicts_with_explicit_repo(self):
+        self._write_registry([f"ja | ja | https://github.com/{JA} | d | x |"])
+        rc, data, fetched = self._run(
+            [
+                "--all-registry-repos",
+                "--claude-org-root", str(self.root),
+                "--repo", RT,
+            ]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIn("mutually exclusive", data["error"])
+
+    def test_conflicts_with_from_file(self):
+        self._write_registry([f"ja | ja | https://github.com/{JA} | d | x |"])
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_reg_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write('{"issues": [], "open_pr_numbers": [], "recent_merges": []}')
+            rc, data, _ = self._run(
+                [
+                    "--all-registry-repos",
+                    "--claude-org-root", str(self.root),
+                    "--from-file", name,
+                ]
+            )
+        finally:
+            os.unlink(name)
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertIn("--from-file", data["error"])
+
+    def test_unreadable_registry_keeps_the_audited_shape(self):
+        # `resolve_repos()` *raises* when the registry exists but cannot be
+        # read (permission denied / undecodable bytes / a directory in its
+        # place). Propagating that would land in main's generic handler with
+        # repo_resolution still None — the fixed schema broken on exactly the
+        # failure that needs explaining. A directory reproduces it portably
+        # (read_text -> IsADirectoryError, an OSError) without chmod, which
+        # is a no-op for root and on Windows.
+        (self.root / "registry" / "projects.md").mkdir()
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIsNotNone(data["repo_resolution"])
+        self.assertEqual(data["repo_resolution"]["repos"], [])
+        self.assertIn("failed to resolve repos", data["repo_resolution"]["error"])
+        self.assertIn("failed to resolve repos", data["error"])
+
+    def test_undecodable_registry_keeps_the_audited_shape(self):
+        # `UnicodeDecodeError` is a ValueError, NOT an OSError — so a catch
+        # listing only OSError still let this one through and produced
+        # `repo_resolution: null`. The wrapper's catch is class-wide for
+        # exactly this reason; this pins the case that proved it.
+        (self.root / "registry" / "projects.md").write_bytes(bytes([255]))
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIsNotNone(data["repo_resolution"])
+        self.assertIn("UnicodeDecodeError", data["repo_resolution"]["error"])
+
+    def test_repo_resolution_is_null_without_the_flag(self):
+        # One shape for the delivery layer: the key is always present.
+        rc, data, _ = self._run(["--repo", JA])
+        self.assertIsNone(data["repo_resolution"])
+
+    def test_flag_is_shell_independent_end_to_end(self):
+        # The regression itself: the same one-line command must resolve the
+        # same repo set under zsh and bash. Only the *argv shape* is under
+        # test, so the fetchers are skipped by asserting on the resolver
+        # (an empty registry → deterministic exit 2 with no network).
+        self._write_registry([])
+        cmd = (
+            f'{sys.executable} {SCRIPT} --all-registry-repos '
+            f'--claude-org-root {self.root} --trigger worker_close'
+        )
+        seen = {}
+        for shell in ("zsh", "bash"):
+            if shutil.which(shell) is None:
+                self.skipTest(f"{shell} not available")
+            proc = subprocess.run(
+                [shell, "-c", cmd], capture_output=True, text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(proc.returncode, wds.EXIT_ERROR, shell)
+            seen[shell] = json.loads(proc.stdout)
+        self.assertEqual(seen["zsh"], seen["bash"])
+        self.assertEqual(seen["zsh"]["generated_for"], "worker_close")
+
+
+# ----------------------------------------------------------------------
+# Two-track base_branch completion (Issue #830)
+# ----------------------------------------------------------------------
+
+KURA = "aainc/kura-data-aggregator-trial"
+
+# The real shapes behind Issue #830, captured from GitHub on 2026-08-06
+# (gh 2.74.0). Kept verbatim-ish so the regression reproduces the reported
+# case rather than an idealized version of it: PR #232 targets `develop`,
+# carries `Closes #231` in its body, and reports NO closingIssuesReferences
+# (GitHub only links closing issues for default-branch PRs) — which is why
+# Issue #231 was still `open` and got triaged as untouched.
+KURA_ISSUE_231 = {
+    "number": 231,
+    "title": "MCP トークン TTL 暫定値 (8h) を既定 900s へ戻す (refresh rotation の本番確認後)",
+    "body": "refresh token が本番で回ることを確認してから暫定 TTL を外す。",
+    "labels": [],
+    "createdAt": "2026-08-05T01:20:00Z",
+    "updatedAt": "2026-08-06T02:33:45Z",
+}
+KURA_PR_232 = {
+    "number": 232,
+    "title": "fix(kura): MCP アクセストークン TTL の暫定 8 時間を外し既定 900s へ戻す",
+    "body": (
+        "## 概要\n\n"
+        "#226 の後始末。refresh token (#228) が本番稼働していることを確認できたので、"
+        "#227 で入れた暫定 TTL を削除し、アプリ側の既定 900s へ戻す。\n\n"
+        "Closes #231\n"
+    ),
+    "baseRefName": "develop",
+    "mergedAt": "2026-08-06T02:33:45Z",
+}
+
+
+def _kura_bundle(**over):
+    bundle = {
+        "repo": KURA,
+        "issues": [KURA_ISSUE_231],
+        "open_pr_numbers": set(),
+        # The merge that finished #231 is also in the recent-merge window —
+        # that is what made `unblocked_by_recent_merge` fire and pushed the
+        # finished Issue to rank 1 (the reported symptom).
+        "recent_merges": [KURA_PR_232],
+        "base_branch": "develop",
+        "base_merges": [KURA_PR_232],
+    }
+    bundle.update(over)
+    return bundle
+
+
+class TestBaseBranchCompletion(unittest.TestCase):
+    """Issues finished by a merge into a declared non-default base branch are
+    excluded with a reason, not ranked first (Issue #830).
+
+    On a `base_branch=develop` repo GitHub's auto-close never fires, so the
+    Issue stays `open`; the pre-#830 scan read that as untouched AND lit up
+    `unblocked_by_recent_merge` off the very merge that completed it. Every
+    test here drives the pure core with fixture data — no `gh`, no network.
+    """
+
+    def _scan(self, bundles, **cfg):
+        config = wds.ScanConfig(
+            top_n=cfg.pop("top_n", 3),
+            free_panes=cfg.pop("free_panes", None),
+            trigger=cfg.pop("trigger", "post_merge"),
+        )
+        return wds.scan_repos(bundles, config, **cfg)
+
+    def test_pre_fix_symptom_without_base_branch(self):
+        # Pins the bug being fixed: with no base_branch configured, the
+        # completed Issue is not just present — it is rank 1, boosted by the
+        # merge that finished it. This is the state kura#231 was reported in.
+        result = self._scan(
+            [_kura_bundle(base_branch=None, base_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual(result["status"], "candidates_found")
+        top = result["candidates"][0]
+        self.assertEqual(top["issue"], 231)
+        self.assertEqual(top["rank"], 1)
+        self.assertTrue(top["unblocked_by_recent_merge"])
+        self.assertEqual(result["excluded_merged"], [])
+
+    def test_kura_231_is_excluded_with_a_reason(self):
+        # The fix: same input + `base_branch=develop` → not a candidate, and
+        # the exclusion names PR #232 and the branch it landed on.
+        result = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertEqual([c["issue"] for c in result["candidates"]], [])
+        self.assertEqual(result["status"], "no_candidates")
+        self.assertEqual(len(result["excluded_merged"]), 1)
+        entry = result["excluded_merged"][0]
+        self.assertEqual(entry["issue"], 231)
+        self.assertIsNone(entry["repo"])  # collapsed single-repo display
+        self.assertEqual(entry["base_branch"], "develop")
+        self.assertEqual(entry["closed_by_pr"], 232)
+        self.assertEqual(entry["merged_at"], "2026-08-06T02:33:45Z")
+        self.assertIn("#232", entry["note"])
+        self.assertIn("develop", entry["note"])
+        # Not silent, and not conflated with the dependency exclusion枠.
+        self.assertEqual(result["excluded_blocked"], [])
+
+    def test_excluded_issue_is_not_recommended(self):
+        # The recommendation is derived from the ranked list, so a completed
+        # Issue must not reappear there either.
+        result = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertIsNone(result["recommendation"])
+
+    def test_base_branch_scan_audit_is_emitted(self):
+        result = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertEqual(
+            result["base_branch_scan"],
+            [
+                {
+                    "repo": None,
+                    "base_branch": "develop",
+                    "merged_prs_scanned": 1,
+                    "closed_issue_count": 1,
+                }
+            ],
+        )
+        self.assertEqual(result["base_branch_signals"], [])
+
+    def test_repo_without_base_branch_is_unchanged(self):
+        # Acceptance criterion: projects with no base_branch behave exactly
+        # as before, even when a merged PR closing the Issue is in the data.
+        result = self._scan(
+            [
+                {
+                    "repo": "o/plain",
+                    "issues": [_issue(7, body="b")],
+                    "open_pr_numbers": set(),
+                    "recent_merges": [{"number": 8, "body": "Closes #7"}],
+                }
+            ],
+            collapse_repo="o/plain",
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [7])
+        self.assertEqual(result["excluded_merged"], [])
+        self.assertEqual(result["base_branch_scan"], [])
+
+    def test_mere_reference_does_not_exclude(self):
+        # `Refs #N` is a mention, not a completion — excluding on it would
+        # drop live work (the §11-3 over-matching risk, applied to merges).
+        pr = dict(KURA_PR_232, body="Refs #231\n")
+        result = self._scan(
+            [_kura_bundle(base_merges=[pr], recent_merges=[pr])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+
+    def test_negated_close_keyword_does_not_exclude(self):
+        pr = dict(KURA_PR_232, body="This does not close #231 yet.\n")
+        result = self._scan(
+            [_kura_bundle(base_merges=[pr], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+
+    def test_merge_targeting_another_branch_is_not_counted(self):
+        # An offline bundle can carry unfiltered merges; a baseRefName that
+        # contradicts the configured branch must not widen the exclusion, and
+        # the mismatch is reported rather than dropped.
+        pr = dict(KURA_PR_232, baseRefName="feature/x")
+        result = self._scan(
+            [_kura_bundle(base_merges=[pr], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+        self.assertTrue(
+            any("target a different branch" in s
+                for s in result["base_branch_signals"]),
+            result["base_branch_signals"],
+        )
+
+    def test_issue_created_after_the_merge_is_not_excluded(self):
+        # Sanity guard: a merge cannot have completed an Issue that did not
+        # exist yet (number reuse / a hand-written `Closes` typo).
+        issue = dict(KURA_ISSUE_231, createdAt="2026-08-07T00:00:00Z")
+        result = self._scan(
+            [_kura_bundle(issues=[issue], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+        self.assertTrue(
+            any("closing link ignored" in s
+                for s in result["base_branch_signals"]),
+            result["base_branch_signals"],
+        )
+
+    def test_missing_created_at_still_excludes(self):
+        # The guard abstains when it cannot compare, rather than inventing an
+        # ordering that would resurrect the bug.
+        issue = {k: v for k, v in KURA_ISSUE_231.items() if k != "createdAt"}
+        result = self._scan(
+            [_kura_bundle(issues=[issue], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["excluded_merged"][0]["issue"], 231)
+
+    def test_newest_closing_merge_is_the_one_cited(self):
+        older = {
+            "number": 100,
+            "title": "t",
+            "body": "Closes #231",
+            "baseRefName": "develop",
+            "mergedAt": "2026-07-01T00:00:00Z",
+        }
+        result = self._scan(
+            [_kura_bundle(base_merges=[older, KURA_PR_232], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual(result["excluded_merged"][0]["closed_by_pr"], 232)
+
+    def test_dependent_unblocks_when_its_blocker_was_merged(self):
+        # A completed Issue is still `open` on GitHub, so leaving it in the
+        # open-blocker set would keep its dependents excluded as blocked by
+        # finished work. It unblocks — and says why.
+        dependent = _issue(240, body="Blocked by #231")
+        result = self._scan(
+            [_kura_bundle(issues=[KURA_ISSUE_231, dependent])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [240])
+        self.assertEqual(result["excluded_blocked"], [])
+        signals = result["candidates"][0]["signals"]
+        self.assertTrue(
+            any("#231" in s and "#232" in s and "develop" in s
+                for s in signals),
+            signals,
+        )
+
+    def test_cross_repo_close_from_a_base_branch_merge(self):
+        # A develop PR that closes another scanned repo's Issue keeps that
+        # Issue's repo, and the exclusion cites the merging repo's PR.
+        pr = dict(
+            KURA_PR_232, body=f"Closes suisya-systems/claude-org-ja#77\n"
+        )
+        other = {
+            "repo": "suisya-systems/claude-org-ja",
+            "issues": [_issue(77, body="b")],
+            "open_pr_numbers": set(),
+            "recent_merges": [],
+        }
+        result = self._scan(
+            [_kura_bundle(issues=[], base_merges=[pr], recent_merges=[]), other]
+        )
+        self.assertEqual(result["candidates"], [])
+        entry = result["excluded_merged"][0]
+        self.assertEqual(entry["repo"], "suisya-systems/claude-org-ja")
+        self.assertEqual(entry["issue"], 77)
+        self.assertEqual(entry["closed_by_pr"], f"{KURA}#232")
+
+    def test_cross_repo_close_matches_case_insensitively(self):
+        # GitHub slugs are case-insensitive and a PR author writes whatever
+        # casing they like, while the registry-driven scan set is lowercased.
+        # Missing on case alone would leave finished work in the list.
+        pr = dict(KURA_PR_232, body="Closes Suisya-Systems/Claude-Org-JA#77\n")
+        other = {
+            "repo": "suisya-systems/claude-org-ja",
+            "issues": [_issue(77, body="b")],
+            "open_pr_numbers": set(),
+            "recent_merges": [],
+        }
+        result = self._scan(
+            [_kura_bundle(issues=[], base_merges=[pr], recent_merges=[]), other]
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(
+            result["excluded_merged"][0]["repo"], "suisya-systems/claude-org-ja"
+        )
+
+    def test_origin_prefixed_and_padded_base_branch_cell(self):
+        # Registry cells are padded and an operator may write the ref the way
+        # git prints it; the scan compares against baseRefName either way.
+        result = self._scan(
+            [_kura_bundle(base_branch="  develop  ")], collapse_repo=KURA
+        )
+        self.assertEqual(result["excluded_merged"][0]["issue"], 231)
+
+    def test_scan_shim_accepts_base_branch_inputs(self):
+        result = wds.scan(
+            [KURA_ISSUE_231],
+            set(),
+            [KURA_PR_232],
+            wds.ScanConfig(top_n=3, free_panes=None, trigger="manual"),
+            base_branch="develop",
+            base_merges=[KURA_PR_232],
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["excluded_merged"][0]["closed_by_pr"], 232)
+
+    def test_scan_is_still_pure(self):
+        # Same input → same output (design §4 再現性契約).
+        a = self._scan([_kura_bundle()], collapse_repo=KURA)
+        b = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertEqual(a, b)
+
+
+class TestBaseBranchCompletionCli(unittest.TestCase):
+    """The `--from-file` / CLI surface of Issue #830."""
+
+    def _run(self, bundle, extra_argv=()):
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_bb_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(bundle, f)
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--from-file", name,
+                 *extra_argv],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        finally:
+            os.unlink(name)
+        return proc
+
+    def test_from_file_bundle_excludes_and_exits_0(self):
+        bundle = {
+            "repos": [
+                {
+                    "repo": KURA,
+                    "issues": [KURA_ISSUE_231],
+                    "open_pr_numbers": [],
+                    "recent_merges": [KURA_PR_232],
+                    "base_branch": "develop",
+                    "base_merges": [KURA_PR_232],
+                }
+            ]
+        }
+        proc = self._run(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_NO_CANDIDATES)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["candidates"], [])
+        self.assertEqual(data["excluded_merged"][0]["issue"], 231)
+
+    def test_base_merges_zero_also_disables_the_offline_path(self):
+        # "0 disables the check" has to mean the same thing offline: a bundle
+        # carrying its own base inputs must stop excluding once the caller
+        # switched the check off, or the flag lies about what it does.
+        bundle = {
+            "repos": [
+                {
+                    "repo": KURA,
+                    "issues": [KURA_ISSUE_231],
+                    "open_pr_numbers": [],
+                    "recent_merges": [],
+                    "base_branch": "develop",
+                    "base_merges": [KURA_PR_232],
+                }
+            ]
+        }
+        proc = self._run(bundle, ["--base-merges", "0"])
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        data = json.loads(proc.stdout)
+        self.assertEqual([c["issue"] for c in data["candidates"]], [231])
+        self.assertEqual(data["excluded_merged"], [])
+        self.assertEqual(data["base_branch_scan"], [])
+
+    def test_non_string_base_branch_is_a_pinpointed_error(self):
+        bundle = {"issues": [], "base_branch": 5}
+        proc = self._run(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("base_branch", data["error"])
+
+    def test_non_object_base_merge_row_is_a_pinpointed_error(self):
+        bundle = {"issues": [], "base_branch": "develop", "base_merges": ["x"]}
+        proc = self._run(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("base_merges[0]", data["error"])
+
+    def test_negative_base_merges_rejected(self):
+        proc = self._run({"issues": []}, ["--base-merges", "-1"])
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        self.assertIn("--base-merges must be >= 0", json.loads(proc.stdout)["error"])
+
+    def test_error_envelope_carries_the_new_keys(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        data = json.loads(proc.stdout)
+        for key in ("excluded_merged", "base_branch_scan", "base_branch_signals"):
+            self.assertIn(key, data)
+        self.assertIn("base_merges", data["input_truncated"])
+
+
+class TestFetchBaseBranchMerges(unittest.TestCase):
+    """The fetch window is merge-time-exact, not update-time-approximate."""
+
+    def test_overfetches_then_slices_by_merged_at(self):
+        # `gh pr list --limit` pages under `sort:updated-desc`, so an old
+        # merged PR with a fresh comment can crowd a just-merged closing PR
+        # off the page — and that is exactly the PR this check needs. Mirror
+        # fetch_recent_merges: over-fetch, then take the mergedAt top-K.
+        page = [
+            {"number": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "mergedAt": "2026-08-06T00:00:00Z"},
+            {"number": 3, "mergedAt": "2026-05-01T00:00:00Z"},
+        ]
+        seen = {}
+
+        def _fake(args):
+            seen["args"] = args
+            return list(page)
+
+        with mock.patch.object(wds, "_run_gh_json_list", _fake):
+            out = wds.fetch_base_branch_merges(KURA, "develop", 2)
+        self.assertEqual([p["number"] for p in out], [2, 3])
+        args = seen["args"]
+        self.assertIn("--base", args)
+        self.assertEqual(args[args.index("--base") + 1], "develop")
+        # The requested page is larger than the window it returns.
+        self.assertEqual(
+            args[args.index("--limit") + 1],
+            str(2 * wds._RECENT_MERGE_OVERFETCH),
+        )
+        # closingIssuesReferences is deliberately not requested (empty for
+        # non-default-branch PRs — measured; the closing keyword is the SoT).
+        self.assertNotIn(
+            "closingIssuesReferences", args[args.index("--json") + 1]
+        )
+
+
+class TestBaseBranchFromRegistry(unittest.TestCase):
+    """The registry (`base_branch` column) drives which repos get the check."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        (self.root / "registry").mkdir()
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _write_registry(self, rows):
+        lines = [
+            "# Projects Registry",
+            "",
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage "
+            "| base_branch |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        lines += [f"| {row} |" for row in rows]
+        (self.root / "registry" / "projects.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def _run(self, argv, issues_by_repo=None):
+        """main() with every fetcher mocked; returns (rc, json, base_calls)."""
+        base_calls = []
+
+        def _base(repo, branch, limit):
+            base_calls.append((repo, branch, limit))
+            return [KURA_PR_232] if branch == "develop" else []
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(
+                 wds, "fetch_open_issues",
+                 lambda r, limit=wds.DEFAULT_OPEN_LIMIT:
+                     (issues_by_repo or {}).get(r, [])), \
+             mock.patch.object(
+                 wds, "fetch_open_pr_numbers",
+                 lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
+             mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []), \
+             mock.patch.object(wds, "fetch_base_branch_merges", _base), \
+             mock.patch.object(wds, "build_effort_model", lambda r, n: None):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue()), base_calls
+
+    def test_explicit_repo_still_gets_the_registry_base_branch(self):
+        # Naming the repo by hand must not reintroduce the bug: the registry
+        # is the SoT for base_branch regardless of how the repo set was built.
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | develop |"]
+        )
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        self.assertEqual(calls, [(KURA, "develop", wds.DEFAULT_BASE_MERGE_LIMIT)])
+        self.assertEqual(data["excluded_merged"][0]["issue"], 231)
+
+    def test_all_registry_repos_uses_the_resolver_map(self):
+        self._write_registry(
+            [
+                f"kura | kura | https://github.com/{KURA} | d | x |  | develop |",
+                f"ja | ja | https://github.com/{JA} | d | x |  |  |",
+            ]
+        )
+        rc, data, calls = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        # Only the base_branch row is fetched; the unset row is untouched.
+        self.assertEqual(calls, [(KURA, "develop", wds.DEFAULT_BASE_MERGE_LIMIT)])
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        self.assertEqual(data["excluded_merged"][0]["repo"], KURA)
+        self.assertEqual(
+            data["repo_resolution"]["base_branches"], {KURA: "develop"}
+        )
+
+    def test_origin_prefixed_registry_cell_is_normalized(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | origin/develop |"]
+        )
+        _, _, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [(KURA, "develop", wds.DEFAULT_BASE_MERGE_LIMIT)])
+
+    def test_base_merges_zero_disables_the_check(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | develop |"]
+        )
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root),
+             "--base-merges", "0"],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(data["excluded_merged"], [])
+
+    def test_unset_base_branch_column_scans_nothing(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | - |"]
+        )
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+
+    def test_missing_registry_degrades_without_failing(self):
+        # No registry at all: the scan still runs (pre-#830 behaviour), it
+        # just cannot exclude anything this way — and says so, because
+        # "nothing to exclude" and "never looked" must not read the same.
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertTrue(
+            any("registry not found" in s for s in data["base_branch_signals"]),
+            data["base_branch_signals"],
+        )
+
+    def test_unreadable_registry_is_reported_not_swallowed(self):
+        (self.root / "registry" / "projects.md").write_bytes(bytes([255]))
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertTrue(
+            any("base-branch completion check skipped" in s
+                for s in data["base_branch_signals"]),
+            data["base_branch_signals"],
+        )
+
+    def test_truncated_base_merge_window_is_flagged(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | develop |"]
+        )
+        rc, data, _ = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root),
+             "--base-merges", "1"],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertTrue(data["input_truncated"]["base_merges"])
 
 
 if __name__ == "__main__":
