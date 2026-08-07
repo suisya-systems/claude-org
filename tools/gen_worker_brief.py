@@ -31,6 +31,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 from string import Template
@@ -119,6 +120,8 @@ def validate(config: dict[str, Any]) -> None:
     task = config["task"]
     if "issue_url" in task and not isinstance(task["issue_url"], str):
         raise ConfigError("task.issue_url must be a string")
+    if "base_ref" in task and not isinstance(task["base_ref"], str):
+        raise ConfigError("task.base_ref must be a string")
     if "closes_issue" in task:
         v = task["closes_issue"]
         if isinstance(v, bool) or not isinstance(v, int):
@@ -290,6 +293,20 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
         "task_id": task["id"],
         "task_description": task["description"].strip(),
         "task_branch": task["branch"],
+        # Issue #808: the ref the worker's Codex self-review diffs against.
+        # Defaults to ``origin/main`` so every pre-#808 brief renders
+        # byte-identically; ``gen_delegate_payload`` overwrites it with
+        # ``origin/<base_branch>`` when the project (or --base-ref) configures
+        # a different cut point, otherwise the review would treat all of the
+        # base branch's own commits as this task's diff.
+        #
+        # ``shlex.quote`` because this lands inside a ```bash fence the worker
+        # copy-pastes, and git permits shell metacharacters in ref names
+        # (``foo;id``, ``foo$(id)`` are valid branch names), so a raw
+        # interpolation would turn a registry cell into command execution
+        # (Codex Round 2 Blocker). Ordinary names quote to themselves, so the
+        # default rendering is unchanged.
+        "task_base_ref": shlex.quote(task.get("base_ref") or "origin/main"),
         "task_verification_depth": task["verification_depth"],
         "task_commit_prefix": task["commit_prefix"],
         "task_issue_url": task.get("issue_url", ""),
@@ -614,6 +631,11 @@ def _main_from_task(argv: list[str]) -> int:
         candidate = claude_org_root / ".state" / "state.db"
         state_db_path = candidate if candidate.exists() else None
 
+    # Imported lazily (same rationale as build_config_from_task's own
+    # import): legacy --config callers shouldn't pay for it. Needed here
+    # only to name ResolveError in the except clause below.
+    from tools import resolve_worker_layout as rwl
+
     try:
         config, layout = build_config_from_task(
             task_id=args.task_id,
@@ -638,7 +660,15 @@ def _main_from_task(argv: list[str]) -> int:
             workers_dir=args.workers_dir,
         )
         output = render(config)
-    except (ConfigError, FileNotFoundError) as e:
+    except (ConfigError, FileNotFoundError, rwl.ResolveError) as e:
+        # ResolveError is validate_task_id()'s (and the rest of the layout
+        # resolver's) input-rejection channel -- operator error, not a bug.
+        # Without this in the except tuple, a bad --task-id (e.g. containing
+        # a space) surfaced as a raw traceback instead of the same one-line
+        # ``error: ...`` shape ConfigError/FileNotFoundError already get
+        # here. gen_delegate_payload.py's ``_cmd_preview``/``_cmd_apply``
+        # already give ResolveError this same one-line treatment (there via
+        # ``raise SystemExit(f"error: {e}")``).
         print(f"error: {e}", file=sys.stderr)
         return 2
 
