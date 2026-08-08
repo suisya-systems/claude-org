@@ -30,8 +30,17 @@
 #     **wezterm**（tmux ではない）ので本スクリプトは適用外。wezterm 版の同等品は
 #     follow-up とする（本スクリプトでは実装しない）。
 #   - broker daemon の HTTP / MCP は一切叩かない（純 tmux で役割解決する）。
-#   - renga フレーム（単一画面タイリング）では「detached session へ attach し直す」
-#     概念が写像しないので適用外。renga では画面そのものを直接見ればよい。
+#   - renga transport（ORG_TRANSPORT=renga）では、ペインが所属タブ内のタイルで別々の
+#     detached tmux session に分かれず「detached session へ attach し直す」概念が
+#     写像しないので適用外。org は全ペインを同一タブへ置くので（これは renga の性質では
+#     なく org 側の配置規則で、規範の正本は契約
+#     docs/contracts/backend-interface-contract.md の §4.2 SINGLE-TAB MUST）、その org の
+#     タブを表示している間は画面をそのまま見ればよい。別のタブを表示している間は org の
+#     ペインが視界に入らないため、タブを切り替えるか renga の org サイドバー（全タブ横断で
+#     タブとペインを一覧するパネル）から該当ペインを選ぶ。
+#     この適用外は transport が renga の場合に限る: 外側フレームが renga でも
+#     ORG_TRANSPORT が broker の構成では detached tmux session が実在するため本スクリプトは
+#     適用される（その場合に必要なのは下記「注意」の Ctrl+B 衝突回避）。
 #
 # 注意:
 #   `tmux` は zsh + oh-my-zsh の tmux プラグインで alias 化けするため、本スクリプト内の
@@ -42,6 +51,14 @@
 #   しまう）。本ビューワーを止めるには、まず `Ctrl-b d` で **detach** してから、再探索プロンプト
 #   に戻ったところで Ctrl-C を押す（detach 中 / degraded 中 / socket 不通中の sleep ループでは
 #   Ctrl-C が trap に届きクリーンに終了する）。busy-loop は各分岐の sleep で防いでいる。
+#
+#   キー表記: 本スクリプトが案内する `Ctrl-b` は tmux prefix の **既定値** であり、prefix を
+#   変更している場合は設定した prefix に読み替える。加えて、**本ビューワーを renga の画面の中で
+#   動かす場合は先に回避策が要る**: renga の org サイドバーは既定で有効なあいだ `Ctrl+B`
+#   （tmux prefix `Ctrl-b` と同じ物理入力）を消費して PTY へ渡さないため、detach 打鍵が内側
+#   tmux に届かず、上記の終了手順が実行不能になる。回避策は renga 設定 `[ui] org_sidebar = "off"`
+#   か内側 tmux の prefix 変更の 2 つ。詳細は docs/operations/dispatcher-view.md の
+#   「外側フレームが renga の場合」を参照。
 # ============================================================================
 
 set -u
@@ -156,6 +173,11 @@ attach 中のキー操作 / 終了:
   終了するには   まず Ctrl-b d で detach し、再探索プロンプトに戻ってから Ctrl-C を押す。
                 （attach 中の Ctrl-C は tmux / dispatcher ペイン側に渡り、本ビューワーは
                  止まらない。--rw では dispatcher へ ^C を送ってしまうので特に注意）
+  Ctrl-b は tmux prefix の既定値。変更している場合は設定した prefix に読み替える。
+  renga の中で本ビューワーを動かす場合は、org サイドバー（既定で有効）が Ctrl+B を
+  消費して detach 打鍵が内側 tmux に届かないため、先に renga 設定 [ui] org_sidebar = "off"
+  か tmux prefix の変更が要る。詳細は docs/operations/dispatcher-view.md の
+  「外側フレームが renga の場合」。
 
 注意:
   broker の Windows backend は wezterm（tmux でない）ため本スクリプトは tmux backend 専用。
@@ -197,6 +219,7 @@ if [ "$ATTACH_RO" -eq 0 ]; then
 fi
 printf 'org-dispatcher-view 起動（socket=%s, mode=%s）。終了は detach (Ctrl-b d) 後にプロンプトで Ctrl-C。\n' \
 	"$SOCKET" "$([ "$ATTACH_RO" -eq 1 ] && echo read-only || echo read-write)" >&2
+printf '   ※ Ctrl-b は tmux prefix の既定値。変更時は設定した prefix に読み替え（renga の中で使う場合は --help の注記を参照）。\n' >&2
 
 while [ "$RUNNING" -eq 1 ]; do
 	session="$(discover_dispatcher)"
@@ -219,7 +242,7 @@ while [ "$RUNNING" -eq 1 ]; do
 
 	# attach 直前のヘッダ（何に attach しているか）。
 	mode_label="$([ "$ATTACH_RO" -eq 1 ] && echo 'read-only' || echo 'read-write')"
-	printf '>>> dispatcher を発見: session=%s に %s attach します（抜ける: Ctrl-b d、その後プロンプトで Ctrl-C で終了）\n' \
+	printf '>>> dispatcher を発見: session=%s に %s attach します（抜ける: Ctrl-b d、その後プロンプトで Ctrl-C で終了。Ctrl-b は既定 prefix）\n' \
 		"$session" "$mode_label" >&2
 
 	# read-only attach は detach / セッション死亡までブロックする。
