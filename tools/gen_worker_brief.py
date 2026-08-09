@@ -31,6 +31,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 from string import Template
@@ -47,6 +48,18 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 VALID_PATTERNS = {"A", "B", "C"}
 VALID_ROLES = {"default", "claude-org-self-edit", "doc-audit"}
 VALID_DEPTHS = {"full", "minimal"}
+
+# Issue #909: where the worker's pane sits relative to the Secretary's tab.
+# ``same_tab`` is the default dispatch path (spawn-flow 3-1a..3-5) and keeps
+# the rendered brief byte-identical to the pre-#909 output; ``background_tab``
+# is the narrow spawn-flow 3-1d exception, where peer *names* do not resolve
+# (they only resolve inside the sender's tab), so the brief must carry the
+# Secretary's numeric pane id instead.
+VALID_PLACEMENTS = {"same_tab", "background_tab"}
+DEFAULT_PLACEMENT = "same_tab"
+DEFAULT_REPORT_TARGET = "secretary"
+# Numeric pane id: the only address form that reaches across tabs.
+_NUMERIC_PANE_ID_RE = re.compile(r"^[0-9]+$")
 
 REQUIRED_STRING_KEYS = {
     "task": ("id", "description", "verification_depth", "branch", "commit_prefix"),
@@ -119,6 +132,8 @@ def validate(config: dict[str, Any]) -> None:
     task = config["task"]
     if "issue_url" in task and not isinstance(task["issue_url"], str):
         raise ConfigError("task.issue_url must be a string")
+    if "base_ref" in task and not isinstance(task["base_ref"], str):
+        raise ConfigError("task.base_ref must be a string")
     if "closes_issue" in task:
         v = task["closes_issue"]
         if isinstance(v, bool) or not isinstance(v, int):
@@ -152,6 +167,73 @@ def validate(config: dict[str, Any]) -> None:
             raise ConfigError("[parallel] must be a TOML table")
         if "notes" in parallel and not isinstance(parallel["notes"], str):
             raise ConfigError("parallel.notes must be a string")
+
+    validate_report(config.get("report"))
+
+
+def validate_report(report: Any) -> None:
+    """Validate the optional ``[report]`` table (Issue #909).
+
+    Absent table == the same-tab default, which renders exactly the
+    pre-#909 brief. ``placement = "background_tab"`` REQUIRES a numeric
+    ``target`` because a background-tab worker cannot resolve peer names
+    at all (renga: names only resolve inside the sender's tab), so
+    accepting a name there would regenerate the very silent-drop this
+    field exists to close.
+    """
+    if report is None:
+        return
+    if not isinstance(report, dict):
+        raise ConfigError("[report] must be a TOML table")
+
+    placement = report.get("placement", DEFAULT_PLACEMENT)
+    if not isinstance(placement, str) or placement not in VALID_PLACEMENTS:
+        raise ConfigError(
+            f"report.placement must be one of {sorted(VALID_PLACEMENTS)}, "
+            f"got {placement!r}"
+        )
+
+    target = report.get("target")
+    if target is not None and (not isinstance(target, str) or not target):
+        raise ConfigError("report.target must be a non-empty string")
+
+    if placement == DEFAULT_PLACEMENT:
+        # Codex Round 1 P2: a custom target under the same-tab default would
+        # render the brief against that target while the DELEGATE body still
+        # advertises ``窓口ペイン名: secretary`` — two artifacts of the same
+        # dispatch disagreeing about where the worker reports. The field
+        # exists for the background-tab branch only, so reject the
+        # combination instead of silently producing the split.
+        if target is not None and target != DEFAULT_REPORT_TARGET:
+            raise ConfigError(
+                f"report.target={target!r} requires report.placement = "
+                "'background_tab'; the same-tab dispatch always reports to "
+                f"{DEFAULT_REPORT_TARGET!r}"
+            )
+
+    if placement == "background_tab":
+        if target is None:
+            raise ConfigError(
+                "report.target is required when report.placement = "
+                "'background_tab' (the Secretary's numeric pane id; peer "
+                "names only resolve inside the sender's tab)"
+            )
+        if not _NUMERIC_PANE_ID_RE.match(target):
+            raise ConfigError(
+                "report.target must be a numeric pane id when "
+                f"report.placement = 'background_tab', got {target!r} "
+                "(a name is not reachable from another tab)"
+            )
+
+
+def _report_placement(config: dict[str, Any]) -> str:
+    report = config.get("report") or {}
+    return report.get("placement") or DEFAULT_PLACEMENT
+
+
+def _report_target(config: dict[str, Any]) -> str:
+    report = config.get("report") or {}
+    return report.get("target") or DEFAULT_REPORT_TARGET
 
 
 def _closes_or_refs(task: dict[str, Any]) -> str:
@@ -247,6 +329,9 @@ def _select_blocks(config: dict[str, Any]) -> dict[str, bool]:
         and bool(config["references"].get("knowledge")),
         "codex_full": depth == "full",
         "codex_minimal": depth == "minimal",
+        # Issue #909: cross-tab addressing prose, emitted only for the
+        # spawn-flow 3-1d background-tab exception.
+        "background_tab_report": _report_placement(config) == "background_tab",
     }
     return blocks
 
@@ -281,6 +366,10 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
 
     return {
         "transport_send_message": _transport.send_message_call(),
+        # Issue #909: ``secretary`` unless the worker is placed in a
+        # background tab, where only a numeric pane id is reachable. The
+        # default value renders the same-tab brief byte-identically.
+        "report_target": _report_target(config),
         "worker_dir": worker["dir"],
         "worker_pattern": worker["pattern"],
         "worker_role": worker["role"],
@@ -290,6 +379,20 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
         "task_id": task["id"],
         "task_description": task["description"].strip(),
         "task_branch": task["branch"],
+        # Issue #808: the ref the worker's Codex self-review diffs against.
+        # Defaults to ``origin/main`` so every pre-#808 brief renders
+        # byte-identically; ``gen_delegate_payload`` overwrites it with
+        # ``origin/<base_branch>`` when the project (or --base-ref) configures
+        # a different cut point, otherwise the review would treat all of the
+        # base branch's own commits as this task's diff.
+        #
+        # ``shlex.quote`` because this lands inside a ```bash fence the worker
+        # copy-pastes, and git permits shell metacharacters in ref names
+        # (``foo;id``, ``foo$(id)`` are valid branch names), so a raw
+        # interpolation would turn a registry cell into command execution
+        # (Codex Round 2 Blocker). Ordinary names quote to themselves, so the
+        # default rendering is unchanged.
+        "task_base_ref": shlex.quote(task.get("base_ref") or "origin/main"),
         "task_verification_depth": task["verification_depth"],
         "task_commit_prefix": task["commit_prefix"],
         "task_issue_url": task.get("issue_url", ""),
@@ -379,6 +482,8 @@ def build_config_from_task(
     implementation_guidance: Optional[str] = None,
     references_knowledge: Optional[list[str]] = None,
     parallel_notes: Optional[str] = None,
+    placement: Optional[str] = None,
+    report_target: Optional[str] = None,
     registry_path: Optional[Path] = None,
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
@@ -508,7 +613,39 @@ def build_config_from_task(
     if parallel_notes:
         config["parallel"] = {"notes": parallel_notes}
 
+    # Issue #909: the [report] table is written only when the dispatch
+    # actually departs from the same-tab default, so every existing
+    # dispatch keeps a [report]-free config (and a byte-identical brief /
+    # --write-toml audit trail). Validated eagerly here — rather than only
+    # at render() — so a background_tab dispatch missing its numeric pane
+    # id fails at plan time instead of writing an unreachable brief.
+    report = _build_report_section(placement, report_target)
+    if report is not None:
+        validate_report(report)
+        config["report"] = report
+
     return config, layout
+
+
+def _build_report_section(
+    placement: Optional[str], report_target: Optional[str]
+) -> Optional[dict[str, str]]:
+    """Assemble the ``[report]`` table, or None for the plain default.
+
+    None (= omit the table entirely) is returned when the caller asked for
+    nothing beyond the same-tab / ``secretary`` default, which is what keeps
+    the default dispatch's rendered brief byte-identical to pre-#909.
+    """
+    effective_placement = placement or DEFAULT_PLACEMENT
+    if effective_placement == DEFAULT_PLACEMENT and report_target in (
+        None,
+        DEFAULT_REPORT_TARGET,
+    ):
+        return None
+    report: dict[str, str] = {"placement": effective_placement}
+    if report_target is not None:
+        report["target"] = report_target
+    return report
 
 
 def _dump_toml(config: dict[str, Any]) -> str:
@@ -545,6 +682,34 @@ def _dump_toml(config: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _add_report_args(p: argparse.ArgumentParser) -> None:
+    """Add the Issue #909 report-target flags (shared with gen_delegate_payload).
+
+    Help text stays ASCII-only so ``--help`` does not crash a cp932
+    Windows console (repo convention).
+    """
+    p.add_argument(
+        "--placement",
+        choices=sorted(VALID_PLACEMENTS),
+        default=None,
+        help=(
+            "Where the dispatcher will put the worker pane. Default "
+            "'same_tab' renders the brief unchanged. 'background_tab' "
+            "(spawn-flow 3-1d) requires --report-target because peer names "
+            "only resolve inside the sender's tab."
+        ),
+    )
+    p.add_argument(
+        "--report-target",
+        default=None,
+        help=(
+            "Address the worker reports to. Default 'secretary' (pane "
+            "name). With --placement background_tab this must be the "
+            "Secretary pane's numeric id, e.g. '1'."
+        ),
+    )
+
+
 def _build_from_task_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gen_worker_brief.py from-task",
@@ -578,6 +743,7 @@ def _build_from_task_parser() -> argparse.ArgumentParser:
     p.add_argument("--knowledge", action="append", default=[],
                    help="Add an entry to [references].knowledge (repeatable).")
     p.add_argument("--parallel-notes", default=None)
+    _add_report_args(p)
     p.add_argument("--registry-path", type=Path, default=None)
     p.add_argument("--state-db-path", type=Path, default=None)
     p.add_argument("--claude-org-root", type=Path, default=None)
@@ -614,6 +780,11 @@ def _main_from_task(argv: list[str]) -> int:
         candidate = claude_org_root / ".state" / "state.db"
         state_db_path = candidate if candidate.exists() else None
 
+    # Imported lazily (same rationale as build_config_from_task's own
+    # import): legacy --config callers shouldn't pay for it. Needed here
+    # only to name ResolveError in the except clause below.
+    from tools import resolve_worker_layout as rwl
+
     try:
         config, layout = build_config_from_task(
             task_id=args.task_id,
@@ -632,13 +803,23 @@ def _main_from_task(argv: list[str]) -> int:
             implementation_guidance=args.impl_guidance,
             references_knowledge=args.knowledge,
             parallel_notes=args.parallel_notes,
+            placement=args.placement,
+            report_target=args.report_target,
             registry_path=args.registry_path,
             state_db_path=state_db_path,
             claude_org_root=claude_org_root,
             workers_dir=args.workers_dir,
         )
         output = render(config)
-    except (ConfigError, FileNotFoundError) as e:
+    except (ConfigError, FileNotFoundError, rwl.ResolveError) as e:
+        # ResolveError is validate_task_id()'s (and the rest of the layout
+        # resolver's) input-rejection channel -- operator error, not a bug.
+        # Without this in the except tuple, a bad --task-id (e.g. containing
+        # a space) surfaced as a raw traceback instead of the same one-line
+        # ``error: ...`` shape ConfigError/FileNotFoundError already get
+        # here. gen_delegate_payload.py's ``_cmd_preview``/``_cmd_apply``
+        # already give ResolveError this same one-line treatment (there via
+        # ``raise SystemExit(f"error: {e}")``).
         print(f"error: {e}", file=sys.stderr)
         return 2
 
