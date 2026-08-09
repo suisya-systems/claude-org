@@ -13,6 +13,7 @@
 1. `/tmp/workers/demo-task` 内に claude-org の構造（.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
 2. claude-org リポジトリ（`/home/user/work/claude-org`）を `/tmp/workers/demo-task` 内へ clone してはならない（claude-org 本体は参照専用。編集対象は本ワーカーディレクトリのプロジェクトのみ）
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
+4. `git stash` の変更系は実行できない（PreToolUse hook で deny される。引数なしの `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create` に加え、**許可リスト方式なのでここに挙げていないサブコマンドも deny される**）。キャラクタデバイス等の未追跡ファイルを stash できずに `git stash -u` が途中失敗し、それに気づかないまま `git stash pop` で別の stash を復元して作業を壊す事故が実際に起きているため。未コミット変更を退避したいときは作業ブランチへ一時 commit する（`git add -u` に加え、退避したい新規ファイルは明示的に `git add <path>` すること。`git add -u` だけでは未追跡の新規ファイルが退避されない。戻すときは `git reset --soft HEAD~1`）。`git diff > <name>.patch` は staged / 未追跡ファイルを取りこぼすため、単独の退避手段にはしないこと。HEAD 版との比較は `git show HEAD:<path>` を使うこと。調査目的の `git stash list` / `git stash show` は許可されている。**alias 経由でも実行しないこと**（config に定義済みの alias は hook が静的に解決できず素通りするが、事故の中身は同じ）
 
 ### Windows 環境の注意事項
 - Python 実行時は `py -3` または `python` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合があり、`py -3` も py launcher が別の Python 環境を指す場合がある。起動直後に `--version` で意図したバージョンか確認し、動作する方を使うこと）
@@ -44,8 +45,8 @@
 追加ゲート: commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec review`（review surface）で差分セルフレビューを実行する（`codex exec` 直打ちの長文プロンプト形は廃止。review surface は中小 diff で約 2 倍速・安全側 Blocker/Major のパリティは同等）。未導入環境では skip して通常の完了報告に進む。
 
 ```bash
-# --base はブランチのベース（通常 origin/main）。ローカル main は古いと別タスク差分を巻き込むため remote-tracking の origin/main を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力（Blocker/Major 相当）を読んでから次へ進む。
-codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+# --base はこのブランチのベース upstream（origin/main）。ローカルの追跡なしブランチは古いと別タスク差分を巻き込むため remote-tracking ref を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力（Blocker/Major 相当）を読んでから次へ進む。
+codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
 ```
 
 - **前景実行する**（背景化 `&` + ログ redirect は、完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招く）。応答が長く来ない稀なケースのみ中断して skip 可。
@@ -54,7 +55,7 @@ codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium
 - **同一指摘が 3 ラウンド消えない場合は上限前でも即座に設計問題として報告**する。同じ指摘 / 箇所が修正しても再燃するのは修正アプローチ自体の問題のサインで、別問題が各 1 round で順に解消していく健全な収束（上限まで継続可）とは区別する
 - Minor / Nit は原則残置し PR 本文に既知制限として明記
 - **large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず遅くなる）。review surface は危険側 Major は守るが benign な safe-side false-negative / ReDoS 級を取りこぼしうる（深掘りが要る変更は窓口に design review 併用を相談）。詳細・実測根拠は claude-org リポジトリの `knowledge/curated/codex.md`
-- `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec review` / `codex exec` 系直打ちのみ）。`gpt-5.5-codex` / API キー surface は ChatGPT アカウントで実行不可（`-m gpt-5.5` 明示）
+- `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec review` / `codex exec` 系直打ちのみ）。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-5.6-sol`。素の `gpt-5.6` / `gpt-5.6-codex` / `gpt-5.5-codex` はいずれも 400、API キー surface も実行不可）ため `-m gpt-5.6-sol` 明示
 
 **完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
 1. **最重要の変更点（N 個）**: このタスクで実際に変えたことを効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
@@ -63,7 +64,9 @@ codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium
 
 ## 作業完了時
 
-1. **完了報告**: `mcp__renga-peers__send_message(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。`to_id="secretary"` が `[pane_not_found]` で返る場合は DELEGATE メッセージ本文の numeric pane id を使用する。
+1. **完了報告**: `mcp__renga-peers__send_message(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。宛先解決に失敗しても（renga: `[pane_not_found]` / broker: `[peer_not_found]`）**窓口が消えたとは解釈しない**。復旧手順の正本は `/home/user/work/claude-org/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節（同節の冒頭が capability gate へのポインタを持つ）。そこを読む前も読んだ後も、次の 2 つは必ず守る:
+   - **宛先が自分と同じ org だと確認できるまで一切再送しない**（誤送信は別 org へ完了報告を漏らす）。数値 id・`same_tab: true` 候補を含め、確認できていない宛先へは送らない。
+   - **宛先を確定できない / 再送も失敗したときは `to_id="dispatcher"` へ 1 回だけ escalate する**（ループにしない）。**この escalate も同じ確認の対象**で、dispatcher も同一 org だと確認できないときは**何も送らず、ペインを保持したまま停止する** — 報告内容はペインに残し、ディスパッチャーの監視 / 人間の回収に委ねる。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
 3. **振り返り記録**: 再利用可能な学びがあれば `/home/user/work/claude-org/knowledge/raw/{YYYY-MM-DD}-{topic}.md` に記録する（topic は英語 kebab-case）。記録基準: 再現性がある / 非自明 / コードを読むだけではわからない。
 
