@@ -91,6 +91,23 @@ class BaseCloneApplyError(WorktreeApplyError):
     """
 
 
+class BaseBranchApplyError(WorktreeApplyError):
+    """Raised by ``apply`` when the configured base branch (Issue #808) does
+    not exist on the base repo's ``origin`` remote.
+
+    The branch comes from either ``--base-ref`` or the registry's
+    ``base_branch`` column, so a typo (``develp``) or a branch that was never
+    pushed would otherwise silently fall back to the wrong cut point. Failing
+    loud here matches the Issue #480 stale-base guard: both refuse to branch a
+    worktree off a ref we cannot prove is the live remote tip.
+
+    Subclasses :class:`WorktreeApplyError` so existing ``except
+    WorktreeApplyError`` callers still catch it. Like the other worktree
+    errors it fires inside :func:`_ensure_worktree`, i.e. BEFORE the DB
+    reservation, so it never leaks a ``queued`` run row.
+    """
+
+
 class BlockingPreviewWarningError(RuntimeError):
     """Raised by ``apply`` when the plan carries one or more
     ``blocking_warnings`` (Issue #489 surface). Distinct from
@@ -98,6 +115,36 @@ class BlockingPreviewWarningError(RuntimeError):
     layout integrity refused apply" from "git worktree creation failed
     at apply time"; both classes always run before any DB / FS write so
     neither leaks a queued run row.
+    """
+
+
+class RunAlreadyDispatchedError(RuntimeError):
+    """Raised by ``apply`` when ``runs.task_id`` already exists in a state
+    other than ``queued`` (Issue #928 Blocker 2).
+
+    ``queued`` is the only re-appliable state: it means "reserved but not
+    yet handed to the dispatcher", so re-running apply is a *correction of
+    a not-yet-sent delegation*. Every other value (``in_use`` / ``review``
+    / ``completed`` / ``failed`` / ``suspended`` / ``abandoned``) means the
+    delegation already left T1 or already reached a terminal state, and
+    ``upsert_run(status='queued')`` would silently resurrect it while
+    appending a second ``delegate_sent``. A new delegation for the same
+    work needs a new ``task_id``.
+
+    The guard is an allow-list (only ``queued`` passes) so a status added
+    to the schema later fails closed rather than falling through.
+    """
+
+
+class ReservationIdentityMismatchError(RuntimeError):
+    """Raised by ``apply`` when a still-``queued`` run is re-applied with a
+    plan that resolved to a different project / pattern / branch / worker
+    dir than the one already reserved (Issue #928).
+
+    Re-apply exists to correct a delegation that has not been sent yet, in
+    place. Letting it move the reservation instead would desynchronize the
+    run row from the ``delegate_sent`` already recorded for it — the event
+    payload's ``dir`` would name a directory the run no longer points at.
     """
 
 
@@ -178,6 +225,25 @@ class DelegatePlan:
     # placement flips to CLAUDE.local.md (Issue #712 interaction). None when
     # the project has no registry row.
     project_path: Optional[str] = None
+    # Issue #808: the effective base branch for this dispatch, already
+    # normalized by :func:`normalize_base_branch`. ``None`` means "unconfigured"
+    # and ``_resolve_base_ref`` keeps the historical ``origin/HEAD`` behaviour;
+    # a value means the worktree is cut from ``origin/<base_branch>`` and that
+    # same branch is the default ``gh pr create --base`` for the PR flow.
+    base_branch: Optional[str] = None
+    # Issue #909: where the dispatcher will place the worker pane, and the
+    # address the brief tells the worker to report to. ``same_tab`` /
+    # ``secretary`` is the default dispatch and renders both the brief and
+    # the DELEGATE body byte-identically to pre-#909; ``background_tab``
+    # (spawn-flow 3-1d) carries the Secretary's numeric pane id because peer
+    # names only resolve inside the sender's tab.
+    placement: str = gwb.DEFAULT_PLACEMENT
+    report_target: str = gwb.DEFAULT_REPORT_TARGET
+    # Where ``base_branch`` came from: ``"cli"`` (--base-ref), ``"registry"``
+    # (the project's base_branch column), or ``"origin_head"`` (unconfigured).
+    # Carried so the apply-time failure message can name the input the operator
+    # has to fix, and so ``preview`` discloses which precedence tier won.
+    base_branch_source: str = "origin_head"
 
     def to_summary_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +261,21 @@ class DelegatePlan:
             "settings_args": dict(self.settings_args),
             "artifacts_to_create": [str(p) for p in self.artifacts_to_create],
             "base_repo": str(self.base_repo) if self.base_repo else None,
+            # Issue #808: expose the resolved cut point so Secretary can read
+            # the PR base off the preview instead of re-deriving it. The
+            # ``base_ref`` value is exactly what ``git worktree add`` will use.
+            "base_branch": self.base_branch,
+            "base_branch_source": self.base_branch_source,
+            # Issue #909: disclose where the worker is planned to sit and the
+            # address its brief reports to, so Secretary can check the pair
+            # off ``preview --json`` before dispatching to a background tab.
+            "placement": self.placement,
+            "report_target": self.report_target,
+            "base_ref": (
+                f"origin/{self.base_branch}"
+                if self.base_branch is not None
+                else "origin/HEAD"
+            ),
             "warnings": list(self.warnings),
             "blocking_warnings": list(self.blocking_warnings),
             "pending_clone": (
@@ -295,6 +376,57 @@ def _resolve_brief_filename(*, self_edit: bool, repo_dir: Path) -> str:
     if self_edit or _repo_tracks_claude_md(repo_dir):
         return "CLAUDE.local.md"
     return "CLAUDE.md"
+
+
+# Accepted (and stripped) prefix on a configured base branch value, so
+# ``origin/develop`` and ``develop`` mean the same thing (Issue #808). Only
+# ``origin`` is special-cased: the worktree cut point is always resolved
+# against ``refs/remotes/origin/<branch>`` — the single remote the Issue #480
+# freshness guard fetches — so another remote's name would not be a valid
+# branch there and must fail loud rather than be silently rewritten.
+_ORIGIN_REF_PREFIX = "origin/"
+
+
+def normalize_base_branch(value: Optional[str]) -> Optional[str]:
+    """Normalize a configured base-branch value to a bare branch name.
+
+    Issue #808. Applied identically to the ``--base-ref`` CLI flag and the
+    registry ``base_branch`` column so the two inputs cannot disagree on what
+    ``develop`` means:
+
+    - surrounding whitespace is trimmed (markdown table cells are padded);
+    - a leading ``origin/`` is stripped, so an operator who writes the ref the
+      way git prints it (``origin/develop``) gets the same result as the bare
+      branch name;
+    - ``""`` / ``-`` (the registry's "unset" placeholder, matching the ``パス``
+      column's convention) map to ``None`` = "not configured", which keeps the
+      historical ``origin/HEAD`` behaviour for every pre-#808 row.
+
+    Returns the bare branch name, or ``None`` when nothing is configured.
+    Note that this deliberately does NOT validate the branch's existence —
+    that is an apply-time git question handled by :func:`_resolve_base_ref`,
+    so the planner stays pure.
+
+    Raises :class:`TypeError` on a non-string, non-None input. Registry cells
+    are always strings, but ``--from-toml`` can carry ``base_ref = 5``; the
+    CLI catches that earlier with a friendlier message (see
+    :func:`_load_task_args_from_toml`), and this guard keeps a direct
+    :func:`build_delegate_plan` caller from failing later with an opaque
+    ``AttributeError`` inside ``.strip()`` (Codex Round 3 Major).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(
+            f"base branch must be a string, got {type(value).__name__} "
+            f"({value!r})"
+        )
+    v = value.strip()
+    if not v or v == "-":
+        return None
+    if v.startswith(_ORIGIN_REF_PREFIX):
+        v = v[len(_ORIGIN_REF_PREFIX):].strip()
+    return v or None
 
 
 def _is_clone_url(path: Optional[str]) -> bool:
@@ -456,8 +588,24 @@ def _format_delegate_body(
     permission_mode: str,
     verification_depth: str,
     brief_filename: str,
+    base_branch: Optional[str] = None,
+    base_branch_source: str = "origin_head",
+    placement: str = gwb.DEFAULT_PLACEMENT,
+    report_target: str = gwb.DEFAULT_REPORT_TARGET,
 ) -> str:
-    """Format the DELEGATE message body per org-delegate Step 2 template."""
+    """Format the DELEGATE message body per org-delegate Step 2 template.
+
+    Issue #808: when a base branch is configured, an extra ``ベース`` line
+    names the cut point and where it came from, so the dispatcher and worker
+    both see the non-default PR base without re-reading the registry. The
+    line is omitted entirely when nothing is configured, keeping the body
+    byte-identical to the pre-#808 output for every existing project.
+
+    Issue #909: a ``background_tab`` dispatch replaces the trailing
+    ``窓口ペイン名`` line with the Secretary's numeric pane id, because the
+    pane name it otherwise advertises is unreachable from another tab. The
+    default (``same_tab``) keeps that line exactly as before.
+    """
     instr_summary = _summarize_description(description)
     branch_line = (
         layout.planned_branch
@@ -467,6 +615,35 @@ def _format_delegate_body(
     # Use the platform-native joiner to avoid the mixed `\\…/CLAUDE.md`
     # output the literal-`/` template produced on Windows (Codex Round 1 Nit).
     brief_full_path = str(Path(layout.worker_dir) / brief_filename)
+    base_line = ""
+    if base_branch is not None:
+        source_label = {
+            "cli": "--base-ref 指定",
+            "registry": "registry base_branch",
+        }.get(base_branch_source, base_branch_source)
+        base_line = (
+            f"\n  - ベース: origin/{base_branch}"
+            f"（{source_label}。PR も `--base {base_branch}` を既定とする）"
+        )
+    if placement == "background_tab":
+        # The brief is rendered here, before the dispatcher evaluates the
+        # 3-1d gates — so a fail-closed fallback to the same-tab path would
+        # leave the worker holding a brief that describes the other
+        # placement. The dispatcher cannot silently reuse it: say so in the
+        # body rather than letting the two artifacts drift apart.
+        report_line = (
+            f"配置 (placement): background_tab（spawn-flow 3-1d）\n"
+            f'窓口の報告先: `to_id="{report_target}"`（数値 pane id。'
+            f"背景タブの worker からは pane 名 `secretary` が解決しないため、"
+            f"brief も同じ数値 id で生成済み）\n"
+            f"**6 条件のいずれかを満たさず同一タブ経路に倒す場合、この brief を"
+            f"そのまま使ってはならない**（背景タブ前提の報告先・報告規律が"
+            f"書かれている）。派遣を進めず窓口へ差し戻し、`--placement` 無しで "
+            f"brief を再生成させること"
+        )
+    else:
+        report_line = "窓口ペイン名: `secretary`（renga layout で登録済み）"
+
     body = f"""DELEGATE: 以下のワーカーを派遣してください。
 
 タスク一覧:
@@ -474,12 +651,12 @@ def _format_delegate_body(
   - ワーカーディレクトリ: {layout.worker_dir}（{brief_filename}・設定配置済み）
   - ディレクトリパターン: {_pattern_label(layout)}
   - プロジェクト: {_project_label(layout, project_path)}
-  - ブランチ (planned): {branch_line}
+  - ブランチ (planned): {branch_line}{base_line}
   - Permission Mode: {permission_mode}
   - 検証深度: {verification_depth}
   - 指示内容: 詳細は `{brief_full_path}` を参照。要約: {instr_summary or '(none)'}
 
-窓口ペイン名: `secretary`（renga layout で登録済み）"""
+{report_line}"""
     return body
 
 
@@ -496,6 +673,7 @@ def build_delegate_plan(
     description: str = "",
     mode: str = "edit",
     branch_override: Optional[str] = None,
+    base_ref_override: Optional[str] = None,
     commit_prefix: Optional[str] = None,
     verification_depth: str = "full",
     issue_url: Optional[str] = None,
@@ -506,6 +684,8 @@ def build_delegate_plan(
     implementation_guidance: Optional[str] = None,
     references_knowledge: Optional[list[str]] = None,
     parallel_notes: Optional[str] = None,
+    placement: Optional[str] = None,
+    report_target: Optional[str] = None,
     registry_path: Optional[Path] = None,
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
@@ -534,12 +714,21 @@ def build_delegate_plan(
         implementation_guidance=implementation_guidance,
         references_knowledge=references_knowledge,
         parallel_notes=parallel_notes,
+        placement=placement,
+        report_target=report_target,
         registry_path=registry_path,
         state_db_path=state_db_path,
         claude_org_root=claude_org_root,
         workers_dir=workers_dir,
         layout_overrides=layout_overrides,
     )
+
+    # Read the effective values back off the config the brief renders from,
+    # so the DELEGATE body and the brief can never disagree about where the
+    # worker reports (Issue #909). ``build_config_from_task`` has already
+    # validated the pair.
+    effective_placement = gwb._report_placement(config)
+    effective_report_target = gwb._report_target(config)
 
     self_edit = bool(config["worker"]["self_edit"])
 
@@ -561,8 +750,10 @@ def build_delegate_plan(
 
     permission_mode = parse_permission_mode(Path(claude_org_root))
 
-    # Look up project.path for the DELEGATE body label.
+    # Look up project.path for the DELEGATE body label, and the Issue #808
+    # ``base_branch`` column for the worktree cut point / PR base default.
     project_path: Optional[str] = None
+    registry_base_branch: Optional[str] = None
     registry_for_meta = registry_path or (
         Path(claude_org_root) / "registry" / "projects.md"
     )
@@ -571,6 +762,26 @@ def build_delegate_plan(
         match = rwl.find_project(rows, project_slug)
         if match is not None:
             project_path = match.path
+            registry_base_branch = normalize_base_branch(match.base_branch)
+
+    # Issue #808 precedence: --base-ref > registry base_branch > origin/HEAD.
+    # Recording the winning tier (not just the value) lets the apply-time
+    # failure point the operator at the input they actually have to fix, and
+    # keeps the three tiers auditable in ``preview --json``.
+    base_branch = normalize_base_branch(base_ref_override)
+    base_branch_source = "cli"
+    if base_branch is None:
+        base_branch = registry_base_branch
+        base_branch_source = "registry" if base_branch is not None else "origin_head"
+    # Feed the effective ref into the brief so the worker's Codex self-review
+    # (``codex exec review --base ...``) diffs against the branch this task was
+    # actually cut from. Without this the rendered brief keeps saying
+    # ``origin/main``, and a develop-based task would review every develop-only
+    # commit as if it were its own change (Codex Round 1 Major). Left unset
+    # when unconfigured so the template default (``origin/main``) still renders
+    # byte-identically for every pre-#808 dispatch.
+    if base_branch is not None:
+        config["task"]["base_ref"] = f"{_ORIGIN_REF_PREFIX}{base_branch}"
 
     # Pattern B: figure out which repo `git worktree add` should be run from.
     # live_repo_worktree → Secretary's live claude-org repo;
@@ -716,6 +927,10 @@ def build_delegate_plan(
         permission_mode=permission_mode,
         verification_depth=verification_depth,
         brief_filename=brief_filename,
+        base_branch=base_branch,
+        base_branch_source=base_branch_source,
+        placement=effective_placement,
+        report_target=effective_report_target,
     )
 
     artifacts = [
@@ -789,6 +1004,10 @@ def build_delegate_plan(
         blocking_warnings=blocking_warnings,
         pending_clone=pending_clone,
         project_path=project_path,
+        base_branch=base_branch,
+        base_branch_source=base_branch_source,
+        placement=effective_placement,
+        report_target=effective_report_target,
     )
 
 
@@ -810,6 +1029,134 @@ class ApplyResult:
     # git history. ``None`` for every other pattern (they inherit a base
     # repo's .gitignore) and when the managed lines were already present.
     gitignore_path: Optional[Path] = None
+    # Issue #928: ``events.id`` of the ``delegate_sent`` row committed in the
+    # same transaction as the reservation. ``None`` on a re-apply of a run
+    # that already carries one (the event is exactly-once per run row).
+    delegate_sent_event_id: Optional[int] = None
+
+
+# The only ``runs.status`` an ``apply`` may re-apply onto (Issue #928
+# Blocker 2). See :class:`RunAlreadyDispatchedError` for the rationale.
+_REAPPLIABLE_RUN_STATUS = "queued"
+
+# Journal event recorded by ``apply`` for contract T1
+# (``docs/contracts/delegation-lifecycle-contract.md`` §2 T1).
+_DELEGATE_SENT_KIND = "delegate_sent"
+
+
+def _fetch_run_reservation(conn, task_id: str) -> Optional[dict[str, Any]]:
+    """The existing reservation for ``task_id`` (status + identity), or None.
+
+    "Identity" is the set of columns the reservation itself pins down and
+    that the ``delegate_sent`` payload describes: which project, which
+    pattern, which branch, which worker dir. A re-apply that changes any
+    of them is a *different* reservation wearing the same task_id, not a
+    correction of the existing one — see :func:`_assert_reappliable`.
+    """
+    row = conn.execute(
+        "SELECT r.status AS status, r.pattern AS pattern, r.branch AS branch, "
+        "p.slug AS project_slug, wd.abs_path AS worker_dir "
+        "FROM runs r JOIN projects p ON r.project_id = p.id "
+        "LEFT JOIN worker_dirs wd ON r.worker_dir_id = wd.id "
+        "WHERE r.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    return None if row is None else dict(row)
+
+
+def _existing_run_reservation(
+    state_db_path: Path, task_id: str
+) -> Optional[dict[str, Any]]:
+    """:func:`_fetch_run_reservation` against a not-yet-open DB file.
+
+    Read-only preflight for :func:`apply_delegate_plan`, so a refusal
+    (Issue #928 Blocker 2) happens before any filesystem side effect —
+    no worktree, brief or settings file is written for a dispatch that
+    is going to be rejected anyway. The authoritative check is repeated
+    inside the final transaction; this one only moves the failure earlier.
+    """
+    if not state_db_path.exists():
+        return None
+    from tools.state_db import connect
+
+    conn = connect(state_db_path)
+    try:
+        return _fetch_run_reservation(conn, task_id)
+    except Exception:  # noqa: BLE001 — schema-less / unreadable DB
+        # A DB file with no ``runs`` table yet is indistinguishable from
+        # "no prior run" for this guard's purpose; the reservation step
+        # applies the schema and the in-transaction check runs there.
+        return None
+    finally:
+        conn.close()
+
+
+def _assert_reappliable(prior: Optional[dict[str, Any]], plan: DelegatePlan) -> None:
+    """Refuse an ``apply`` that would overwrite somebody else's reservation.
+
+    Two distinct refusals (Issue #928 Blocker 2):
+
+    - the run has left ``queued`` — re-queuing it would resurrect a live or
+      terminal delegation (:class:`RunAlreadyDispatchedError`);
+    - the run is still ``queued`` but this plan resolved to a different
+      project / pattern / branch / worker dir
+      (:class:`ReservationIdentityMismatchError`). This is not theoretical:
+      the first reservation counts as *active* for the next
+      ``resolve_worker_layout``, so a plain re-run of the same command can
+      legitimately resolve onto another pattern. Silently upserting it
+      would leave the run row pointing at the new dir while the already
+      recorded ``delegate_sent`` still names the old one.
+    """
+    if prior is None:
+        return
+    status = str(prior["status"])
+    if status != _REAPPLIABLE_RUN_STATUS:
+        raise RunAlreadyDispatchedError(
+            f"apply refused: run task_id={plan.task_id!r} already exists with "
+            f"status={status!r}; only {_REAPPLIABLE_RUN_STATUS!r} (reserved "
+            "but not yet dispatched) may be re-applied. Dispatch new work "
+            "under a new task_id, or fix the run row first if this status is "
+            "stale."
+        )
+    wanted = {
+        "project_slug": plan.project_slug,
+        "pattern": plan.layout.pattern,
+        "branch": plan.layout.planned_branch,
+        "worker_dir": str(plan.layout.worker_dir),
+    }
+    drift = [
+        f"{key}: reserved={prior[key]!r} -> this apply={value!r}"
+        for key, value in wanted.items()
+        if prior[key] is not None and str(prior[key]) != str(value)
+    ]
+    if drift:
+        raise ReservationIdentityMismatchError(
+            f"apply refused: task_id={plan.task_id!r} is already reserved "
+            "(queued) with a different identity, so re-applying would "
+            "silently re-point the reservation away from the delegation "
+            "already recorded for it:\n  - " + "\n  - ".join(drift)
+            + "\nRe-apply is only for correcting a not-yet-sent delegation "
+            "in place. Use a new task_id, or release the existing "
+            "reservation first."
+        )
+
+
+def _has_delegate_sent(conn, task_id: str) -> bool:
+    """True iff a ``delegate_sent`` event already exists for ``task_id``.
+
+    Matches on BOTH the ``run_id`` link and the payload's ``task`` field.
+    The link alone is not enough: every other writer of this event inserts
+    ``payload_json`` with no ``run_id`` — ``tools/journal_append.{sh,py}``
+    (the hand-typed path this change replaces) and the legacy-journal
+    importer both do — so a link-only lookup would miss a pre-existing
+    event and append a duplicate on the next re-apply.
+    """
+    return conn.execute(
+        "SELECT 1 FROM events e LEFT JOIN runs r ON e.run_id = r.id "
+        "WHERE e.kind = ? AND (r.task_id = ? "
+        "OR json_extract(e.payload_json, '$.task') = ?) LIMIT 1",
+        (_DELEGATE_SENT_KIND, task_id, task_id),
+    ).fetchone() is not None
 
 
 def _reserve_in_db(
@@ -818,11 +1165,26 @@ def _reserve_in_db(
     state_db_path: Path,
     claude_org_root: Optional[Path],
 ) -> dict[str, Any]:
-    """Reserve the worker_dir + queue the run row.
+    """Commit the T1 reservation and its ``delegate_sent`` event atomically.
 
-    Per Codex Design Blocker B-1 + Set B contract, this writes
-    ``runs.status='queued'`` only. Active Work Items remains the
+    Per Codex Design Blocker B-1 + Set B contract, the run row is written
+    with ``runs.status='queued'`` only. Active Work Items remains the
     dispatcher's T2 responsibility and is *not* touched here.
+
+    Issue #928: the contract's T1 journal event is committed in the SAME
+    transaction as the reservation, so the state write and the event can
+    never disagree. It is the last thing ``apply`` does — every
+    failure-prone artifact (worktree, brief, settings, send_plan) is
+    already on disk by the time we get here, so a committed
+    ``delegate_sent`` always has a sendable payload behind it.
+
+    Two rules keep re-apply honest (Issue #928 Blocker 2):
+
+    - only ``queued`` may be re-applied (:class:`RunAlreadyDispatchedError`);
+    - ``delegate_sent`` is exactly-once per run row, so correcting a
+      not-yet-sent delegation (re-running apply with a revised brief)
+      updates the reservation without appending a second event. T1 fires
+      once per delegation, not once per apply invocation.
     """
     from tools.state_db import apply_schema, connect
     from tools.state_db.writer import StateWriter
@@ -839,7 +1201,13 @@ def _reserve_in_db(
     conn = connect(state_db_path)
     try:
         writer = StateWriter(conn, claude_org_root=claude_org_root)
+        event_id: Optional[int] = None
         with writer.transaction() as tx:
+            # Authoritative re-apply guard (the preflight in
+            # ``apply_delegate_plan`` only fails earlier / cheaper). Raising
+            # inside the context manager rolls the whole transaction back.
+            _assert_reappliable(_fetch_run_reservation(conn, plan.task_id), plan)
+            already_sent = _has_delegate_sent(conn, plan.task_id)
             tx.register_worker_dir(
                 abs_path=plan.layout.worker_dir,
                 layout="flat",
@@ -870,17 +1238,148 @@ def _reserve_in_db(
                 ),
                 worker_dir_abs_path=plan.layout.worker_dir,
             )
+            if not already_sent:
+                # Payload keys are fixed by the catalog + contract
+                # (``docs/journal-events.md`` "Delegate flow" row,
+                # ``delegation-lifecycle-contract.md`` §2 T1).
+                event_id = tx.append_event(
+                    kind=_DELEGATE_SENT_KIND,
+                    actor="secretary",
+                    payload={
+                        "task": plan.task_id,
+                        "worker": f"worker-{plan.task_id}",
+                        "dir": str(plan.layout.worker_dir),
+                    },
+                    run_task_id=plan.task_id,
+                    project_slug=plan.project_slug,
+                )
         return {
             "task_id": plan.task_id,
             "project_slug": plan.project_slug,
             "worker_dir": plan.layout.worker_dir,
             "status": "queued",
+            "delegate_sent_event_id": event_id,
         }
     finally:
         conn.close()
 
 
-def _resolve_base_ref(base_repo: Path) -> Optional[str]:
+def _has_origin_remote(base_repo: Path) -> bool:
+    """True iff ``base_repo`` has an ``origin`` remote configured.
+
+    Purely-local repos (and the hermetic test fixtures that synthesize
+    ``refs/remotes/origin/*`` with ``update-ref`` and no real remote) have
+    none; :func:`_fetch_base_origin` already treats that as its quiet path,
+    and :func:`_materialize_origin_branch` mirrors the same rule.
+    """
+    probe = subprocess.run(
+        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+    )
+    return probe.returncode == 0
+
+
+def _materialize_origin_branch(base_repo: Path, branch: str) -> bool:
+    """Ensure ``refs/remotes/origin/<branch>`` exists and matches the remote.
+
+    Returns True when the cut point is usable, False when the branch does not
+    exist on the remote (the caller then raises
+    :class:`BaseBranchApplyError`).
+
+    Why this is not just a local ``rev-parse`` on the remote-tracking ref
+    (Codex Round 1 Major): ``refs/remotes/origin/<branch>`` is a *cache* of
+    the remote, and the plain ``git fetch origin`` run by
+    :func:`_fetch_base_origin` keeps it wrong in two opposite ways —
+
+    - **false negative**: a clone made with a restricted fetch refspec
+      (``git clone --single-branch``) never creates ``origin/develop`` even
+      though ``develop`` exists on the remote, so a local-only probe would
+      refuse a perfectly valid dispatch; and
+    - **false positive**: the fetch does not prune, so a branch deleted on the
+      remote leaves a stale local ``origin/develop`` behind and the worktree
+      would be cut from a branch that no longer exists.
+
+    So the remote itself is the authority (``git ls-remote --heads``), and the
+    ref is then fetched explicitly with an exact refspec — which both defeats
+    a restricted refspec and force-updates a stale ref to the live tip.
+
+    When no ``origin`` remote is configured there is nothing to ask, so we
+    fall back to the local remote-tracking ref (same quiet path as
+    :func:`_fetch_base_origin`).
+    """
+    local_probe = ["git", "-C", str(base_repo), "rev-parse", "--verify",
+                   "--quiet", f"refs/remotes/{_ORIGIN_REF_PREFIX}{branch}"]
+    if not _has_origin_remote(base_repo):
+        return subprocess.run(local_probe, capture_output=True).returncode == 0
+    ls = subprocess.run(
+        ["git", "-C", str(base_repo), "ls-remote", "--exit-code", "--heads",
+         "origin", f"refs/heads/{branch}"],
+        capture_output=True,
+    )
+    if ls.returncode != 0:
+        # rc=2 is ls-remote's "no matching refs"; any other non-zero is a
+        # transport failure. Both mean "we could not prove the branch is
+        # there", and the caller's fail-loud message covers both (it names
+        # the configured input and tells the operator to fix / push it) —
+        # degrading to origin/HEAD is never an option here.
+        return False
+    fetch = subprocess.run(
+        ["git", "-C", str(base_repo), "fetch", "origin",
+         f"+refs/heads/{branch}:refs/remotes/{_ORIGIN_REF_PREFIX}{branch}"],
+        capture_output=True,
+    )
+    if fetch.returncode != 0:
+        stderr = (fetch.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise WorktreeApplyError(
+            f"`git fetch origin {branch}` failed (rc={fetch.returncode}) in "
+            f"{base_repo}: {stderr}. The branch exists on the remote but its "
+            "remote-tracking ref could not be updated, so the worktree would "
+            "be cut from a possibly-stale commit (Issue #480 / #808). Fix the "
+            "network / remote and retry apply."
+        )
+    return subprocess.run(local_probe, capture_output=True).returncode == 0
+
+
+def _missing_base_branch_error(
+    base_repo: Path,
+    *,
+    base_branch: str,
+    base_branch_source: str,
+    project_slug: Optional[str],
+) -> "BaseBranchApplyError":
+    """Build the fail-loud error for a configured branch the remote doesn't have.
+
+    Shared by the creation path (:func:`_resolve_base_ref`) and the reuse path
+    (:func:`_assert_reused_worktree_base`) so both give the operator the same
+    diagnosis and recovery, instead of only failing when a worktree happens to
+    be created (Codex Round 2 Major).
+    """
+    ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
+    source_hint = {
+        "cli": "the --base-ref flag passed to this dispatch",
+        "registry": (
+            "the `base_branch` column of registry/projects.md for project "
+            f"{project_slug!r}"
+        ),
+    }.get(base_branch_source, f"base_branch_source={base_branch_source!r}")
+    return BaseBranchApplyError(
+        f"configured base branch {base_branch!r} does not exist on the "
+        f"remote: {ref} could not be resolved against origin in {base_repo}. "
+        f"It was configured by {source_hint}. Refusing to fall back to "
+        "origin/HEAD, because silently using the default branch is exactly "
+        "the diff pollution a per-project base branch exists to prevent "
+        "(Issue #808). Fix the configured name (typo?), push the branch to "
+        "origin, or drop the setting to use origin/HEAD, then retry apply."
+    )
+
+
+def _resolve_base_ref(
+    base_repo: Path,
+    *,
+    base_branch: Optional[str] = None,
+    base_branch_source: str = "origin_head",
+    project_slug: Optional[str] = None,
+) -> Optional[str]:
     """Pick the starting ref for ``git worktree add -b <branch> <path> <ref>``.
 
     Pattern B is triggered precisely when another active run is occupying
@@ -888,7 +1387,17 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
     other task's feature branch. Branching off it would mix unmerged
     commits into the new worktree.
 
-    The only ref we treat as authoritative is ``origin/HEAD`` (the
+    Issue #808 — when ``base_branch`` is set (``--base-ref`` or the registry
+    ``base_branch`` column, already normalized by
+    :func:`normalize_base_branch`), the cut point is ``origin/<base_branch>``
+    instead of ``origin/HEAD``. That branch must actually exist as a
+    remote-tracking ref: a project on a two-track flow (main = hotfix,
+    develop = feature) that silently fell back to ``origin/HEAD`` would cut
+    every worktree from the wrong trunk and pollute each PR's diff. So a
+    missing branch raises :class:`BaseBranchApplyError` rather than degrading
+    — the same fail-loud stance as the Issue #480 stale-base guard.
+
+    Otherwise the only ref we treat as authoritative is ``origin/HEAD`` (the
     project's default branch as the remote knows it). We deliberately do
     NOT fall back to local ``main`` / ``master`` / ``HEAD`` because:
 
@@ -900,11 +1409,25 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
 
     Returns ``None`` when ``origin/HEAD`` is not set — apply then aborts
     with a recovery hint pointing to ``git remote set-head origin --auto``.
+    (The configured-branch path never returns ``None``: it either resolves or
+    raises, because "unset origin/HEAD" and "configured branch missing" need
+    different recovery instructions.)
 
     Freshness of the returned ref is the caller's job: :func:`_ensure_worktree`
     runs :func:`_fetch_base_origin` immediately before this, so ``origin/HEAD``
-    reflects the live remote tip rather than a stale local clone (Issue #480).
+    — and the existence check below — reflect the live remote tip rather than
+    a stale local clone (Issue #480).
     """
+    if base_branch is not None:
+        ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
+        if _materialize_origin_branch(base_repo, base_branch):
+            return ref
+        raise _missing_base_branch_error(
+            base_repo,
+            base_branch=base_branch,
+            base_branch_source=base_branch_source,
+            project_slug=project_slug,
+        )
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "symbolic-ref", "--short",
          "refs/remotes/origin/HEAD"],
@@ -940,11 +1463,7 @@ def _fetch_base_origin(base_repo: Path) -> None:
     repos (and the test fixtures that synthesize ``refs/remotes/origin/*``
     without a real remote) have nothing to fetch.
     """
-    probe = subprocess.run(
-        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
-        capture_output=True,
-    )
-    if probe.returncode != 0:
+    if not _has_origin_remote(base_repo):
         return  # no origin remote — nothing to refresh
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "fetch", "origin"],
@@ -976,6 +1495,114 @@ def _worktree_branch(worker_dir: Path) -> Optional[str]:
     if not name or name == "HEAD":
         return None
     return name
+
+
+# git-config key (under ``branch.<name>.``) where apply records the ref a
+# task branch was cut from, so a later reuse can detect that the configured
+# base changed underneath it (Issue #808 / Codex Round 1 Major). Stored
+# per-branch rather than per-worktree because the branch is what carries the
+# commits, and ``git branch -d`` cleans the entry up automatically.
+_BRANCH_BASE_CONFIG_KEY = "claudeOrgBase"
+
+
+def _branch_base_config_name(branch: str) -> str:
+    return f"branch.{branch}.{_BRANCH_BASE_CONFIG_KEY}"
+
+
+def _record_worktree_base(base_repo: Path, branch: str, base_ref: str) -> None:
+    """Record the ref ``branch`` was cut from (best-effort).
+
+    A config write failure must not fail an otherwise-successful dispatch —
+    the recorded value only powers the *extra* reuse check in
+    :func:`_assert_reused_worktree_base`, which treats "no record" as
+    "cannot verify, proceed" for backwards compatibility with worktrees
+    created before Issue #808.
+    """
+    subprocess.run(
+        ["git", "-C", str(base_repo), "config",
+         _branch_base_config_name(branch), base_ref],
+        capture_output=True,
+    )
+
+
+def _recorded_worktree_base(base_repo: Path, branch: str) -> Optional[str]:
+    """Read back the ref recorded by :func:`_record_worktree_base`, or None."""
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "config", "--get",
+         _branch_base_config_name(branch)],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.decode("utf-8", errors="replace").strip()
+    return value or None
+
+
+def _assert_reused_worktree_base(plan: DelegatePlan, branch: str) -> None:
+    """Refuse to reuse a worktree whose branch was cut from a different base.
+
+    Issue #808 / Codex Round 1 Major: :func:`_ensure_worktree` returns early
+    when ``worker_dir`` is already a registered worktree on the planned
+    branch, so the base-branch resolution below it never runs on a retry. If
+    the first attempt cut the branch from ``origin/develop`` and the retry
+    changes ``--base-ref`` (or the registry) to ``main``, the stale branch
+    would be accepted while the fresh ``send_plan.json`` advertises ``main``
+    as the PR base — reintroducing exactly the base/PR mismatch this feature
+    exists to prevent.
+
+    Comparing recorded-vs-configured is what makes both directions of the
+    change detectable; a merge-base heuristic only catches one of them
+    (``origin/main`` is typically an ancestor of a develop-cut branch, so
+    narrowing develop → main would slip through).
+
+    No record (worktree predates Issue #808, or was created by hand) means the
+    recorded-vs-configured comparison cannot run, so reuse proceeds — this
+    check only ever adds a refusal where an authoritative record disagrees.
+    The existence check below runs either way, because a configured branch
+    that has since been deleted from origin must fail on the reuse path too
+    (Codex Round 2 Major: otherwise apply only fails loud when it happens to
+    create a worktree, and an unusable PR base is advertised on retries).
+    """
+    # Existence first: an advertised PR base that no longer exists on the
+    # remote is broken regardless of what the branch was cut from.
+    if plan.base_branch is not None and not _materialize_origin_branch(
+        plan.base_repo, plan.base_branch
+    ):
+        raise _missing_base_branch_error(
+            plan.base_repo,
+            base_branch=plan.base_branch,
+            base_branch_source=plan.base_branch_source,
+            project_slug=plan.project_slug,
+        )
+    recorded = _recorded_worktree_base(plan.base_repo, branch)
+    if recorded is None:
+        return
+    if plan.base_branch is not None:
+        expected: Optional[str] = f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
+    else:
+        # Unconfigured dispatch: the cut point would be origin/HEAD, so
+        # resolve it to the concrete branch it points at and compare against
+        # that. Accepting every unconfigured retry (Codex Round 2 Blocker)
+        # would let "first apply cut from develop, retry drops the override"
+        # keep the develop-based branch while the send plan advertises the
+        # repo default — the very mismatch this guard exists for.
+        expected = _resolve_base_ref(plan.base_repo)
+    if expected is None or recorded == expected:
+        # ``expected is None`` = origin/HEAD is unset, so there is nothing
+        # authoritative to compare against. The creation path raises on that
+        # separately; reuse has no cut point to redo, so stay silent.
+        return
+    raise BaseBranchApplyError(
+        f"worker_dir {plan.layout.worker_dir} is an existing worktree whose "
+        f"branch {branch!r} was cut from {recorded}, but this dispatch is "
+        f"configured for {expected} (source={plan.base_branch_source}). "
+        "Refusing to reuse it: the branch would carry the old base's commits "
+        "while the PR targets the new one, which is the diff pollution "
+        "Issue #808 exists to prevent. Remove the worktree (`git -C "
+        f"{plan.base_repo} worktree remove {plan.layout.worker_dir}` plus "
+        f"`git -C {plan.base_repo} branch -D {branch}`) so apply recreates it "
+        f"from {expected}, or restore the original base setting and retry."
+    )
 
 
 def _is_registered_worktree(base_repo: Path, worker_dir: Path) -> bool:
@@ -1094,6 +1721,10 @@ def _finalize_pending_clone_brief(plan: DelegatePlan) -> DelegatePlan:
         permission_mode=plan.permission_mode,
         verification_depth=plan.verification_depth,
         brief_filename="CLAUDE.local.md",
+        base_branch=plan.base_branch,
+        base_branch_source=plan.base_branch_source,
+        placement=plan.placement,
+        report_target=plan.report_target,
     )
     return replace(
         plan,
@@ -1167,6 +1798,11 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
                     "(or remove the worktree and let apply recreate it) "
                     "and retry."
                 )
+            # Issue #808: the branch name matching is not enough — the branch
+            # must also have been cut from the base this dispatch is
+            # configured for, or the PR would target a base the branch never
+            # branched from.
+            _assert_reused_worktree_base(plan, actual)
         return
     if worker_dir.exists() and any(worker_dir.iterdir()):
         raise WorktreeApplyError(
@@ -1183,8 +1819,20 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
         )
     # Issue #480: refresh remote-tracking refs first so we branch off the
     # *current* origin/HEAD, not a stale local clone's old origin/main.
-    _fetch_base_origin(plan.base_repo)
-    base_ref = _resolve_base_ref(plan.base_repo)
+    # Issue #808: a configured base branch takes the targeted path instead —
+    # ``_resolve_base_ref`` -> ``_materialize_origin_branch`` asks the remote
+    # for that one branch and fetches it with an exact refspec. That is both
+    # fail-closed (same stance as the blanket fetch) and strictly stronger for
+    # the configured ref, so running the blanket fetch first would only pay
+    # for a second round-trip that nothing downstream reads.
+    if plan.base_branch is None:
+        _fetch_base_origin(plan.base_repo)
+    base_ref = _resolve_base_ref(
+        plan.base_repo,
+        base_branch=plan.base_branch,
+        base_branch_source=plan.base_branch_source,
+        project_slug=plan.project_slug,
+    )
     if base_ref is None:
         raise WorktreeApplyError(
             f"could not resolve `origin/HEAD` in {plan.base_repo}. Refusing "
@@ -1209,6 +1857,9 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
             f"`git worktree add` failed (rc={proc.returncode}) for "
             f"{worker_dir} from {plan.base_repo}: {stderr}"
         )
+    # Issue #808: remember the actual cut point so a later partial-retry apply
+    # can detect a changed base instead of silently reusing the old branch.
+    _record_worktree_base(plan.base_repo, branch, base_ref)
 
 
 def _write_brief(plan: DelegatePlan) -> Path:
@@ -1451,45 +2102,6 @@ def _write_send_plan(plan: DelegatePlan, *, out_path: Path) -> Path:
     return out_path
 
 
-def _abandon_queued_run(state_db_path: Path, task_id: str) -> None:
-    """Compensating UPDATE that flips a same-task queued run to
-    ``abandoned`` so it stops counting as an active reservation.
-
-    Used by :func:`apply_delegate_plan` when a post-reservation step fails
-    after the DB transaction has already committed (Issue #489 Blocker 2:
-    a leaked queued row makes the next dispatch see Pattern A as
-    occupied and silently flips it onto Pattern B). Best-effort: a
-    compensation failure is logged to stderr but not re-raised, because
-    we are already on the exception path and the original failure
-    should be what the caller observes.
-    """
-    from tools.state_db import connect
-    from tools.state_db.writer import StateWriter
-
-    try:
-        conn = connect(state_db_path)
-        try:
-            writer = StateWriter(conn)
-            with writer.transaction() as tx:
-                tx.update_run_status(
-                    task_id,
-                    "abandoned",
-                    outcome_note=(
-                        "apply post-reservation failed; compensated by "
-                        "tools.gen_delegate_payload (Issue #489 Blocker 2)"
-                    ),
-                )
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 — best-effort compensation
-        sys.stderr.write(
-            "tools.gen_delegate_payload: failed to compensate queued run "
-            f"task_id={task_id!r} ({type(exc).__name__}: {exc}). Manually "
-            f"`UPDATE runs SET status='abandoned' WHERE task_id='{task_id}'` "
-            "to unblock subsequent dispatch.\n"
-        )
-
-
 def apply_delegate_plan(
     plan: DelegatePlan,
     *,
@@ -1499,7 +2111,45 @@ def apply_delegate_plan(
     runtime_cmd: str = "claude-org-runtime",
     send_plan_out: Optional[Path] = None,
 ) -> ApplyResult:
-    """Execute the side effects: reserve in DB, write brief, settings, send_plan."""
+    """Execute the side effects: write brief / settings / send_plan, then
+    commit the T1 reservation + ``delegate_sent`` event.
+
+    Ordering is load-bearing (Issue #928). Every failure-prone step runs
+    FIRST and the single DB transaction runs LAST, so the two halves of
+    contract T1 — ``runs.status='queued'`` and the ``delegate_sent``
+    journal event — become all-or-nothing together with a sendable
+    payload on disk:
+
+    - a failure before the transaction leaves no run row and no event, so
+      the same ``task_id`` can simply be re-applied (this replaces the
+      Issue #489 post-commit ``abandoned`` compensation, which existed
+      only because the reservation used to commit first);
+    - a failure of the transaction itself leaves the generated files
+      behind, which the idempotent re-apply overwrites.
+
+    ``delegate_sent`` records "the delegation is confirmed and the
+    ``DELEGATE`` message is about to be sent". It is NOT proof of
+    delivery — that is T2's ``worker_spawned``, written by the dispatcher.
+
+    Known residual window (not introduced here): the re-apply preflight
+    reads ``runs.status`` outside the transaction, so a dispatcher that
+    flips ``queued`` → ``in_use`` *while* generation is running can have
+    its worker's brief rewritten under it before the final transaction
+    notices and refuses. That race is strictly narrower than the previous
+    ordering, where the reservation committed first and reset a live
+    ``in_use`` run back to ``queued`` before rewriting the same files with
+    no status check at all. Closing it completely means holding a DB write
+    lock across a subprocess (``settings generate``) or publishing files
+    from inside the transaction — both trade this narrow window for a
+    worse failure mode, so the guard is deliberately left at "refuse, one
+    step late" rather than "serialize".
+    """
+    # Issue #928 Blocker 2 preflight: refuse a re-apply onto a run that has
+    # already left T1 (or is terminal) before touching the filesystem. The
+    # authoritative check lives inside ``_reserve_in_db``'s transaction;
+    # doing it here too means a rejected dispatch creates no worktree,
+    # brief or settings file.
+    _assert_reappliable(_existing_run_reservation(state_db_path, plan.task_id), plan)
     # Issue #489 (d): preview-time layout integrity check. ``blocking_warnings``
     # surfaces deployments that have a non-git ``workers/<slug>/`` with
     # Pattern-A residue and no usable base clone — apply would either rewrite
@@ -1528,42 +2178,35 @@ def apply_delegate_plan(
     # inspected at plan time). May flip brief_out_path / delegate_body to
     # CLAUDE.local.md; a no-op for every non-pending plan.
     plan = _finalize_pending_clone_brief(plan)
+    # Issue #928: all failure-prone generation happens BEFORE the DB
+    # transaction. A failure here leaves no reservation and no event to
+    # compensate — the same task_id is simply re-appliable.
+    brief_path = _write_brief(plan)
+    # Resolve the send_plan output path up-front so the delivery guard can
+    # ignore the manifest's *actual* location (``--send-plan-out`` may
+    # relocate it inside worker_dir), not just the default basename.
+    if send_plan_out is None:
+        send_plan_out = brief_path.with_name("send_plan.json")
+    # Issue #725: keep the org-internal delivery artifacts out of a
+    # Pattern A new-project's git history via a worker_dir/.gitignore.
+    # No-op (returns None) for every pattern that inherits a base repo's
+    # .gitignore. Anchors on the final brief basename + send_plan path.
+    gitignore_path = _ensure_worker_dir_gitignore(
+        plan, send_plan_path=send_plan_out
+    )
+    settings_path: Optional[Path] = None
+    skipped_reason: Optional[str] = None
+    if skip_settings:
+        skipped_reason = "skip_settings flag set"
+    else:
+        settings_path, skipped_reason = _run_settings_generate(
+            plan, runtime_cmd=runtime_cmd
+        )
+    send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
+    # Final step: reservation + ``delegate_sent`` in one transaction.
     db_reservation = _reserve_in_db(
         plan, state_db_path=state_db_path, claude_org_root=claude_org_root
     )
-    # Issue #489 Blocker 2: ``_reserve_in_db`` already committed the queued
-    # row. Anything that fails *after* this commit (brief write hitting a
-    # full disk, send_plan write losing permissions, settings subprocess
-    # raising unexpectedly) leaks an active reservation. ``StateWriter``
-    # rollback can't help — its transaction is already closed. Wrap the
-    # remaining steps and run the compensating ``abandoned`` update on
-    # failure so the next dispatch sees Pattern A as free.
-    try:
-        brief_path = _write_brief(plan)
-        # Resolve the send_plan output path up-front so the delivery guard can
-        # ignore the manifest's *actual* location (``--send-plan-out`` may
-        # relocate it inside worker_dir), not just the default basename.
-        if send_plan_out is None:
-            send_plan_out = brief_path.with_name("send_plan.json")
-        # Issue #725: keep the org-internal delivery artifacts out of a
-        # Pattern A new-project's git history via a worker_dir/.gitignore.
-        # No-op (returns None) for every pattern that inherits a base repo's
-        # .gitignore. Anchors on the final brief basename + send_plan path.
-        gitignore_path = _ensure_worker_dir_gitignore(
-            plan, send_plan_path=send_plan_out
-        )
-        settings_path: Optional[Path] = None
-        skipped_reason: Optional[str] = None
-        if skip_settings:
-            skipped_reason = "skip_settings flag set"
-        else:
-            settings_path, skipped_reason = _run_settings_generate(
-                plan, runtime_cmd=runtime_cmd
-            )
-        send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
-    except BaseException:
-        _abandon_queued_run(state_db_path, plan.task_id)
-        raise
     return ApplyResult(
         plan=plan,
         brief_path=brief_path,
@@ -1572,6 +2215,7 @@ def apply_delegate_plan(
         send_plan_path=send_plan_path,
         db_reservation=db_reservation,
         gitignore_path=gitignore_path,
+        delegate_sent_event_id=db_reservation.get("delegate_sent_event_id"),
     )
 
 
@@ -1596,6 +2240,21 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--description", default=None)
     p.add_argument("--mode", choices=("edit", "audit"), default=None)
     p.add_argument("--branch", dest="branch_override", default=None)
+    # Issue #808: hotfix escape hatch over the registry's per-project
+    # base_branch. Help text stays ASCII-only so `--help` does not crash a
+    # cp932 Windows console (repo convention).
+    p.add_argument(
+        "--base-ref",
+        dest="base_ref_override",
+        default=None,
+        help=(
+            "Branch on origin to cut the worktree from, e.g. 'develop' "
+            "(an 'origin/' prefix is accepted). Also becomes the default "
+            "`gh pr create --base`. Precedence: this flag > the project's "
+            "base_branch column in registry/projects.md > origin/HEAD. "
+            "Apply fails loud if the branch does not exist on origin."
+        ),
+    )
     p.add_argument("--commit-prefix", default=None)
     p.add_argument(
         "--verification-depth", choices=("full", "minimal"), default=None
@@ -1615,6 +2274,9 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--impl-guidance", default=None)
     p.add_argument("--knowledge", action="append", default=[])
     p.add_argument("--parallel-notes", default=None)
+    # Issue #909: placement / report target. Shared with
+    # ``gen_worker_brief.py from-task`` so both input surfaces stay at parity.
+    gwb._add_report_args(p)
     p.add_argument("--registry-path", type=Path, default=None)
     p.add_argument("--state-db-path", type=Path, default=None)
     p.add_argument("--claude-org-root", type=Path, default=None)
@@ -1733,8 +2395,23 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     impl = cfg.get("implementation", {})
     refs = cfg.get("references", {})
     parallel = cfg.get("parallel", {})
+    report = cfg.get("report", {})
+    if not isinstance(report, dict):
+        raise SystemExit(f"error: {path}: [report] must be a TOML table")
     role = (worker.get("role") or "").strip()
     mode_from_toml = "audit" if role == "doc-audit" else "edit"
+
+    # Issue #808 / Codex Round 3 Major: a TOML ``base_ref = 5`` used to reach
+    # ``normalize_base_branch`` and abort preview / apply with a raw
+    # AttributeError traceback. Report it as the configuration error it is,
+    # naming the file and the offending value (mirrors
+    # ``gen_worker_brief.validate``'s type checks on the other task fields).
+    base_ref = task.get("base_ref")
+    if base_ref is not None and not isinstance(base_ref, str):
+        raise SystemExit(
+            f"error: {path}: [task].base_ref must be a string branch name "
+            f"(e.g. \"develop\"), got {type(base_ref).__name__} ({base_ref!r})"
+        )
 
     # Issue #290 defect 1: surface explicit [worker] fields so the resolver
     # honors them instead of silently re-deriving pattern/role/dir/self_edit.
@@ -1764,6 +2441,10 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "project_slug": project.get("name"),
         "description": task.get("description"),
         "branch_override": task.get("branch"),
+        # Issue #808: keep the TOML and CLI input forms at parity so a
+        # ``--from-toml`` dispatch can pin the base branch too (``--base-ref``
+        # still wins per the merge order in ``_gather_plan_kwargs``).
+        "base_ref_override": base_ref,
         "commit_prefix": task.get("commit_prefix"),
         "verification_depth": task.get("verification_depth"),
         "issue_url": task.get("issue_url"),
@@ -1774,6 +2455,11 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "implementation_guidance": impl.get("guidance"),
         "references_knowledge": refs.get("knowledge"),
         "parallel_notes": parallel.get("notes"),
+        # Issue #909: keep the TOML input form at parity with the CLI flags,
+        # so a ``--write-toml`` audit trail round-trips a background-tab
+        # dispatch instead of silently flattening it back to same_tab.
+        "placement": report.get("placement"),
+        "report_target": report.get("target"),
         "mode": mode_from_toml,
         "layout_overrides": layout_overrides or None,
     }
@@ -1819,6 +2505,9 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "description": args.description,
         "mode": args.mode,
         "branch_override": args.branch_override,
+        # ``getattr`` (not attribute access) for the same reason ``--pattern``
+        # uses it above: callers synthesize partial Namespaces.
+        "base_ref_override": getattr(args, "base_ref_override", None),
         "commit_prefix": args.commit_prefix,
         "verification_depth": args.verification_depth,
         "issue_url": args.issue_url,
@@ -1829,6 +2518,10 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "implementation_guidance": args.impl_guidance,
         "references_knowledge": args.knowledge or None,
         "parallel_notes": args.parallel_notes,
+        # ``getattr`` for the same reason ``--pattern`` uses it: callers
+        # synthesize partial Namespaces (Issue #909).
+        "placement": getattr(args, "placement", None),
+        "report_target": getattr(args, "report_target", None),
         "registry_path": args.registry_path,
         "workers_dir": args.workers_dir,
     }
@@ -1851,11 +2544,23 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
     kwargs = _gather_plan_kwargs(args)
-    plan = build_delegate_plan(
-        claude_org_root=claude_org_root,
-        state_db_path=state_db_path if state_db_path.exists() else None,
-        **kwargs,
-    )
+    try:
+        plan = build_delegate_plan(
+            claude_org_root=claude_org_root,
+            state_db_path=state_db_path if state_db_path.exists() else None,
+            **kwargs,
+        )
+    except (rwl.ResolveError, gwb.ConfigError) as e:
+        # ``ResolveError`` is the layout resolver's *input-rejection* channel
+        # (bad task_id / project_slug / mode), i.e. operator error, not a bug.
+        # ``ConfigError`` is the same channel for the brief config — Issue
+        # #909's ``--placement background_tab`` without a numeric
+        # ``--report-target`` lands here.
+        # Surface it in the same one-line ``error: ...`` shape the argument
+        # checks in ``_gather_plan_kwargs`` already use, instead of letting a
+        # Python traceback out of the CLI: this path is how a human first meets
+        # ``validate_task_id``, and a traceback reads as a crash.
+        raise SystemExit(f"error: {e}") from None
 
     if args.json_out:
         json.dump(
@@ -1910,11 +2615,17 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
     kwargs = _gather_plan_kwargs(args)
-    plan = build_delegate_plan(
-        claude_org_root=claude_org_root,
-        state_db_path=state_db_path if state_db_path.exists() else None,
-        **kwargs,
-    )
+    try:
+        plan = build_delegate_plan(
+            claude_org_root=claude_org_root,
+            state_db_path=state_db_path if state_db_path.exists() else None,
+            **kwargs,
+        )
+    except (rwl.ResolveError, gwb.ConfigError) as e:
+        # Same contract as ``_cmd_preview``: reject bad input with one line and
+        # no traceback. Raised before ``apply_delegate_plan`` runs, so nothing
+        # has been reserved / written when this fires.
+        raise SystemExit(f"error: {e}") from None
     result = apply_delegate_plan(
         plan,
         state_db_path=state_db_path,
@@ -1924,6 +2635,20 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         send_plan_out=args.send_plan_out,
     )
     print(f"reserved (queued) task_id={plan.task_id} pattern={plan.layout.pattern}")
+    # Issue #808: only announced when a non-default cut point is in play, so
+    # the common origin/HEAD dispatch keeps its existing output.
+    if plan.base_branch is not None:
+        print(
+            f"base: origin/{plan.base_branch} "
+            f"(source={plan.base_branch_source}; PR base default)"
+        )
+    # Issue #909: only announced for the background-tab exception, so the
+    # default same-tab dispatch keeps its existing output.
+    if plan.placement != gwb.DEFAULT_PLACEMENT:
+        print(
+            f"placement: {plan.placement} "
+            f"(brief reports to to_id=\"{plan.report_target}\")"
+        )
     print(f"brief: {result.brief_path}")
     if result.settings_path is not None:
         print(f"settings: {result.settings_path}")
@@ -1932,6 +2657,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     print(f"send_plan: {result.send_plan_path}")
     if result.gitignore_path is not None:
         print(f"gitignore: {result.gitignore_path} (Issue #725 delivery guard)")
+    # Issue #928: make the T1 journal event visible at the surface the
+    # Secretary actually reads, so a missing event is noticed here rather
+    # than months later in an audit. ASCII only (cp932 console safe).
+    if result.delegate_sent_event_id is not None:
+        print(f"delegate_sent: recorded (events.id={result.delegate_sent_event_id})")
+    else:
+        print("delegate_sent: already recorded for this run (re-apply, not duplicated)")
     print(_next_step_hint())
     return 0
 

@@ -1,8 +1,9 @@
 """Tests for tools/gen_delegate_payload.py (Issue #283 Stage 3).
 
 Coverage:
-- preview is non-destructive (no DB / no files)
-- apply reserves a runs.status='queued' row (Codex Blocker B-1)
+- preview is non-destructive (no DB rows, no events, no files)
+- apply reserves a runs.status='queued' row (Codex Blocker B-1) and records
+  the contract-T1 ``delegate_sent`` event in the same transaction (#928)
 - apply does NOT write Active Work Items (no writes outside the queued row)
 - DELEGATE body contains all required rows: pattern / role / Permission Mode
   / 検証深度 / planned_branch
@@ -15,11 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -111,6 +114,55 @@ class _Sandbox:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+
+def _events(db_path: Path, *, kind: Optional[str] = None) -> list[dict]:
+    """All event rows (optionally one kind), payload decoded, oldest first.
+
+    Issue #928: ``apply`` now writes the contract-T1 ``delegate_sent``
+    event, so several tests need to assert on the ``events`` table -
+    including the negative "preview writes none" direction.
+    """
+    conn = connect(db_path)
+    try:
+        sql = (
+            "SELECT e.id, e.kind, e.actor, e.payload_json, e.run_id, "
+            "r.task_id AS run_task_id FROM events e "
+            "LEFT JOIN runs r ON e.run_id = r.id"
+        )
+        params: tuple = ()
+        if kind is not None:
+            sql += " WHERE e.kind = ?"
+            params = (kind,)
+        sql += " ORDER BY e.id"
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+    for row in rows:
+        row["payload"] = json.loads(row.pop("payload_json") or "{}")
+    return rows
+
+
+def _delegate_sent_events(db_path: Path) -> list[dict]:
+    return _events(db_path, kind="delegate_sent")
+
+
+def _set_run_status(db_path: Path, task_id: str, status: str) -> None:
+    """Force a run into an arbitrary lifecycle status.
+
+    Written with raw SQL on purpose: ``StateWriter.update_run_status``
+    carries side effects (worker-state-file archiving) that are irrelevant
+    here - these tests only need the ``runs.status`` value the Issue #928
+    re-apply guard reads.
+    """
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE runs SET status = ? WHERE task_id = ?", (status, task_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +649,166 @@ class TestSettingsGenerateCmd(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Issue #909 — placement decides the report target
+# ---------------------------------------------------------------------------
+
+
+class TestIssue909Placement(unittest.TestCase):
+    """A background-tab dispatch must hand the worker a reachable address.
+
+    Peer names resolve only inside the sender's tab, so a worker placed in
+    a background tab (spawn-flow 3-1d) cannot reach ``to_id="secretary"``
+    at all — the completion report drops silently and the Secretary sees a
+    stall. The same-tab default must stay byte-identical.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _plan(self, **extra):
+        return gdp.build_delegate_plan(
+            task_id="place-task",
+            project_slug="clock-app",
+            description="do the thing",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            **extra,
+        )
+
+    def test_default_body_and_plan_fields_unchanged(self):
+        plan = self._plan()
+        self.assertEqual(plan.placement, "same_tab")
+        self.assertEqual(plan.report_target, "secretary")
+        self.assertIn("窓口ペイン名: `secretary`", plan.delegate_body)
+        self.assertNotIn("placement", plan.delegate_body)
+        # An explicit same_tab must render the identical body.
+        self.assertEqual(self._plan(placement="same_tab").delegate_body,
+                         plan.delegate_body)
+
+    def test_background_tab_body_carries_numeric_pane_id(self):
+        plan = self._plan(placement="background_tab", report_target="1")
+        self.assertEqual(plan.placement, "background_tab")
+        self.assertEqual(plan.report_target, "1")
+        self.assertIn('窓口の報告先: `to_id="1"`', plan.delegate_body)
+        self.assertIn("background_tab", plan.delegate_body)
+        # The unreachable name line must be gone, not merely supplemented.
+        self.assertNotIn("窓口ペイン名: `secretary`", plan.delegate_body)
+
+    def test_background_tab_flows_into_the_rendered_brief(self):
+        plan = self._plan(placement="background_tab", report_target="1")
+        brief = gwb.render(plan.config)
+        self.assertIn('send_message(to_id="1"', brief)
+        self.assertNotIn('send_message(to_id="secretary"', brief)
+
+    def test_summary_dict_discloses_both_fields(self):
+        summary = self._plan(
+            placement="background_tab", report_target="1"
+        ).to_summary_dict()
+        self.assertEqual(summary["placement"], "background_tab")
+        self.assertEqual(summary["report_target"], "1")
+
+    def test_background_tab_without_numeric_target_is_rejected(self):
+        with self.assertRaises(gwb.ConfigError):
+            self._plan(placement="background_tab")
+        with self.assertRaises(gwb.ConfigError):
+            self._plan(placement="background_tab", report_target="secretary")
+
+    def test_cli_rejects_background_tab_without_target_before_writing(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        runs_before = len(self.sb.list_runs())
+        buf = StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stdout(buf):
+            gdp.main([
+                "apply",
+                "--task-id", "place-cli",
+                "--project-slug", "clock-app",
+                "--description", "do the thing",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                "--skip-settings",
+                "--placement", "background_tab",
+            ])
+        msg = str(ctx.exception)
+        self.assertTrue(msg.startswith("error: "), msg)
+        self.assertIn("report.target is required", msg)
+        self.assertEqual(len(self.sb.list_runs()), runs_before)
+        self.assertFalse((self.sb.workers / "clock-app" / "CLAUDE.md").exists())
+
+    def test_cli_apply_writes_a_reachable_brief(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "apply",
+                "--task-id", "place-cli-ok",
+                "--project-slug", "clock-app",
+                "--description", "do the thing",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                "--skip-settings",
+                "--placement", "background_tab",
+                "--report-target", "1",
+            ])
+        self.assertEqual(rc, 0)
+        self.assertIn("placement: background_tab", buf.getvalue())
+        brief = self.sb.workers / "clock-app" / "CLAUDE.md"
+        self.assertIn('send_message(to_id="1"', brief.read_text(encoding="utf-8"))
+        send_plan = json.loads(
+            brief.with_name("send_plan.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(send_plan["summary"]["report_target"], "1")
+        self.assertIn('窓口の報告先: `to_id="1"`', send_plan["message"])
+
+    def test_from_toml_round_trips_the_report_table(self):
+        toml = Path(self._td.name) / "input.toml"
+        toml.write_text(
+            "[task]\n"
+            'id = "round-trip-909"\n'
+            'description = "round-trip via TOML"\n'
+            'verification_depth = "full"\n'
+            'branch = "round-trip-909"\n'
+            'commit_prefix = "feat(clock):"\n'
+            "\n[worker]\n"
+            'dir = "X:/dummy"\n'
+            'pattern = "A"\n'
+            'role = "default"\n'
+            "self_edit = false\n"
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            'description = "Web 時計"\n'
+            "\n[paths]\n"
+            'claude_org = "."\n'
+            "\n[report]\n"
+            'placement = "background_tab"\n'
+            'target = "1"\n',
+            encoding="utf-8",
+        )
+        kwargs = gdp._gather_plan_kwargs(
+            argparse.Namespace(
+                from_toml=toml,
+                task_id=None, project_slug=None, target=[], description=None,
+                mode=None, branch_override=None, commit_prefix=None,
+                verification_depth=None, issue_url=None, closes_issue=None,
+                refs_issues=None, project_name_override=None,
+                project_description_override=None, impl_target=[],
+                impl_guidance=None, knowledge=[], parallel_notes=None,
+                registry_path=None, state_db_path=None, claude_org_root=None,
+                workers_dir=None,
+            )
+        )
+        self.assertEqual(kwargs["placement"], "background_tab")
+        self.assertEqual(kwargs["report_target"], "1")
+
+
+# ---------------------------------------------------------------------------
 # CLI smoke tests (preview + apply paths)
 # ---------------------------------------------------------------------------
 
@@ -626,12 +838,18 @@ class TestCLI(unittest.TestCase):
         # Pre-condition: the worker dir doesn't exist yet
         self.assertFalse(worker_dir.exists())
         runs_before = len(self.sb.list_runs())
+        events_before = len(_events(self.sb.db_path))
         buf = StringIO()
         with redirect_stdout(buf):
             rc = gdp.main(["preview", *self._common_args()])
         self.assertEqual(rc, 0)
         self.assertFalse(worker_dir.exists())
         self.assertEqual(len(self.sb.list_runs()), runs_before)
+        # Issue #928 (Codex Major): apply records ``delegate_sent``, so the
+        # non-destructive claim now has to be checked against ``events`` too
+        # - a preview that journalled a delegation would be a false T1.
+        self.assertEqual(len(_events(self.sb.db_path)), events_before)
+        self.assertEqual(_delegate_sent_events(self.sb.db_path), [])
         out = buf.getvalue()
         self.assertIn("DELEGATE body (preview, no writes)", out)
         self.assertIn("Permission Mode: auto", out)
@@ -668,6 +886,83 @@ class TestCLI(unittest.TestCase):
         self.assertTrue(brief.exists())
         send_plan = brief.with_name("send_plan.json")
         self.assertTrue(send_plan.exists())
+
+
+class TestCLIRejectsUnusableTaskId(unittest.TestCase):
+    """``ResolveError`` must reach the CLI as one line, never as a traceback.
+
+    ``resolve_worker_layout.validate_task_id`` rejects task_ids that cannot
+    become a ``worker-<task_id>`` pane name. A human's first encounter with
+    that rule is almost always through ``gen_delegate_payload``, so an
+    unhandled ``ResolveError`` there reads as a crash rather than as input
+    rejection. These tests pin the ``error: ...`` shape already used by the
+    ``--task-id is required`` check and pin that ``apply`` rejects *before*
+    reserving anything.
+    """
+
+    # Whitespace / dot / non-ASCII: the three shapes the pane-name charset
+    # [A-Za-z0-9_-] rejects that an operator plausibly types.
+    BAD_TASK_IDS = ("ja 823 bad", "ja.823.bad", "ja-823-日本語")
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _args(self, task_id: str) -> list[str]:
+        return [
+            "--task-id", task_id,
+            "--project-slug", "clock-app",
+            "--description", "do the thing",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ]
+
+    def test_preview_reports_one_line_error_not_traceback(self):
+        for task_id in self.BAD_TASK_IDS:
+            with self.subTest(task_id=task_id):
+                with self.assertRaises(SystemExit) as cm:
+                    gdp.main(["preview", *self._args(task_id)])
+                msg = str(cm.exception.code)
+                self.assertTrue(
+                    msg.startswith("error: "),
+                    f"expected 'error: ' prefix, got {msg!r}",
+                )
+                self.assertNotIn("Traceback", msg)
+                # The message must stay ASCII so a cp932 console can print it
+                # (validate_task_id echoes non-ASCII input through ascii()).
+                msg.encode("ascii")
+
+    def test_apply_rejects_before_reserving_or_writing(self):
+        runs_before = len(self.sb.list_runs())
+        worker_dir = self.sb.workers / "clock-app"
+        for task_id in self.BAD_TASK_IDS:
+            with self.subTest(task_id=task_id):
+                with self.assertRaises(SystemExit) as cm:
+                    gdp.main(["apply", *self._args(task_id), "--skip-settings"])
+                self.assertTrue(str(cm.exception.code).startswith("error: "))
+        self.assertEqual(len(self.sb.list_runs()), runs_before)
+        self.assertFalse(worker_dir.exists())
+
+    def test_all_digit_task_id_is_rejected_the_same_way(self):
+        with self.assertRaises(SystemExit) as cm:
+            gdp.main(["preview", *self._args("823")])
+        msg = str(cm.exception.code)
+        self.assertTrue(msg.startswith("error: "))
+        self.assertIn("all digits", msg)
+
+    def test_valid_task_id_still_previews(self):
+        # Guards against the except-clause swallowing the happy path.
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *self._args("ja-823-ok")])
+        self.assertEqual(rc, 0)
+        self.assertIn("DELEGATE body (preview, no writes)", buf.getvalue())
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +1019,19 @@ class TestGoldenSnapshots(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self._check("pattern_a_default_full", plan.delegate_body)
+
+    def test_golden_pattern_a_background_tab(self):
+        """Issue #909: the background-tab body's report line, pinned."""
+        plan = gdp.build_delegate_plan(
+            task_id="snap-a-background",
+            project_slug="clock-app",
+            description="add a sparkline",
+            placement="background_tab",
+            report_target="1",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_a_background_tab", plan.delegate_body)
 
     def test_golden_pattern_b_self_edit_full(self):
         # claude-org-ja with concurrent active run forces Pattern B
@@ -1996,16 +2304,21 @@ class TestPatternOverrideCLI(unittest.TestCase):
         """Resolver rejects pattern=A on a self-edit slug — the error must
         propagate out of ``preview`` rather than letting the bad layout
         slip through."""
-        # ResolveError is raised inside build_delegate_plan, which runs
-        # under preview without reaching apply.
-        from tools.resolve_worker_layout import ResolveError as _RE
-
-        with self.assertRaises(_RE):
+        # ResolveError is raised inside build_delegate_plan, which runs under
+        # preview without reaching apply. ``_cmd_preview`` converts it to the
+        # CLI's one-line ``error: ...`` form (no traceback), so the assertion
+        # is on SystemExit carrying the resolver's own message rather than on
+        # the bare exception type; the invariant under test is unchanged —
+        # preview must fail, not emit a body for the bad layout.
+        with self.assertRaises(SystemExit) as cm:
             gdp.main([
                 "preview",
                 *self._common_args(slug="claude-org-ja"),
                 "--pattern", "A",
             ])
+        msg = str(cm.exception.code)
+        self.assertTrue(msg.startswith("error: "), msg)
+        self.assertIn("is incompatible with role='claude-org-self-edit'", msg)
 
 
 # ---------------------------------------------------------------------------
@@ -2733,14 +3046,19 @@ class TestIssue489OverrideWorkerDirAlignment(unittest.TestCase):
 
 
 class TestIssue489AtomicApplyRollback(unittest.TestCase):
-    """Issue #489 Blocker 2: ``_reserve_in_db`` commits the queued run
-    row before ``_write_brief`` / ``_run_settings_generate`` /
-    ``_write_send_plan`` run. A failure in any of those post-reservation
-    steps leaves the queued row in place; resolver then sees Pattern A
-    as occupied on the next dispatch and silently flips to Pattern B.
-    The atomic-rollback layer wraps the post-reservation block and
-    compensates with ``status='abandoned'`` on failure so the leak is
-    closed."""
+    """Issue #489 Blocker 2: a generation failure inside ``apply`` must not
+    leave an active reservation behind — the resolver treats ``queued`` as
+    occupied and would silently flip the next dispatch onto another
+    pattern / branch.
+
+    Issue #928 strengthened HOW that guarantee is met. The reservation used
+    to commit first and a post-commit compensating UPDATE flipped the row to
+    ``abandoned``; now every failure-prone step runs before the single
+    transaction, so a failure leaves **no run row at all** (and no
+    ``delegate_sent`` event). That is strictly stronger than the
+    compensation it replaces: there is no window in which a queued row
+    exists without a sendable payload, and no ``delegate_sent + abandoned``
+    pair that reads as "sent, then aborted"."""
 
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
@@ -2758,11 +3076,10 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
 
-    def test_write_brief_failure_compensates_queued_run(self):
-        """Patch ``_write_brief`` to raise after the DB reservation
-        commits. Expect: the exception propagates, and the queued run
-        row is flipped to ``abandoned`` so a follow-up dispatch sees
-        Pattern A as free."""
+    def test_write_brief_failure_leaves_no_run_row(self):
+        """Patch ``_write_brief`` to raise. Expect: the exception
+        propagates and NO run row exists, so a follow-up dispatch sees the
+        pattern as free and the same task_id stays re-appliable."""
         plan = self._build_plain_a()
         boom = RuntimeError("simulated disk failure during brief write")
         from unittest.mock import patch
@@ -2777,13 +3094,11 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
                 )
         self.assertIs(cm.exception, boom)
         runs = self.sb.list_runs()
-        match = [r for r in runs if r["task_id"] == "atomic-task"]
-        self.assertEqual(len(match), 1, runs)
-        self.assertEqual(match[0]["status"], "abandoned")
+        self.assertEqual([r for r in runs if r["task_id"] == "atomic-task"], [], runs)
 
-    def test_send_plan_write_failure_compensates_queued_run(self):
-        """Same contract for ``_write_send_plan`` — the last
-        post-reservation side effect must also be guarded."""
+    def test_send_plan_write_failure_leaves_no_run_row(self):
+        """Same contract for ``_write_send_plan`` — the last generation
+        step before the transaction."""
         plan = self._build_plain_a(task_id="send-plan-fail")
         boom = OSError("permission denied")
         from unittest.mock import patch
@@ -2796,13 +3111,30 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
                     claude_org_root=self.sb.claude_org_root,
                     skip_settings=True,
                 )
-        match = [r for r in self.sb.list_runs() if r["task_id"] == "send-plan-fail"]
-        self.assertEqual(match[0]["status"], "abandoned")
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "send-plan-fail"], []
+        )
+
+    def test_generation_failure_records_no_delegate_sent(self):
+        """Issue #928 Blocker 1: the whole point of committing the event
+        with the reservation is that a half-finished apply must never leave
+        a ``delegate_sent`` claiming a delegation that has no payload."""
+        plan = self._build_plain_a(task_id="no-event-on-failure")
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_send_plan", side_effect=OSError("nope")):
+            with self.assertRaises(OSError):
+                gdp.apply_delegate_plan(
+                    plan,
+                    state_db_path=self.sb.db_path,
+                    claude_org_root=self.sb.claude_org_root,
+                    skip_settings=True,
+                )
+        self.assertEqual(_delegate_sent_events(self.sb.db_path), [])
 
     def test_successful_apply_leaves_queued_run_intact(self):
-        """Sanity guard: on the happy path the queued row stays queued
-        (the rollback layer must be a no-op when nothing fails). The
-        next dispatcher T2 promotes it to ``in_use``."""
+        """Sanity guard: on the happy path the queued row stays queued.
+        The next dispatcher T2 promotes it to ``in_use``."""
         plan = self._build_plain_a(task_id="happy-task")
         gdp.apply_delegate_plan(
             plan,
@@ -2812,6 +3144,246 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
         )
         match = [r for r in self.sb.list_runs() if r["task_id"] == "happy-task"]
         self.assertEqual(match[0]["status"], "queued")
+
+
+# ---------------------------------------------------------------------------
+# Issue #928: apply records the contract-T1 delegate_sent event
+# ---------------------------------------------------------------------------
+
+
+class TestIssue928DelegateSentEvent(unittest.TestCase):
+    """Issue #928: contract T1 requires both a state write and a
+    ``delegate_sent`` journal event, but only the state write lived in
+    code - the event was a hand-typed command nobody was reminded to run,
+    so it silently stopped being emitted. ``apply`` now writes both in one
+    transaction."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # Self-edit sandbox: the claude-org-ja origin URL makes every plan
+        # resolve to the same Pattern B live-repo worktree, so re-apply -
+        # the central case here - keeps a stable reservation identity. A
+        # Pattern A worker dir cannot: its own queued reservation makes the
+        # next resolve flip to another pattern (Codex Round 1 P2).
+        self.sb = _Sandbox(Path(self._td.name))
+        import os
+        self._env = os.environ.copy()
+        self._env.update({
+            "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
+        })
+        self._git("commit", "--allow-empty", "-m", "m1", "-q")
+        self._git("branch", "-M", "main")
+        self._git("update-ref", "refs/remotes/origin/main",
+                  self._out("rev-parse", "main"))
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        # Self-edit detection keys on a github.com origin URL, so this
+        # sandbox has to advertise one - but a *configured* origin makes
+        # ``_ensure_worktree`` run a real ``git fetch origin`` (fail-closed
+        # by design, Issue #480), which would make every test here depend on
+        # network access to github.com. The refs above already stand in for
+        # the remote, and nothing in this class asserts on fetch freshness.
+        from unittest.mock import patch
+        fetch_patch = patch.object(gdp, "_fetch_base_origin", lambda base_repo: None)
+        fetch_patch.start()
+        self.addCleanup(fetch_patch.stop)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.sb.claude_org_root), *args],
+                       check=True, env=self._env, capture_output=True)
+
+    def _out(self, *args) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+        ).decode().strip()
+
+    def _plan(self, task_id: str = "evt-task", **kwargs) -> gdp.DelegatePlan:
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="record the event",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            **kwargs,
+        )
+
+    def _apply(self, plan: gdp.DelegatePlan) -> gdp.ApplyResult:
+        return gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+    def test_apply_records_delegate_sent_with_catalog_payload(self):
+        """Payload keys are fixed by ``docs/journal-events.md`` (task /
+        worker / dir) and the actor by the contract (secretary)."""
+        plan = self._plan()
+        result = self._apply(plan)
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual(len(events), 1, events)
+        evt = events[0]
+        self.assertEqual(evt["actor"], "secretary")
+        self.assertEqual(
+            evt["payload"],
+            {
+                "task": "evt-task",
+                "worker": "worker-evt-task",
+                "dir": str(plan.layout.worker_dir),
+            },
+        )
+        # Linked to the run row reserved in the same transaction.
+        self.assertEqual(evt["run_task_id"], "evt-task")
+        self.assertEqual(result.delegate_sent_event_id, evt["id"])
+
+    def test_reapply_of_a_queued_run_does_not_duplicate_the_event(self):
+        """Blocker 2 branch 1: re-running apply corrects a not-yet-sent
+        delegation. T1 fires once per delegation, not once per apply."""
+        self._apply(self._plan(task_id="twice"))
+        result = self._apply(self._plan(task_id="twice"))
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
+        self.assertIsNone(result.delegate_sent_event_id)
+
+    def test_reapply_with_a_revised_brief_still_records_one_event(self):
+        """A corrected re-apply rewrites the payload on disk but stays a
+        single delegation, so it must not append a second event."""
+        self._apply(self._plan(task_id="revised"))
+        result = self._apply(
+            self._plan(task_id="revised",
+                       implementation_guidance="round 2 guidance")
+        )
+        self.assertIn("round 2 guidance", result.brief_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
+
+    def test_apply_refuses_a_run_that_already_left_t1(self):
+        """Blocker 2 branch 2: ``upsert_run`` would happily reset a live or
+        terminal run back to ``queued`` and append a second event."""
+        for status in ("in_use", "review", "completed", "failed",
+                       "suspended", "abandoned"):
+            with self.subTest(status=status):
+                task_id = f"live-{status}"
+                self._apply(self._plan(task_id=task_id))
+                _set_run_status(self.sb.db_path, task_id, status)
+                with self.assertRaises(gdp.RunAlreadyDispatchedError) as cm:
+                    self._apply(self._plan(task_id=task_id))
+                self.assertIn(status, str(cm.exception))
+                self.assertIn(task_id, str(cm.exception))
+                # Refused, so nothing was reset and nothing was appended.
+                match = [
+                    r for r in self.sb.list_runs() if r["task_id"] == task_id
+                ]
+                self.assertEqual(match[0]["status"], status)
+                self.assertEqual(
+                    len([
+                        e for e in _delegate_sent_events(self.sb.db_path)
+                        if e["run_task_id"] == task_id
+                    ]),
+                    1,
+                )
+
+    def test_refusal_happens_before_any_filesystem_write(self):
+        """The preflight exists so a rejected dispatch does not leave a
+        rewritten brief / send_plan behind for the live worker to read."""
+        plan = self._plan(task_id="no-fs-writes")
+        self._apply(plan)
+        _set_run_status(self.sb.db_path, "no-fs-writes", "in_use")
+        brief = plan.brief_out_path
+        brief.write_text("worker edited this", encoding="utf-8")
+        with self.assertRaises(gdp.RunAlreadyDispatchedError):
+            self._apply(self._plan(task_id="no-fs-writes"))
+        self.assertEqual(brief.read_text(encoding="utf-8"), "worker edited this")
+
+    def test_apply_refuses_to_repoint_a_queued_reservation(self):
+        """Codex Round 1 P2: a re-apply whose plan resolved elsewhere would
+        leave the run row pointing at a new worker dir while the recorded
+        ``delegate_sent`` still names the old one."""
+        import dataclasses
+
+        plan = self._plan(task_id="moved")
+        self._apply(plan)
+        retry = self._plan(task_id="moved")
+        moved = dataclasses.replace(
+            retry,
+            layout=dataclasses.replace(
+                retry.layout,
+                worker_dir=str(Path(plan.layout.worker_dir).parent / "elsewhere"),
+            ),
+        )
+        with self.assertRaises(gdp.ReservationIdentityMismatchError) as cm:
+            self._apply(moved)
+        msg = str(cm.exception)
+        self.assertIn("worker_dir", msg)
+        self.assertIn(str(plan.layout.worker_dir), msg)   # what is reserved
+        self.assertIn("elsewhere", msg)                   # what this apply wants
+        # Untouched: still one event, still the original dir.
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["dir"], str(plan.layout.worker_dir))
+
+    def test_a_hand_written_delegate_sent_is_not_duplicated(self):
+        """Codex Round 1 P2: ``journal_append`` and the legacy-journal
+        importer write ``delegate_sent`` with a payload but no ``run_id``,
+        so the exactly-once check cannot key on the run link alone."""
+        conn = connect(self.sb.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO events (kind, payload_json) VALUES (?, ?)",
+                ("delegate_sent", json.dumps({"task": "hand-written"})),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result = self._apply(self._plan(task_id="hand-written"))
+        self.assertIsNone(result.delegate_sent_event_id)
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual(len(events), 1, events)
+        self.assertIsNone(events[0]["run_id"])
+
+    def test_failed_apply_can_be_retried_with_the_same_task_id(self):
+        """Blocker 2 branch 3: a failure before the final transaction
+        reserves nothing, so the guard must not lock that task_id out."""
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_send_plan", side_effect=OSError("nope")):
+            with self.assertRaises(OSError):
+                self._apply(self._plan(task_id="retry-me"))
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "retry-me"], []
+        )
+        self._apply(self._plan(task_id="retry-me"))
+        match = [r for r in self.sb.list_runs() if r["task_id"] == "retry-me"]
+        self.assertEqual(match[0]["status"], "queued")
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
+
+    def test_cli_apply_reports_the_recorded_event(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        args = [
+            "--task-id", "cli-evt",
+            "--project-slug", "claude-org-ja",
+            "--description", "do the thing",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+            "--skip-settings",
+        ]
+        buf = StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(gdp.main(["apply", *args]), 0)
+        self.assertIn("delegate_sent: recorded (events.id=", buf.getvalue())
+        buf = StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(gdp.main(["apply", *args]), 0)
+        self.assertIn("delegate_sent: already recorded", buf.getvalue())
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -3329,6 +3901,698 @@ class TestIssue712BriefPlacement(unittest.TestCase):
         self.assertTrue(
             (Path(plan.layout.worker_dir) / "CLAUDE.md").exists()
         )
+
+
+class TestNormalizeBaseBranch(unittest.TestCase):
+    """Issue #808: one normalizer for both inputs (--base-ref and the registry
+    ``base_branch`` column) so they cannot disagree on what a value means."""
+
+    def test_bare_branch_name_passes_through(self):
+        self.assertEqual(gdp.normalize_base_branch("develop"), "develop")
+
+    def test_origin_prefix_is_stripped(self):
+        # An operator writing the ref the way git prints it must land on the
+        # same branch as the bare name.
+        self.assertEqual(gdp.normalize_base_branch("origin/develop"), "develop")
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        # Markdown table cells arrive padded.
+        self.assertEqual(gdp.normalize_base_branch("  develop  "), "develop")
+        self.assertEqual(gdp.normalize_base_branch(" origin/ develop "), "develop")
+
+    def test_unset_forms_map_to_none(self):
+        # None == "not configured" == keep the historical origin/HEAD path.
+        for value in (None, "", "   ", "-", " - ", "origin/"):
+            with self.subTest(value=value):
+                self.assertIsNone(gdp.normalize_base_branch(value))
+
+    def test_slashed_branch_name_survives(self):
+        # Only a leading ``origin/`` is special; a real hierarchical branch
+        # name must not be mangled.
+        self.assertEqual(
+            gdp.normalize_base_branch("release/2026-Q3"), "release/2026-Q3"
+        )
+        self.assertEqual(
+            gdp.normalize_base_branch("origin/release/2026-Q3"), "release/2026-Q3"
+        )
+
+
+class TestBaseBranchResolution(unittest.TestCase):
+    """Issue #808: per-project default base branch + --base-ref override.
+
+    Covers the precedence chain (CLI > registry > origin/HEAD), the worktree
+    actually being cut from the configured branch, and the fail-loud refusal
+    when the configured branch does not exist on origin.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # This class drives its own git init (needs a controlled main/develop
+        # divergence), so it opts out of the sandbox-level init.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        base = self.sb.claude_org_root
+        self._git("init", "-q", "-b", "main")
+        self._git("commit", "--allow-empty", "-m", "main-1", "-q")
+        self.main_sha = self._rev_parse("main")
+        self._git("update-ref", "refs/remotes/origin/main", self.main_sha)
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        # A develop branch that is genuinely AHEAD of main, so a test can tell
+        # "cut from develop" apart from "cut from origin/HEAD" by SHA alone.
+        self._git("commit", "--allow-empty", "-m", "develop-1", "-q")
+        self.develop_sha = self._rev_parse("HEAD")
+        self._git("update-ref", "refs/remotes/origin/develop", self.develop_sha)
+        # Leave the checkout back on main so HEAD is not itself develop.
+        self._git("reset", "--hard", "-q", self.main_sha)
+        self.assertNotEqual(self.main_sha, self.develop_sha)
+        self.base = base
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    # -- helpers ----------------------------------------------------------
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+            check=True, env=self._git_env, capture_output=True,
+        )
+
+    def _rev_parse(self, ref: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), "rev-parse", ref],
+        ).decode().strip()
+
+    def _write_registry(self, base_branch: str) -> None:
+        """Rewrite the sandbox registry with the Issue #808 column."""
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 "
+            "| base_branch |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} "
+            f"| Self | スキル改善 | {base_branch} |\n",
+            encoding="utf-8",
+        )
+
+    def _plan(self, *, task_id: str = "bb-task", base_ref_override=None):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="base branch dispatch",
+            base_ref_override=base_ref_override,
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _apply(self, plan):
+        return gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+    # -- precedence -------------------------------------------------------
+    def test_registry_base_branch_is_used_when_no_cli_override(self):
+        self._write_registry("develop")
+        plan = self._plan()
+        self.assertEqual(plan.base_branch, "develop")
+        self.assertEqual(plan.base_branch_source, "registry")
+        self.assertEqual(plan.to_summary_dict()["base_ref"], "origin/develop")
+
+    def test_cli_base_ref_beats_registry(self):
+        # The hotfix escape hatch: registry says develop, this dispatch cuts
+        # from main.
+        self._write_registry("develop")
+        plan = self._plan(base_ref_override="main")
+        self.assertEqual(plan.base_branch, "main")
+        self.assertEqual(plan.base_branch_source, "cli")
+
+    def test_cli_base_ref_used_when_registry_column_absent(self):
+        # The sandbox default registry has no base_branch column at all.
+        plan = self._plan(base_ref_override="develop")
+        self.assertEqual(plan.base_branch, "develop")
+        self.assertEqual(plan.base_branch_source, "cli")
+
+    def test_unset_registry_column_falls_back_to_origin_head(self):
+        for cell in ("", "-"):
+            with self.subTest(cell=cell):
+                self._write_registry(cell)
+                plan = self._plan()
+                self.assertIsNone(plan.base_branch)
+                self.assertEqual(plan.base_branch_source, "origin_head")
+                self.assertEqual(
+                    plan.to_summary_dict()["base_ref"], "origin/HEAD"
+                )
+
+    def test_no_registry_column_falls_back_to_origin_head(self):
+        # Backwards compatibility: the pre-#808 registry shape.
+        plan = self._plan()
+        self.assertIsNone(plan.base_branch)
+        self.assertEqual(plan.base_branch_source, "origin_head")
+
+    def test_origin_prefixed_registry_value_is_normalized(self):
+        self._write_registry("origin/develop")
+        self.assertEqual(self._plan().base_branch, "develop")
+
+    # -- DELEGATE body ----------------------------------------------------
+    def test_delegate_body_announces_the_configured_base(self):
+        self._write_registry("develop")
+        body = self._plan().delegate_body
+        self.assertIn("ベース: origin/develop", body)
+        self.assertIn("registry base_branch", body)
+
+    def test_delegate_body_names_the_cli_flag_as_source(self):
+        self._write_registry("develop")
+        body = self._plan(base_ref_override="main").delegate_body
+        self.assertIn("ベース: origin/main", body)
+        self.assertIn("--base-ref", body)
+
+    def test_delegate_body_unchanged_when_unconfigured(self):
+        # Every pre-#808 project must keep its byte-identical body.
+        body = self._plan().delegate_body
+        self.assertNotIn("ベース:", body)
+
+    # -- apply: the worktree is actually cut from the configured branch ----
+    def test_apply_cuts_worktree_from_configured_base_branch(self):
+        self._write_registry("develop")
+        plan = self._plan(task_id="cut-develop")
+        self._apply(plan)
+        worker_dir = Path(plan.layout.worker_dir)
+        head = subprocess.check_output(
+            ["git", "-C", str(worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.develop_sha)
+        # ...and specifically NOT the origin/HEAD default the pre-#808 code
+        # would have used.
+        self.assertNotEqual(head, self.main_sha)
+
+    def test_apply_cuts_from_origin_head_when_unconfigured(self):
+        plan = self._plan(task_id="cut-default")
+        self._apply(plan)
+        head = subprocess.check_output(
+            ["git", "-C", str(plan.layout.worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.main_sha)
+
+    def test_apply_honours_cli_override_at_the_git_level(self):
+        self._write_registry("develop")
+        plan = self._plan(task_id="cut-hotfix", base_ref_override="main")
+        self._apply(plan)
+        head = subprocess.check_output(
+            ["git", "-C", str(plan.layout.worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.main_sha)
+
+    # -- apply: fail loud on a missing branch ------------------------------
+    def test_apply_fails_loud_when_registry_branch_missing_on_origin(self):
+        self._write_registry("develp")  # typo, never pushed
+        plan = self._plan(task_id="missing-registry")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(plan)
+        msg = str(cm.exception)
+        self.assertIn("develp", msg)
+        # The message must name the input the operator has to fix.
+        self.assertIn("base_branch", msg)
+        self.assertIn("claude-org-ja", msg)
+        # It must NOT have degraded to the default branch.
+        self.assertFalse(Path(plan.layout.worker_dir).exists())
+
+    def test_apply_fails_loud_when_cli_branch_missing_on_origin(self):
+        plan = self._plan(task_id="missing-cli", base_ref_override="nope")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(plan)
+        self.assertIn("--base-ref", str(cm.exception))
+
+    def test_missing_base_branch_is_a_worktree_apply_error_subclass(self):
+        # Existing `except WorktreeApplyError` callers must keep catching it.
+        self.assertTrue(
+            issubclass(gdp.BaseBranchApplyError, gdp.WorktreeApplyError)
+        )
+
+    def test_missing_base_branch_leaks_no_queued_run_row(self):
+        # Same invariant as the other pre-reservation aborts: a leaked
+        # `queued` row makes the next dispatch see the pattern as occupied.
+        self._write_registry("does-not-exist")
+        plan = self._plan(task_id="no-leak")
+        with self.assertRaises(gdp.BaseBranchApplyError):
+            self._apply(plan)
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "no-leak"], []
+        )
+
+
+class TestBaseBranchReachesTheBrief(unittest.TestCase):
+    """Issue #808 / Codex Round 1 Major: the effective base must reach the
+    rendered worker brief, or the worker's `codex exec review --base ...`
+    would diff a develop-based task against origin/main and treat every
+    develop-only commit as part of the task's own change."""
+
+    def _render(self, base_ref=None):
+        config = {
+            "task": {
+                "id": "t1",
+                "description": "d",
+                "verification_depth": "full",
+                "branch": "feat/t1",
+                "commit_prefix": "feat:",
+            },
+            "worker": {
+                "dir": "/tmp/w",
+                "pattern": "B",
+                "role": "default",
+                "self_edit": False,
+            },
+            "project": {"name": "p", "description": "pd"},
+            "paths": {"claude_org": "/tmp/org"},
+        }
+        if base_ref is not None:
+            config["task"]["base_ref"] = base_ref
+        return gwb.render(config)
+
+    def test_configured_base_ref_lands_in_the_review_command(self):
+        out = self._render("origin/develop")
+        self.assertIn(
+            "codex exec review --base origin/develop", out
+        )
+        self.assertNotIn("--base origin/main", out)
+
+    def test_default_stays_origin_main(self):
+        # Every pre-#808 brief must render byte-identically.
+        self.assertIn("codex exec review --base origin/main", self._render())
+
+    def test_shell_metacharacters_in_the_ref_are_quoted(self):
+        """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
+        this value lands in a ```bash fence the worker copy-pastes, so a raw
+        interpolation would be command execution, not a ref."""
+        out = self._render("origin/foo$(id);whoami")
+        self.assertNotIn("--base origin/foo$(id);whoami", out)
+        self.assertIn(
+            "--base " + shlex.quote("origin/foo$(id);whoami"), out
+        )
+        # Round-trips back to the literal ref when the shell parses it.
+        line = next(
+            l for l in out.splitlines() if l.startswith("codex exec review")
+        )
+        argv = shlex.split(line.split("<")[0])
+        self.assertEqual(argv[argv.index("--base") + 1], "origin/foo$(id);whoami")
+
+    def test_non_string_base_ref_is_rejected(self):
+        config = {
+            "task": {
+                "id": "t1", "description": "d", "verification_depth": "full",
+                "branch": "b", "commit_prefix": "p:", "base_ref": 5,
+            },
+            "worker": {
+                "dir": "/tmp/w", "pattern": "B", "role": "default",
+                "self_edit": False,
+            },
+            "project": {"name": "p", "description": "pd"},
+            "paths": {"claude_org": "/tmp/org"},
+        }
+        with self.assertRaises(gwb.ConfigError):
+            gwb.validate(config)
+
+    def test_planner_injects_the_effective_base_into_the_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            sb = _Sandbox(Path(td))
+            plan = gdp.build_delegate_plan(
+                task_id="brief-base",
+                project_slug="claude-org-ja",
+                description="d",
+                base_ref_override="develop",
+                claude_org_root=sb.claude_org_root,
+                state_db_path=sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "live_repo_worktree",
+                    "role": "claude-org-self-edit",
+                    "self_edit": True,
+                },
+            )
+            self.assertEqual(plan.config["task"]["base_ref"], "origin/develop")
+            self.assertIn(
+                "codex exec review --base origin/develop", gwb.render(plan.config)
+            )
+
+    def test_planner_leaves_base_ref_unset_when_unconfigured(self):
+        with tempfile.TemporaryDirectory() as td:
+            sb = _Sandbox(Path(td))
+            plan = gdp.build_delegate_plan(
+                task_id="brief-default",
+                project_slug="claude-org-ja",
+                description="d",
+                claude_org_root=sb.claude_org_root,
+                state_db_path=sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "live_repo_worktree",
+                    "role": "claude-org-self-edit",
+                    "self_edit": True,
+                },
+            )
+            self.assertNotIn("base_ref", plan.config["task"])
+
+
+class TestBaseBranchAgainstRealRemote(unittest.TestCase):
+    """Issue #808 / Codex Round 1 Major: the remote-tracking ref is a cache,
+    so existence must be decided against the remote itself.
+
+    Uses a local bare repo as ``origin`` -- the same hermetic stand-in for a
+    real remote the rest of this module uses.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        root = Path(self._td.name)
+        import os
+        self._env = os.environ.copy()
+        self._env.update({
+            "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
+        })
+        # origin: a bare repo carrying main + develop.
+        self.origin = root / "origin.git"
+        self._run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)])
+        seed = root / "seed"
+        self._run(["git", "init", "-q", "-b", "main", str(seed)])
+        self._run(["git", "-C", str(seed), "commit", "--allow-empty", "-m", "m1", "-q"])
+        self._run(["git", "-C", str(seed), "checkout", "-q", "-b", "develop"])
+        self._run(["git", "-C", str(seed), "commit", "--allow-empty", "-m", "d1", "-q"])
+        self._run(["git", "-C", str(seed), "remote", "add", "origin", str(self.origin)])
+        self._run(["git", "-C", str(seed), "push", "-q", "origin", "main", "develop"])
+        self.seed = seed
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _run(self, cmd, check=True):
+        return subprocess.run(cmd, check=check, env=self._env, capture_output=True)
+
+    def _clone(self, name: str, *extra: str) -> Path:
+        target = Path(self._td.name) / name
+        self._run(["git", "clone", "-q", *extra, str(self.origin), str(target)])
+        return target
+
+    def test_single_branch_clone_still_resolves_the_configured_branch(self):
+        """False-negative guard: a restricted fetch refspec means plain
+        `git fetch origin` never creates origin/develop, but develop DOES
+        exist on the remote, so the dispatch must not be refused."""
+        clone = self._clone("single", "--single-branch", "--branch", "main")
+        # Precondition: the local remote-tracking ref genuinely is absent.
+        probe = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet",
+             "refs/remotes/origin/develop"],
+            capture_output=True,
+        )
+        self.assertNotEqual(probe.returncode, 0, "fixture did not restrict the refspec")
+        self.assertTrue(gdp._materialize_origin_branch(clone, "develop"))
+        # ...and the ref is now materialized, so `git worktree add` can use it.
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet",
+                 "refs/remotes/origin/develop"],
+                capture_output=True,
+            ).returncode,
+            0,
+        )
+
+    def test_stale_remote_tracking_ref_of_a_deleted_branch_is_refused(self):
+        """False-positive guard: `git fetch origin` does not prune, so a
+        branch deleted on the remote leaves a stale local ref behind."""
+        clone = self._clone("stale")
+        self._run(["git", "-C", str(clone), "fetch", "-q", "origin"])
+        # Delete develop on the remote; the clone's stale ref survives.
+        self._run(["git", "-C", str(self.seed), "push", "-q", "origin",
+                   "--delete", "develop"])
+        self._run(["git", "-C", str(clone), "fetch", "-q", "origin"])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet",
+                 "refs/remotes/origin/develop"],
+                capture_output=True,
+            ).returncode,
+            0,
+            "fixture expected a surviving stale ref",
+        )
+        self.assertFalse(gdp._materialize_origin_branch(clone, "develop"))
+
+    def test_existing_branch_resolves_and_refreshes_to_the_remote_tip(self):
+        clone = self._clone("fresh")
+        # Advance develop on the remote after the clone.
+        self._run(["git", "-C", str(self.seed), "checkout", "-q", "develop"])
+        self._run(["git", "-C", str(self.seed), "commit", "--allow-empty",
+                   "-m", "d2", "-q"])
+        self._run(["git", "-C", str(self.seed), "push", "-q", "origin", "develop"])
+        remote_tip = subprocess.check_output(
+            ["git", "-C", str(self.seed), "rev-parse", "develop"],
+        ).decode().strip()
+        self.assertTrue(gdp._materialize_origin_branch(clone, "develop"))
+        local = subprocess.check_output(
+            ["git", "-C", str(clone), "rev-parse", "refs/remotes/origin/develop"],
+        ).decode().strip()
+        self.assertEqual(local, remote_tip)
+
+    def test_missing_branch_on_the_remote_is_refused(self):
+        clone = self._clone("missing")
+        self.assertFalse(gdp._materialize_origin_branch(clone, "no-such-branch"))
+
+    def test_no_origin_remote_falls_back_to_the_local_ref(self):
+        # Purely-local repos (and this module's other fixtures) synthesize
+        # refs/remotes/origin/* with update-ref and have no real remote.
+        local = Path(self._td.name) / "local"
+        self._run(["git", "init", "-q", "-b", "main", str(local)])
+        self._run(["git", "-C", str(local), "commit", "--allow-empty",
+                   "-m", "c", "-q"])
+        sha = subprocess.check_output(
+            ["git", "-C", str(local), "rev-parse", "main"],
+        ).decode().strip()
+        self._run(["git", "-C", str(local), "update-ref",
+                   "refs/remotes/origin/develop", sha])
+        self.assertTrue(gdp._materialize_origin_branch(local, "develop"))
+        self.assertFalse(gdp._materialize_origin_branch(local, "absent"))
+
+
+class TestReusedWorktreeBaseGuard(unittest.TestCase):
+    """Issue #808 / Codex Round 1 Major: `_ensure_worktree` returns early for
+    an already-registered worktree, so a retry that changes the base would
+    otherwise keep the old branch while advertising the new PR base."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._env = os.environ.copy()
+        self._env.update({
+            "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
+        })
+        self._git("init", "-q", "-b", "main")
+        self._git("commit", "--allow-empty", "-m", "m1", "-q")
+        main_sha = self._out("rev-parse", "main")
+        self._git("update-ref", "refs/remotes/origin/main", main_sha)
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        self._git("commit", "--allow-empty", "-m", "d1", "-q")
+        self._git("update-ref", "refs/remotes/origin/develop",
+                  self._out("rev-parse", "HEAD"))
+        self._git("reset", "--hard", "-q", main_sha)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.sb.claude_org_root), *args],
+                       check=True, env=self._env, capture_output=True)
+
+    def _out(self, *args) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+        ).decode().strip()
+
+    def _plan(self, *, task_id, base_ref_override=None):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="d",
+            base_ref_override=base_ref_override,
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _apply(self, plan):
+        return gdp.apply_delegate_plan(
+            plan, state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root, skip_settings=True,
+        )
+
+    def test_creation_records_the_base_it_cut_from(self):
+        plan = self._plan(task_id="rec", base_ref_override="develop")
+        self._apply(plan)
+        self.assertEqual(
+            gdp._recorded_worktree_base(
+                self.sb.claude_org_root, plan.layout.planned_branch
+            ),
+            "origin/develop",
+        )
+
+    def test_reuse_with_the_same_base_is_still_idempotent(self):
+        plan = self._plan(task_id="same", base_ref_override="develop")
+        self._apply(plan)
+        # Second apply of an identical plan must not raise.
+        self._apply(self._plan(task_id="same", base_ref_override="develop"))
+
+    def test_reuse_refuses_when_the_configured_base_changed(self):
+        # First dispatch cuts from develop; the retry says main.
+        self._apply(self._plan(task_id="changed", base_ref_override="develop"))
+        retry = self._plan(task_id="changed", base_ref_override="main")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(retry)
+        msg = str(cm.exception)
+        self.assertIn("origin/develop", msg)   # what the branch was cut from
+        self.assertIn("origin/main", msg)      # what this dispatch wants
+        self.assertIn("worktree remove", msg)  # the recovery instruction
+
+    def test_reuse_refuses_when_the_configured_branch_vanished_from_origin(self):
+        """Codex Round 2 Major: the reuse path must run the same existence
+        check as creation, or a branch deleted from origin after the first
+        apply is silently advertised as the PR base."""
+        self._apply(self._plan(task_id="vanished", base_ref_override="develop"))
+        # Simulate the branch disappearing from the remote. This fixture has no
+        # real origin, so the local remote-tracking ref IS the authority here.
+        self._git("update-ref", "-d", "refs/remotes/origin/develop")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(self._plan(task_id="vanished", base_ref_override="develop"))
+        self.assertIn("does not exist on the remote", str(cm.exception))
+
+    def test_reuse_without_a_record_proceeds(self):
+        # Worktrees created before Issue #808 carry no record; the guard must
+        # only ever add a refusal where an authoritative record disagrees.
+        plan = self._plan(task_id="norec", base_ref_override="develop")
+        self._apply(plan)
+        self._git("config", "--unset",
+                  f"branch.{plan.layout.planned_branch}.claudeOrgBase")
+        self._apply(self._plan(task_id="norec", base_ref_override="main"))
+
+    def test_reuse_refuses_when_the_override_is_dropped(self):
+        """Codex Round 2 Blocker: dropping the override on a retry is the same
+        mismatch as changing it — origin/HEAD resolves to a concrete branch
+        (main) that disagrees with the recorded develop."""
+        self._apply(self._plan(task_id="dropped", base_ref_override="develop"))
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(self._plan(task_id="dropped"))
+        msg = str(cm.exception)
+        self.assertIn("origin/develop", msg)
+        self.assertIn("origin/main", msg)
+
+    def test_unconfigured_reuse_of_an_unconfigured_worktree_is_idempotent(self):
+        # The genuine no-churn case: recorded base == resolved origin/HEAD.
+        self._apply(self._plan(task_id="plain"))
+        self.assertEqual(
+            gdp._recorded_worktree_base(self.sb.claude_org_root, "feat/plain"),
+            "origin/main",
+        )
+        self._apply(self._plan(task_id="plain"))
+
+
+class TestBaseRefCliFlag(unittest.TestCase):
+    """Issue #808: the --base-ref flag is wired through both subcommands and
+    the --from-toml input form."""
+
+    def test_flag_parses_on_preview_and_apply(self):
+        parser = gdp._build_parser()
+        for cmd in ("preview", "apply"):
+            with self.subTest(cmd=cmd):
+                args = parser.parse_args(
+                    [cmd, "--task-id", "t", "--project-slug", "p",
+                     "--base-ref", "develop"]
+                )
+                self.assertEqual(args.base_ref_override, "develop")
+
+    def test_flag_defaults_to_none(self):
+        args = gdp._build_parser().parse_args(
+            ["preview", "--task-id", "t", "--project-slug", "p"]
+        )
+        self.assertIsNone(args.base_ref_override)
+
+    def test_toml_base_ref_is_read_and_cli_wins(self):
+        with tempfile.TemporaryDirectory() as td:
+            toml_path = Path(td) / "worker_brief.toml"
+            toml_path.write_text(
+                '[task]\nid = "t1"\nbase_ref = "develop"\n'
+                '[project]\nname = "p1"\n',
+                encoding="utf-8",
+            )
+            loaded = gdp._load_task_args_from_toml(toml_path)
+            self.assertEqual(loaded["base_ref_override"], "develop")
+
+            # TOML alone wins when the flag is absent...
+            args = gdp._build_parser().parse_args(
+                ["preview", "--from-toml", str(toml_path)]
+            )
+            self.assertEqual(
+                gdp._gather_plan_kwargs(args)["base_ref_override"], "develop"
+            )
+            # ...and the CLI flag overrides it when both are given.
+            args = gdp._build_parser().parse_args(
+                ["preview", "--from-toml", str(toml_path), "--base-ref", "main"]
+            )
+            self.assertEqual(
+                gdp._gather_plan_kwargs(args)["base_ref_override"], "main"
+            )
+
+    def test_non_string_toml_base_ref_is_a_config_error_not_a_traceback(self):
+        """Codex Round 3 Major: `base_ref = 5` used to reach
+        normalize_base_branch and abort with a raw AttributeError."""
+        with tempfile.TemporaryDirectory() as td:
+            toml_path = Path(td) / "worker_brief.toml"
+            toml_path.write_text(
+                '[task]\nid = "t1"\nbase_ref = 5\n[project]\nname = "p1"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as cm:
+                gdp._load_task_args_from_toml(toml_path)
+            self.assertIn("base_ref must be a string", str(cm.exception))
+
+    def test_normalize_rejects_non_strings_with_a_clear_type_error(self):
+        # Guard for direct build_delegate_plan callers, which bypass the CLI.
+        with self.assertRaises(TypeError) as cm:
+            gdp.normalize_base_branch(5)
+        self.assertIn("must be a string", str(cm.exception))
 
 
 if __name__ == "__main__":
