@@ -147,13 +147,18 @@
           "/home/u/co/knowledge"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
     "filesystem": {
       "additionalDirectories": [
         "/home/u/co/knowledge"
+      ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
       ],
       "denyRead": [
         "/home/u/co/.curator/.env",

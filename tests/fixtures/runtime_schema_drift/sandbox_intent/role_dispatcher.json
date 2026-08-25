@@ -60,13 +60,18 @@
           "/home/u/co"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
     "filesystem": {
       "additionalDirectories": [
         "/home/u/co"
+      ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
       ],
       "denyRead": [
         "/home/u/co/**/credentials*",
