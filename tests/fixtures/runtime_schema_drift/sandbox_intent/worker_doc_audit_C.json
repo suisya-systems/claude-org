@@ -64,13 +64,18 @@
           "/home/u/workers/T123/.claude/plans"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
     "filesystem": {
       "additionalDirectories": [
         "/home/u/workers/T123/.claude/plans"
+      ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
       ],
       "denyRead": [
         "/home/u/workers/T123/.env",
