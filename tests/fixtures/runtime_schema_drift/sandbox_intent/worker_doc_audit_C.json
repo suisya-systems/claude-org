@@ -64,7 +64,8 @@
           "/home/u/workers/T123/.claude/plans"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
@@ -72,9 +73,17 @@
       "additionalDirectories": [
         "/home/u/workers/T123/.claude/plans"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
+      ],
       "denyRead": [
         "/home/u/workers/T123/.env",
+        "/home/u/workers/T123/**/.env",
         "/home/u/workers/T123/.env.*",
+        "/home/u/workers/T123/**/.env.*",
         "/home/u/workers/T123/**/credentials*",
         "/home/u/workers/T123/**/*.pem"
       ],

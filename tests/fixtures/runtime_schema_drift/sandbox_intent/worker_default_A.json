@@ -64,7 +64,8 @@
           "/home/u/co/knowledge/raw"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
@@ -72,9 +73,17 @@
       "additionalDirectories": [
         "/home/u/co/knowledge/raw"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
+      ],
       "denyRead": [
         "/home/u/workers/proj/.env",
+        "/home/u/workers/proj/**/.env",
         "/home/u/workers/proj/.env.*",
+        "/home/u/workers/proj/**/.env.*",
         "/home/u/workers/proj/**/credentials*",
         "/home/u/workers/proj/**/*.pem"
       ],

@@ -83,7 +83,8 @@
           "/home/u/co/knowledge/raw"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
@@ -95,9 +96,17 @@
         "/home/u/workers/proj/.git/packed-refs",
         "/home/u/co/knowledge/raw"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
+      ],
       "denyRead": [
         "/home/u/workers/proj/.worktrees/T123/.env",
+        "/home/u/workers/proj/.worktrees/T123/**/.env",
         "/home/u/workers/proj/.worktrees/T123/.env.*",
+        "/home/u/workers/proj/.worktrees/T123/**/.env.*",
         "/home/u/workers/proj/.worktrees/T123/**/credentials*",
         "/home/u/workers/proj/.worktrees/T123/**/*.pem"
       ],
