@@ -22,20 +22,6 @@
         "layer": "sandbox.filesystem.denyRead",
         "entry": {
           "anchor": "home",
-          "path": ".config/gh/hosts.yml",
-          "suppressOnSymlinkEscape": true,
-          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
-        },
-        "reason": "realpath escapes sandbox read roots",
-        "realpath": "/H/.config/gh/hosts.yml",
-        "sandbox_read_roots": [
-          "/home/u/co"
-        ]
-      },
-      {
-        "layer": "sandbox.filesystem.denyRead",
-        "entry": {
-          "anchor": "home",
           "path": ".aws/**",
           "suppressOnSymlinkEscape": true,
           "layer2Fallback": "Read(~/.aws/*)"
@@ -60,15 +46,24 @@
           "/home/u/co"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
     "filesystem": {
       "additionalDirectories": [],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
+      ],
       "denyRead": [
         "/home/u/co/.env",
+        "/home/u/co/**/.env",
         "/home/u/co/.env.*",
+        "/home/u/co/**/.env.*",
         "/home/u/co/**/credentials*",
         "/home/u/co/**/*.pem"
       ],
