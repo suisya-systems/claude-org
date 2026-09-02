@@ -24,9 +24,11 @@
     "block-workers-delete.sh",
     "block-org-structure.sh",
     "check-worker-boundary.sh",
-    "block-dispatcher-out-of-scope.sh"
+    "block-dispatcher-out-of-scope.sh",
+    "check-loop-directive.sh"
   ],
   "$comment_roles_sandbox": "Phase 1 schema surface: each entry under `roles.<role>` may also include an optional `sandbox` object using the same shape and structured-anchor entry form documented under `worker_roles.$comment_sandbox` / `worker_roles.$comment_sandbox_anchor`. This lets secretary / dispatcher / curator declare Layer 3 sandbox intent alongside the existing Layer 2 `required_allow` / `required_deny` audit constraints. Roles without `sandbox` are treated as sandbox-disabled (backward compatible). Phase 1 PR3 (Refs claude-org-ja#378 #376) lands concrete bodies for `roles.secretary` / `roles.dispatcher` / `roles.curator`; each role's per-`sandbox` `$comment_sandbox` field documents the contract sections it is driven from and which prescriptions are deferred (e.g. curator knowledge/raw move-only is operation-semantic and not mechanizable here). `worker_roles.*` concrete bodies are NOT landed in PR3 — they need a `sandbox_by_pattern` schema decision (deferred to PR4). See `docs/contracts/role-pattern-sandbox-contract.md` for the contract that all bodies must satisfy.",
+  "$comment_sandbox_allow_read": "Refs claude-org-ja#959 (friction 1) and #961 (recursion): every `sandbox.filesystem` body in this schema carries `allowRead: [\".env.example\", \".env.*.example\", \"**/.env.example\", \"**/.env.*.example\"]` alongside the credential `denyRead` set, whose `.env` entries are likewise paired as `.env` + `**/.env` and `.env.*` + `**/.env.*`. WHY: the `.env.*` deny glob also matches committed template files (`.env.example`, `.env.live.example`), which hold no secrets. The 2026-08-25 kura report (`test_local_env` failing on `.env.example` with PermissionError inside the sandbox) is a direct instance, and such friction is one of the documented reasons workers reach for `dangerouslyDisableSandbox` (#959 measured 59% of worker Bash calls bypassing the sandbox). Claude Code has no negation syntax inside `denyRead` — a `!.env.example` entry was verified on a real 2.1.245 session to leave the file denied — so the carve-out is expressed with the documented `filesystem.allowRead` key (https://code.claude.com/docs/en/sandboxing: \"re-allow specific paths within a denied region using `sandbox.filesystem.allowRead`\" / \"When read rules overlap, the more specific path wins\"). Verified on Claude Code 2.1.245 (Linux/WSL2 bwrap) with this exact pair: `.env` / `.env.local` / `.env.production` / `.env.development.local` / `.env.staging` stay denied, `.env.example` / `.env.live.example` / `.env.production.example` become readable, and a `.env.evil.example` symlink pointing at `.env` stays DENIED (the sandbox refuses to restore an allowRead entry whose symlink escapes the expected location), so the carve-out cannot be abused to smuggle a secret through a template-shaped name. SHAPE: `allowRead` entries are plain relative strings, NOT the structured-anchor form used by `denyRead` / `denyWrite` — the runtime generator normalizes only those two layer keys and forwards any other `filesystem` key verbatim, so a structured object here would land in the rendered settings.local.json as an object Claude Code cannot parse. A relative sandbox path resolves against the project root for project settings (https://code.claude.com/docs/en/sandboxing), which for a rendered worker file is worker_dir — the same anchor the neighbouring `denyRead` entries declare explicitly. NO Layer-2 counterpart: the `layer2Fallback` strings and the `permissions.deny` mirrors keep the broad `Read(.env.*)` form, because Layer 2 resolves deny-over-allow (verified on 2.1.245: `Read(.env.*)` in `permissions.deny` blocks the Read tool on `.env.example` even with a matching `permissions.allow` entry). Narrowing Layer 2 would require enumerating secret filenames, which cannot be made exhaustive, so the mirror deliberately stays on the safe side: the Read tool still refuses templates, while Bash — the path the reported friction actually takes — is governed by Layer 3 and now succeeds. RECURSION (#961): a bare `.env` / `.env.*` glob matches ONLY the project root, so before this pairing every `.env` in a SUBDIRECTORY was readable inside the sandbox \u2014 measured on Claude Code 2.1.245 (Linux/WSL2 bwrap): `sub/.env`, `sub/.env.local` and `sub/deep/.env` all read fine, while the neighbouring `**/credentials*` / `**/*.pem` entries denied `sub/credentials.json` / `sub/key.pem`. The difference was purely the `**/` prefix. The real-world consequence was cross-task secret exposure: a Pattern A worker (worker_dir = the project directory) could read `.worktrees/<other-task>/.env.live` for every sibling worktree \u2014 verified on the live kura tree, where 6 sibling `.env.live` files were readable before the fix and all denied after. Pattern B workers were unaffected because their own `.env.live` sits at worker_dir root. THE DENY AND ALLOW HALVES ARE INSEPARABLE: adding `**/.env.*` WITHOUT the matching `**/.env.*.example` allow re-breaks templates one level down \u2014 measured on the same build, `sub/.env.example` / `sub/.env.live.example` flipped to DENIED, reproducing the #959 friction 1 that #960 had just fixed. Never land one half alone. The root-anchored entries are RETAINED alongside the recursive ones rather than replaced, so the #960 root behaviour is preserved by construction and does not depend on whether `**/` matches zero path segments in this glob implementation. Symlinks do not widen the carve-out: `sub/.env.evil.example` pointing at `../.env` stayed DENIED on the same build. LAYER 2 UNDER #961 (KNOWN GAP, NOT FIXED HERE): \"broad\" in the paragraph above meant \"not narrowed to exclude templates\" \u2014 it did NOT mean recursive. The `permissions.deny` mirrors in `worker_roles.{default,claude-org-self-edit,doc-audit}.permissions.deny` carry the SAME root-only `Read(.env)` / `Read(.env.*)` asymmetry against their own recursive `Read(**/credentials*)` / `Read(**/*.pem)` neighbours, so nested secrets stay reachable via the `Read` tool whenever Layer 3 is not in force \u2014 sandbox unavailable (`failIfUnavailable: false` falls open) or the entry suppressed by a WSL realpath escape \u2014 which is exactly the case Layer 2 exists to cover. This was deliberately NOT changed in #961: `permissions.deny` is owned by the schema BUNDLED with claude-org-runtime, and `check_runtime_schema_drift.py` strips only the ja-only `sandbox` bodies before its byte comparison, so editing these arrays in ja alone fails the byte drift check. Closing it requires a coordinated claude-org-runtime release plus a re-pin in pyproject.toml / requirements.txt, tracked as follow-up work rather than smuggled in here. The Layer-3 recursion above is what actually closes the reported exposure; this mirror is the fall-open backstop. DISPATCHER ANCHOR GAP (residual, pre-existing): `roles.dispatcher` anchors its `.env` denies at `claude_org_path` while its project root (and therefore the resolution base for the plain-string `allowRead` entries) is worker_dir = `<claude_org_path>/.dispatcher`. The carve-out consequently applies only to templates at or below `.dispatcher/`, while the deny reaches the whole org repo; a `<claude_org_path>/<subdir>/.env.example` would be denied with no way to re-allow it. This is NOT introduced here \u2014 #960's root-level carve-out was already inert for this role for the same reason \u2014 but #961 widens the denied region it fails to cover from the repo root to every depth. It cannot be expressed today: `allowRead` has no structured-anchor form and is forwarded verbatim (a `{claude_org_path}` placeholder would land literally, and `settings show` does not even surface the key). The practical impact on this repo is currently nil \u2014 it tracks no `.env.example` files at all \u2014 and org-role settings are hand-maintained rather than generated, so this body is inspection surface. Fixing it properly needs runtime support for anchored `allowRead` entries.",
   "roles": {
     "repo_shared": {
       "description": "Repo-shared settings (.claude/settings.json) — tracked in git; hosts repo-wide safety hooks (block-no-verify, block-dangerous-git).",
@@ -76,7 +78,8 @@
         "mcp__renga-peers__poll_events",
         "mcp__renga-peers__send_keys",
         "mcp__renga-peers__spawn_claude_pane",
-        "mcp__renga-peers__set_pane_identity"
+        "mcp__renga-peers__set_pane_identity",
+        "mcp__renga-peers__server_info"
       ],
       "allowed_allow_regex": [],
       "required_deny": [],
@@ -86,7 +89,7 @@
     "secretary": {
       "description": "Secretary (窓口) — repo .claude/settings.local.json.",
       "docs_section": "窓口",
-      "$comment_sandbox": "Phase 1 PR3 (Refs claude-org-ja#378 #376): concrete sandbox body for the secretary role. Read scope = secretary's worker_dir (= live repo at claude_org_path) plus the workers_dir at <claude_org_path>/../workers (per docs/contracts/role-pattern-sandbox-contract.md §3.1.1 prescribed read surface). Layer 3 denyRead covers credential paths named in §3.1.1 — worker_dir-anchored .env / .env.* / **/credentials* / **/*.pem, plus home-anchored ~/.config/gh/hosts.yml / ~/.aws/** / ~/.ssh/** with §1.3 adaptive suppression. The home-anchored entries carry a `layer2Fallback` string each; per worker_roles.$comment_sandbox_anchor that string is intended as the Layer-2 permissions.deny mirror emitted when the Layer-3 entry is suppressed (e.g. on WSL). NOTE: claude-org-runtime up to and including the version pinned in pyproject.toml does NOT yet auto-mirror `layer2Fallback` into permissions.deny — the schema declares the intent but the runtime evaluator only preserves the field on the suppression record's entry. So today these strings are forward-looking documentation; effective Layer 2 deny for credentials still needs to be declared via roles.secretary.required_deny. Settings.local.json paths under workers/ are NOT mirrored here — the existing roles.secretary.required_deny rules enforce those at Layer 2 (Edit/Write tool path) and Layer 3 cannot reach the worker dirs anyway. Knowledge/raw and curated/ scrub policies remain convention-only per knowledge-curation-contract.md and are NOT mechanized here. ~/.claude/plans/ from §3.1.1 read surface is NOT in additionalDirectories because the substitution mapping has no {home} placeholder (only worker_dir / claude_org_path / Pattern B context); a runtime-side substitution extension is the natural fix and is tracked as a follow-up.",
+      "$comment_sandbox": "Phase 1 PR3 (Refs claude-org-ja#378 #376): concrete sandbox body for the secretary role. Read scope = secretary's worker_dir (= live repo at claude_org_path), which the launcher auto-mounts. `additionalDirectories` is deliberately EMPTY. WHY (this list is a WRITE grant, not a read grant): the Claude Code sandbox reads via a deny-list (everything on the host is readable unless a denyRead entry names it) and writes via an allow-list (only worker_dir + additionalDirectories are bound writable), so nothing has to be listed here to satisfy a *read* requirement. An earlier revision of this body listed `{claude_org_path}/../workers` and cited docs/contracts/role-pattern-sandbox-contract.md §3.1.1 'Read surface (prescriptive)' as its basis. That derivation was self-consistent inside a narrow-mount read model — the runtime evaluator itself names these entries `sandbox_read_roots` and scopes denyRead / denyWrite suppression to them — but that model does not match the sandbox actually in force, so the entry converted a read requirement into a blanket write + recursive-delete grant over the whole workers_dir. Empty is also the reading that agrees with §3.1.2, whose only workers_dir write rows are the narrow Generator-only `<workers_dir>/<task>/CLAUDE.md` / `settings.local.json` placements: a writable mount of the entire workers_dir would hollow that discipline out through Bash, since the matching Layer 2 `required_deny` globs intercept only the Edit / Write tools. The 'Gap → Phase 1' line in §3.1.3 asks for `additionalDirectories: [<claude_org_path>]`; for this role the empty list already satisfies that, because worker_dir == claude_org_path and worker_dir is auto-mounted — re-listing it would be a no-op, so do not read that line as calling for an entry here. OPERATIONAL CONSEQUENCE (unchanged by the removal): writes into workers_dir — `tools/gen_delegate_payload.py apply`, Pattern A pre-clone, worker fetch proxying — run outside the sandbox today and continue to. The entry granted nothing in practice: `claude-org-runtime settings generate` refuses `--role-kind org` (org settings.local.json files are hand-maintained), so this body is inspection surface for `settings show --role-kind org` and the semantic drift fixtures, never a rendered settings file. If sandboxed workers_dir writes are wanted later, the fix is a task-scoped hole (`<workers_dir>/<task_id>`), not a blanket one. Layer 3 denyRead covers credential paths named in §3.1.1 — worker_dir-anchored .env / .env.* / **/credentials* / **/*.pem, plus home-anchored ~/.config/gh/hosts.yml / ~/.aws/** / ~/.ssh/** with §1.3 adaptive suppression. The home-anchored entries carry a `layer2Fallback` string each; per worker_roles.$comment_sandbox_anchor that string is intended as the Layer-2 permissions.deny mirror emitted when the Layer-3 entry is suppressed (e.g. on WSL). NOTE: claude-org-runtime up to and including the version pinned in pyproject.toml does NOT yet auto-mirror `layer2Fallback` into permissions.deny — the schema declares the intent but the runtime evaluator only preserves the field on the suppression record's entry. So today these strings are forward-looking documentation; effective Layer 2 deny for credentials still needs to be declared via roles.secretary.required_deny. Settings.local.json paths under workers/ are NOT mirrored here — the existing roles.secretary.required_deny rules enforce those at Layer 2 (Edit/Write tool path) and Layer 3 cannot reach the worker dirs anyway. Knowledge/raw and curated/ scrub policies remain convention-only per knowledge-curation-contract.md and are NOT mechanized here. ~/.claude/plans/ from the §3.1.1 read surface is likewise NOT in additionalDirectories, and by the read/write split above it does not need to be — reading plan files takes no grant. Only Plan-mode *persistence* (Claude Code writing into that directory) would need one, and that is still blocked by the substitution mapping having no {home} placeholder (only worker_dir / claude_org_path / Pattern B context); a runtime-side substitution extension is the natural fix if it is ever wanted.",
       "settings_paths": [".claude/settings.local.json"],
       "closed_world": true,
       "required_allow": [
@@ -102,6 +105,7 @@
         "mcp__renga-peers__poll_events",
         "mcp__renga-peers__send_keys",
         "mcp__renga-peers__set_pane_identity",
+        "mcp__renga-peers__server_info",
         "Bash(git add:*)",
         "Bash(git commit:*)",
         "Bash(git status:*)",
@@ -145,11 +149,8 @@
       ],
       "allowed_allow_regex": [],
       "required_deny": [
-        "Write(*/workers/*/.claude/settings.local.json)",
         "Edit(*/workers/*/.claude/settings.local.json)",
-        "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
         "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)",
-        "Write(*/.worktrees/*/.claude/settings.local.json)",
         "Edit(*/.worktrees/*/.claude/settings.local.json)"
       ],
       "required_hooks": [
@@ -166,9 +167,8 @@
       "sandbox": {
         "enabled": true,
         "filesystem": {
-          "additionalDirectories": [
-            "{claude_org_path}/../workers"
-          ],
+          "additionalDirectories": [],
+          "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
           "denyRead": [
             {
               "anchor": "worker_dir",
@@ -178,9 +178,21 @@
             },
             {
               "anchor": "worker_dir",
+              "path": "**/.env",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env)"
+            },
+            {
+              "anchor": "worker_dir",
               "path": ".env.*",
               "suppressOnSymlinkEscape": true,
               "layer2Fallback": "Read(.env.*)"
+            },
+            {
+              "anchor": "worker_dir",
+              "path": "**/.env.*",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env.*)"
             },
             {
               "anchor": "worker_dir",
@@ -237,6 +249,11 @@
         },
         {
           "event": "PreToolUse",
+          "matcher_contains": "CronCreate|ScheduleWakeup",
+          "command_contains": "check-loop-directive.sh"
+        },
+        {
+          "event": "PreToolUse",
           "matcher_contains": "Bash",
           "command_contains": "block-git-push.sh"
         },
@@ -267,6 +284,7 @@
           "additionalDirectories": [
             "{claude_org_path}"
           ],
+          "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
           "denyRead": [
             {
               "anchor": "home",
@@ -300,7 +318,17 @@
             },
             {
               "anchor": "claude_org_path",
+              "path": "**/.env",
+              "suppressOnSymlinkEscape": true
+            },
+            {
+              "anchor": "claude_org_path",
               "path": ".env.*",
+              "suppressOnSymlinkEscape": true
+            },
+            {
+              "anchor": "claude_org_path",
+              "path": "**/.env.*",
               "suppressOnSymlinkEscape": true
             }
           ],
@@ -362,6 +390,7 @@
           "additionalDirectories": [
             "{claude_org_path}/knowledge"
           ],
+          "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
           "denyRead": [
             {
               "anchor": "worker_dir",
@@ -371,9 +400,21 @@
             },
             {
               "anchor": "worker_dir",
+              "path": "**/.env",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env)"
+            },
+            {
+              "anchor": "worker_dir",
               "path": ".env.*",
               "suppressOnSymlinkEscape": true,
               "layer2Fallback": "Read(.env.*)"
+            },
+            {
+              "anchor": "worker_dir",
+              "path": "**/.env.*",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env.*)"
             },
             {
               "anchor": "worker_dir",
@@ -534,6 +575,7 @@
     "$comment_sandbox": "Phase 1 schema surface: each `worker_roles.<role>` may include an optional `sandbox` object of the form {enabled: bool, filesystem: {denyRead: [entry], denyWrite: [entry], additionalDirectories: [string]}, failIfUnavailable: bool, default false}. The sandbox object is forwarded as-is to the rendered settings.local.json (consumed by claude-org-ja's bwrap launcher). At render time the generator applies Layer 3 suppression: each filesystem.denyRead / denyWrite entry whose realpath escapes the sandbox read roots (worker_dir + additionalDirectories) is dropped from the rendered sandbox object because the sandbox cannot reach the path anyway. This is common on WSL (where /home/<user>/... may be a /mnt/c/... symlink) and devcontainers (/workspaces symlinks). Layer 2 `permissions.deny` `Read(...)` / `Write(...)` entries are NEVER suppressed. Suppression metadata is exposed via `claude-org-runtime settings show --explain`. Roles without `sandbox` are treated as sandbox-disabled (backward compatible).",
     "$comment_sandbox_by_pattern": "Phase 1 PR4 (Refs claude-org-ja#378 #376): a worker role may declare `sandbox_by_pattern` instead of the single `sandbox` field. Shape: `{A?: <sandbox-object>, B?: <sandbox-object>, C?: <sandbox-object>}` keyed by dispatch pattern (the pattern keys are exactly 'A' / 'B' / 'C' matching the resolver / delegate payload normalization). `sandbox` and `sandbox_by_pattern` are MUTUALLY EXCLUSIVE on worker roles; the runtime errors if both are declared. Org roles (`roles.{secretary,dispatcher,curator}`) keep the single `sandbox` shape and may NOT declare `sandbox_by_pattern`. At render time the generator picks `sandbox_by_pattern[--pattern]` and treats it as the role's sandbox; missing pattern keys for the requested pattern are an authoring error (not a silent fallthrough), so Pattern B's distinct additionalDirectories / base_clone surface is never replaced by an A/C surface. Pattern B's command-isolation layer (Bash(git worktree *) deny + .hooks/block-dangerous-git.sh attachment) is intentionally NOT modeled here — runtime sandbox_by_pattern is path-isolation only; command isolation lives in `worker_roles.<role>.permissions.deny` / `.hooks` and is the responsibility of Phase 2 #379 (NOT this PR). Pattern C sub-modes (ephemeral vs gitignored_repo_root) share a single `C` body — the sub-mode-specific surface (worker_dir = host repo root for `gitignored_repo_root`) is captured at dispatch time via `--worker-dir`. Concrete bodies are driven by docs/contracts/role-pattern-sandbox-contract.md §4 (per-role per-pattern read/write surface) and worker-git-guardrails-design.md §2 (Pattern B Git metadata boundary categories B1–B5). Cross-cutting design constraints landed by Codex pre-design review: (a) Pattern B refs scope is THIS-branch only — `<base_clone>/.git/refs/heads/{branch_ref}` carve-out, NEVER `<base_clone>/.git/refs/heads` whole, so cross-branch ref isolation (§4.2.1 row 'refs/heads/<other_branch>': read allowed, write denied) holds; (b) for `claude-org-self-edit` Pattern B (`live_repo_worktree`), additionalDirectories MUST scope to `{worker_dir}` (auto-mounted) + `<base_clone>/.git/...` carve-outs only — adding `<base_clone>` root or `{claude_org_path}` root would make the live repo's working tree writable and break check-worker-boundary.sh's WORKER_DIR boundary (Phase 0 §3.4 / §4.4). Knowledge/raw raw-write carve-out for self-edit Pattern B is a residual gap deferred to Phase 2 #379 — adding `{claude_org_path}/knowledge/raw` here would re-introduce a writable subtree of the live repo's working tree from inside a worktree that is not the live repo, conflicting with (b); the default-role Pattern B carve-out is unaffected because its base_clone is the registered project's clone, not claude_org_path.",
     "$comment_sandbox_anchor": "Phase 1 schema surface: `denyRead` / `denyWrite` entries may now be either (a) a legacy raw string (anchored at worker_dir for relative paths, treated literally for absolute paths) or (b) a structured object {anchor: 'home'|'worker_dir'|'claude_org_path'|'base_clone'|'absolute', path: string, suppressOnSymlinkEscape: bool default true, layer2Fallback: optional Layer-2 permissions.deny mirror entry}. The structured form fixes the legacy ambiguity where '~/.aws/**'-style entries were misjudged as worker_dir-relative. 'home' resolves to the current user's home directory, 'absolute' is treated literally, 'worker_dir' / 'claude_org_path' / 'base_clone' use the corresponding generator-context substitutions. When `suppressOnSymlinkEscape` is false the entry is preserved even if its realpath escapes the sandbox read roots (useful for entries the operator wants in the rendered output regardless of reachability). When `layer2Fallback` is set, the value is the Layer-2 `permissions.deny` mirror string INTENDED to be emitted whenever the Layer-3 entry is suppressed; the field is forward-looking — `claude-org-runtime` versions up to and including the one pinned by `tools/check_runtime_schema_drift.py` do NOT auto-mirror it into `permissions.deny`, the runtime evaluator only preserves the field on the suppression record's `entry`. Effective Layer 2 deny for credentials therefore still has to be declared via `roles.<role>.required_deny` / `worker_roles.<role>.permissions.deny` directly, not relied on via `layer2Fallback` alone. Pattern B context placeholders ({base_clone}, {task_id}, {branch_ref}, {pattern}) are recognized substitution variables in addition to the legacy {worker_dir} / {claude_org_path}; they are substituted in entry.path and additionalDirectories before realpath evaluation when supplied via the generator API. Backward compat: legacy raw-string entries continue to parse via the runtime adapter and need not be migrated when this schema surface is adopted.",
+    "$comment_gh_credentials_carveout": "Refs claude-org-ja#429: `~/.config/gh/hosts.yml` is DELIBERATELY ABSENT from every `worker_roles.<role>` deny surface -- both the Layer-2 `permissions.deny` mirror (`Read(~/.config/gh/hosts.yml)`) and the Layer-3 home-anchored `sandbox_by_pattern.<A|B|C>.filesystem.denyRead` entry. Do NOT re-add either without re-deciding the tradeoff below. WHY: denying that one path made `gh` unusable for workers, and the observed operational consequence was strictly worse than the risk it mitigated -- workers hit `failed to read configuration: open ~/.config/gh/hosts.yml: permission denied` and responded by asking to disable the sandbox WHOLESALE, i.e. trading away every other protection to recover one credential read. One such loop escalated into a safety-classifier session lockout (2026-08-27). MECHANISM (measured, not inferred): Layer 2 is not merely a tool-level guard -- Claude Code folds `permissions.deny` `Read(...)` rules into the bwrap deny set, so the named path is bind-mounted to /dev/null and every process in the sandbox sees a character device, not just the Read tool (see claude-org-runtime `settings/generator.py::_canonicalize_permission_deny` docstring). This was confirmed on WSL by positive/negative control: `~/.ssh/*`, `~/.aws/*` and `~/.config/gh/hosts.yml` -- all named only in Layer 2, all suppressed at Layer 3 -- were char devices, while `~/.config/gh/config.yml` (same directory, named by no deny rule) stayed a regular file. So on WSL the Layer-3 entry was already inert and Layer 2 alone was doing the blocking; both are removed here because Layer 3 would still bite on a native-Linux host where suppression does not apply. SCOPE: this carve-out is worker-roles-only and gh-only. `~/.ssh/**` and `~/.aws/**` denies are RETAINED at both layers, and `roles.{secretary,dispatcher,curator}` keep their gh denies untouched (those org bodies are byte-compared against the runtime bundled schema, so editing them would trip `tools/check_runtime_schema_drift.py`). RESIDUAL RISK, accepted by the human owner: a worker that can authenticate `gh` can reach GitHub write APIs (`gh pr create` / `gh pr merge` / `gh api -X POST`), which the `.hooks/block-git-push.sh` guard does NOT cover -- its regex matches `git ... push` only. Note also that removing the deny does not by itself make `gh` silent: no `worker_roles.<role>.permissions.allow` entry grants `Bash(gh ...)`, so ordinary permission prompts still apply, and `global.forbidden_allow_exact` bans blanket `Bash(gh:*)` / `Bash(gh *)` grants -- narrowing that friction is a separate decision. DRIFT NOTE: removing these entries is invisible to the byte drift check because `Read(~/.config/gh/hosts.yml)` is listed in `_JA_ONLY_LAYER2_CREDENTIAL_DENIES` and `sandbox_by_pattern` bodies are stripped wholesale, both on BOTH sides, by `tools/check_runtime_schema_drift.py`; no claude-org-runtime change is required. The `--semantic` golden fixtures under `tests/fixtures/runtime_schema_drift/sandbox_intent/` DO encode the removed suppression records, so the worker_* goldens there must be regenerated in lockstep with any change to these entries.",
     "default": {
       "description": "Standard worker template — git read/write within the worktree, no push, no recursive delete. Mirrors the historical org-delegate Step 3 inline JSON.",
       "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.default. The Layer 3 surface is keyed by dispatch pattern per docs/contracts/role-pattern-sandbox-contract.md §4.1 (Pattern A) / §4.2 (Pattern B default variant) / §4.3 (Pattern C ephemeral and gitignored_repo_root). Pattern A and Pattern C add only the knowledge/raw carve-out (§5.1: full-mode workers may write `<claude_org_path>/knowledge/raw/YYYY-MM-DD-<topic>.md`); the worker_dir itself is auto-mounted and does not need to be re-listed. Pattern B union per §4.2.1 / worker-git-guardrails-design.md §2 categories B1+B2 (this worktree's metadata + shared object store + this branch's ref + packed-refs) is `<base_clone>/.git/worktrees/<task_id>`, `<base_clone>/.git/objects`, `<base_clone>/.git/refs/heads/<branch_ref>`, `<base_clone>/.git/packed-refs`. Refs scope is THIS-branch only by design (§4.2.1 cross-task isolation): listing `<base_clone>/.git/refs/heads` whole would let the worker rewrite a sibling worktree's branch ref. `<base_clone>/.git/packed-refs` is added because git itself rewrites this file as part of normal commit / pack-refs operations (§4.2.1 row); without it Pattern B workers would fail any operation that touches packed refs. denyRead carries the standard credential set with `layer2Fallback` strings for forward compatibility (current runtime preserves the field but does not auto-mirror it into permissions.deny — see $comment_sandbox_anchor); the corresponding Layer 2 mirrors live in `worker_roles.default.permissions.deny` directly so secret reads remain blocked even when Layer 3 is suppressed on WSL. denyWrite is empty: by virtue of additionalDirectories not including `<base_clone>` root / sibling worktrees / `.git/HEAD` / `.git/config`, those paths are already not writable; explicit denyWrite on subpaths inside additionalDirectories would just add suppression noise on platforms with realpath escapes. Layer 4 hooks (.hooks/block-org-structure.sh, .hooks/check-worker-boundary.sh) handle org-structure / out-of-WORKER_DIR write boundaries inside the mounted writable surface. Pattern A's branch ref deny for `<base_clone>/.git/HEAD` etc. (§4.1 / §5.2 worker × Pattern A row) is implicit: Pattern A workers operate in their own clone, no base_clone is supplied at dispatch (--base-clone null), and `{base_clone}` placeholders therefore never substitute into A's body. RESIDUAL GAP (Phase 2): the knowledge/raw mount is whole-directory; the §5.1 filename / depth carve-out (`YYYY-MM-DD-<kebab-topic>.md` and full-mode-only) is enforced ONLY at Layer 4 by .hooks/check-worker-boundary.sh allow path 3, NOT at Layer 3. Layer 3 cannot express the kebab-case filename rule, and the schema cannot express the verification-depth conditional. Phase 2 may add a Bash-matcher hook for tighter knowledge/raw discipline if drift is observed.",
@@ -544,12 +586,14 @@
             "additionalDirectories": [
               "{claude_org_path}/knowledge/raw"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ]
@@ -566,12 +610,14 @@
               "{base_clone}/.git/packed-refs",
               "{claude_org_path}/knowledge/raw"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ]
@@ -584,12 +630,14 @@
             "additionalDirectories": [
               "{claude_org_path}/knowledge/raw"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ]
@@ -677,7 +725,6 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)",
           "Read(~/.aws/*)",
           "Read(~/.ssh/*)"
         ]
@@ -738,12 +785,14 @@
               "{base_clone}/.git/refs/heads/{branch_ref}",
               "{base_clone}/.git/packed-refs"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ]
@@ -754,12 +803,14 @@
           "enabled": true,
           "filesystem": {
             "additionalDirectories": [],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ]
@@ -847,7 +898,6 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)",
           "Read(~/.aws/*)",
           "Read(~/.ssh/*)"
         ]
@@ -897,12 +947,14 @@
             "additionalDirectories": [
               "{worker_dir}/.claude/plans"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ],
@@ -922,12 +974,14 @@
               "{base_clone}/.git/refs/heads/{branch_ref}",
               "{base_clone}/.git/packed-refs"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ],
@@ -947,12 +1001,14 @@
             "additionalDirectories": [
               "{worker_dir}/.claude/plans"
             ],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
-              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
               {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
               {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
             ],
@@ -985,7 +1041,6 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)",
           "Read(~/.aws/*)",
           "Read(~/.ssh/*)",
           "Edit",
