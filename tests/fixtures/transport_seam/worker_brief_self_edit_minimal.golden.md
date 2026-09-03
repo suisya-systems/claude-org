@@ -11,11 +11,18 @@
 1. claude-org 構造を `/tmp/workers/demo-task` 内に再現しない
 2. claude-org リポジトリ（`/home/user/work/claude-org`）を別途 clone しない（直接編集）
 3. `git push` 不可
+4. `git stash` の変更系不可（hook で deny。引数なし `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create`、**許可リスト方式なので未列挙のサブコマンドも deny**）。キャラクタデバイス等の未追跡ファイルで `git stash -u` が途中失敗し、気づかず別の stash を pop して作業を壊す事故が実際に起きているため。退避は作業ブランチへ一時 commit（`git add -u` して commit、戻すときは `git reset --soft HEAD~1`）。`git diff > <name>.patch` は staged / 未追跡を取りこぼすので単独の退避手段にしないこと。比較は `git show HEAD:<path>`。調査用の `git stash list` / `git stash show` は可。**alias 経由でも実行しないこと**（定義済み alias は hook が静的に解決できず素通りするが事故の中身は同じ）
+5. この repo の worktree root には同じキャラクタデバイスが未追跡で存在するため `git add -A` も `can only add regular files` で失敗する。**staging は `git add -u`（追跡済みの変更）＋ 新規ファイルの明示 add を使うこと**
 
 ### Windows
 - Python は `py -3` または `python`（3.10 推奨。どちらも別の Python 環境を指す場合があるため `--version` で確認し、動作する方を使う）
 - 日本語ファイル: `encoding="utf-8"` 明示
 - CLI 出力文字列（argparse `help=` / `print()`）は ASCII の `-` を使う（em-dash 等 cp932 非対応文字は cp932 コンソールでの `--help` を `UnicodeEncodeError` でクラッシュさせる。pytest の `redirect_stdout` では検出できず実端末でのみ落ちる）。実装後 `--help` を実端末で 1 回スモーク
+
+### Bash のパス指定（絶対パス必須。ultracode の `agent()` プロンプト内も同じ）
+- grep / find / sed / テスト対象は**常に `/tmp/workers/demo-task/...` の絶対パス**。`cd <dir>; <相対パス>` と root での `grep -r ... .` は使わない。ultracode の各 `agent()` プロンプト内の Bash 指示にも同じ規約を適用（subagent のコマンドは worker 本体の permissions で判定される）
+- 理由: auto-mode 分類器は `cd` 後の相対パスを解決できず、`Read(.env)` 等の deny 規則（`tools/org_extension_schema.json` の `layer2Fallback`）と組み合わさって毎回人間承認に落ちる（2026-09-04 continuo-110-lease-renewal で 1 タスク 6 回）。deny 規則は緩めず書き方で回避する
+- NG: `cd /tmp/workers/demo-task; grep -n "renewLease" test/lap/root.test.ts` / `grep -rln "lease" . --include=*.json` → OK: `grep -n "renewLease" /tmp/workers/demo-task/test/lap/root.test.ts` / `grep -rln "lease" /tmp/workers/demo-task/test --include=*.json`
 
 ## プロジェクト
 - claude-org-ja: テスト用説明
