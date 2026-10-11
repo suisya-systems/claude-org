@@ -45,6 +45,18 @@
     "created_at": "2026-05-01T03:00:00Z"
   },
   {
+    "key": "event:7",
+    "kind": "ci_passed",
+    "severity": "urgent",
+    "title": "CI passed",
+    "body": "PR #43 finished with success.",
+    "source": "state.db.events",
+    "task_id": "T-ci-ok",
+    "pr": 43,
+    "status": "success",
+    "created_at": "2026-05-01T03:30:00Z"
+  },
+  {
     "key": "pending:T-pending-stale:pending_decision",
     "kind": "pending_decision",
     "severity": "urgent",
@@ -64,6 +76,17 @@
     "source": "pending_decisions",
     "task_id": "T-relay-gap",
     "summary": "Codex review round 3 done; OK to merge?",
+    "created_at": "__DYNAMIC__"
+  },
+  {
+    "key": "broker:duplicate_sidecar:worker-T-duplicate:a1b2c3d4e5f6a7b8+b2c3d4e5f6a7b8c9",
+    "kind": "duplicate_sidecar",
+    "severity": "urgent",
+    "title": "Duplicate channel sidecar",
+    "body": "worker-T-duplicate: two sessions are claiming the same channel (a1b2c3d4e5f6a7b8, b2c3d4e5f6a7b8c9).",
+    "source": "broker.queue.jsonl",
+    "worker": "worker-T-duplicate",
+    "summary": "a1b2c3d4e5f6a7b8, b2c3d4e5f6a7b8c9",
     "created_at": "__DYNAMIC__"
   }
 ]
