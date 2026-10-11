@@ -3,6 +3,7 @@
   "sound": "urgent-only",
   "cooldown_sec": 300,
   "poll_interval_sec": 10,
+  "event_window_sec": 3600,
   "pending_decision_min": 15,
   "pending_decision_max": 1440,
   "pending_decision_drop": 10080,
@@ -14,6 +15,7 @@
     "relay_gap_suspected": "normal",
     "silent_worker_output": "normal",
     "ci_failed": "urgent",
+    "ci_passed": "urgent",
     "pending_decision": "urgent",
     "user_reply_not_forwarded": "urgent",
     "pane_silent": "normal",
@@ -23,7 +25,8 @@
     "worker_error": "normal",
     "worker_completed": "normal",
     "pr_merged": "normal",
-    "secretary_awaiting_user": "urgent"
+    "secretary_awaiting_user": "urgent",
+    "duplicate_sidecar": "urgent"
   },
   "templates": {
     "approval_blocked": {
@@ -33,6 +36,10 @@
     "ci_failed": {
       "title": "CI が失敗しました",
       "body": "PR #{pr} の CI が {status} で完了しました。"
+    },
+    "ci_passed": {
+      "title": "CI が通りました",
+      "body": "PR #{pr} の CI が通りました。マージの判断をお願いします。"
     },
     "pending_decision": {
       "title": "判断待ちがあります",
@@ -81,6 +88,10 @@
     "secretary_awaiting_user": {
       "title": "窓口が判断待ちです",
       "body": "{task_id} で窓口がユーザー入力を待っています。"
+    },
+    "duplicate_sidecar": {
+      "title": "channel sidecar が二重に走っています",
+      "body": "{worker} 宛のメッセージを 2 つのセッションが取り合っています。報告が読まれない側へ流れて沈黙するので、余分なセッションを探して終了してください ({summary})。"
     }
   }
 }
