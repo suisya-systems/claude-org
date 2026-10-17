@@ -166,6 +166,344 @@ json='{"tool_name":"Bash","tool_input":{"command":"eval git push origin main"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "eval git push unquoted multi-token is blocked"
 
+# Refs #429: gh 経由の GitHub 書き込み検知ケース。
+# 陽性 (block) / 陰性 (allow) の両方を書く。陰性が無いと、読み取り系まで
+# 巻き込んで塞いだことに気づけない（調査業務が回らなくなる回帰）。
+#
+# コマンド文字列は Python の json.dumps でエスケープする。gh のケースは
+# 引用符・波括弧・パイプを多用するため、手書きの JSON リテラルだと
+# エスケープ誤りがテスト自体の偽陽性になる。
+
+json_for() {
+  python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$1"
+}
+
+# assert_gh <expected_exit> <command> [desc]
+assert_gh() {
+  local expected="$1" cmd="$2" desc="${3:-$2}"
+  local stderr_file
+  stderr_file=$(mktemp); TMPFILES+=("$stderr_file")
+  local ec
+  ec=$(run_hook "$(json_for "$cmd")" "$stderr_file")
+  assert_exit "$expected" "$ec" "$desc"
+}
+
+echo "# --- gh write operations: block cases ---"
+
+# pr グループ（書き込み系）
+assert_gh 2 'gh pr create --title x --body y'
+assert_gh 2 'gh pr merge 123 --squash --delete-branch'
+assert_gh 2 'gh pr close 123'
+assert_gh 2 'gh pr reopen 123'
+assert_gh 2 'gh pr edit 123 --add-label bug'
+assert_gh 2 'gh pr review 123 --approve'
+assert_gh 2 'gh pr comment 123 --body hi'
+assert_gh 2 'gh pr ready 123'
+assert_gh 2 'gh pr lock 123'
+assert_gh 2 'gh pr unlock 123'
+assert_gh 2 'gh pr update-branch 123'
+
+# issue グループ（書き込み系）
+assert_gh 2 'gh issue create --title x --body y'
+assert_gh 2 'gh issue close 42'
+assert_gh 2 'gh issue comment 42 --body hi'
+assert_gh 2 'gh issue delete 42'
+assert_gh 2 'gh issue edit 42 --add-label bug'
+assert_gh 2 'gh issue transfer 42 owner/other'
+assert_gh 2 'gh issue pin 42'
+
+# repo グループ（書き込み系）
+assert_gh 2 'gh repo create owner/newrepo --public'
+assert_gh 2 'gh repo delete owner/repo --yes'
+assert_gh 2 'gh repo edit --default-branch main'
+assert_gh 2 'gh repo rename newname'
+assert_gh 2 'gh repo fork owner/repo'
+assert_gh 2 'gh repo sync'
+assert_gh 2 'gh repo archive owner/repo'
+assert_gh 2 'gh repo deploy-key add key.pub'
+assert_gh 2 'gh repo autolink create TICKET- https://example.com/n'
+
+# release / workflow / run / gist（書き込み系）
+assert_gh 2 'gh release create v1.0.0 --notes x'
+assert_gh 2 'gh release delete v1.0.0'
+assert_gh 2 'gh release upload v1.0.0 dist.tgz'
+assert_gh 2 'gh release edit v1.0.0 --draft=false'
+assert_gh 2 'gh workflow run ci.yml'
+assert_gh 2 'gh workflow disable ci.yml'
+assert_gh 2 'gh run cancel 999'
+assert_gh 2 'gh run rerun 999'
+assert_gh 2 'gh run delete 999'
+assert_gh 2 'gh gist create notes.md'
+assert_gh 2 'gh gist delete abc123'
+
+# 権限・資格情報・任意コード実行の経路
+assert_gh 2 'gh secret set TOKEN --body v'
+assert_gh 2 'gh variable set NAME --body v'
+assert_gh 2 'gh label create bug --color ff0000'
+assert_gh 2 'gh ssh-key add id_ed25519.pub'
+assert_gh 2 'gh gpg-key add key.asc'
+assert_gh 2 'gh auth login --with-token'
+assert_gh 2 'gh auth token' 'gh auth token (token 抜き取り経由の直接 API 書き込みを塞ぐ)'
+assert_gh 2 'gh auth setup-git'
+assert_gh 2 'gh extension install owner/gh-ext'
+assert_gh 2 'gh extension exec ext arg'
+assert_gh 2 'gh alias set pm "pr merge"' 'gh alias set (alias 経由の別名実行を塞ぐ)'
+assert_gh 2 'gh alias import aliases.yml'
+assert_gh 2 'gh project item-create 1 --title x'
+assert_gh 2 'gh codespace create -r owner/repo'
+
+# gh api: 書き込みメソッド
+assert_gh 2 'gh api -X POST /repos/o/r/issues -f title=x'
+assert_gh 2 'gh api --method POST /repos/o/r/issues'
+assert_gh 2 'gh api --method=DELETE /repos/o/r/issues/1'
+assert_gh 2 'gh api -XPATCH /repos/o/r/pulls/1' 'gh api -XPATCH (短縮形に値密着)'
+assert_gh 2 'gh api -X PUT /repos/o/r/collaborators/u'
+assert_gh 2 'gh api repos/o/r/issues -f title=x' 'gh api with -f (メソッド省略時 gh は POST になる)'
+assert_gh 2 'gh api repos/o/r/issues -F body=@body.md' 'gh api with -F (同上)'
+assert_gh 2 'gh api repos/o/r/issues --input payload.json' 'gh api --input (同上)'
+assert_gh 2 'gh api graphql -f query="mutation{addComment(input:{}){clientMutationId}}"' 'gh api graphql mutation'
+assert_gh 2 'gh api graphql --input q.json' 'gh api graphql --input (本文を静的に読めない)'
+
+# 判定不能 → fail closed
+assert_gh 2 'gh api -X "$METHOD" /repos/o/r/issues' 'gh api メソッドが変数（判定不能）'
+assert_gh 2 'gh unknowncmd foo' 'gh の未知 group は default-deny'
+assert_gh 2 'gh pr unknownsub 1' 'gh pr の未知 subcommand は default-deny'
+assert_gh 2 'gh --unknownflag value pr view 1' 'gh の未知フラグで group 位置がずれる形は default-deny'
+
+# 回避形（segment-split.sh の回避耐性層の上で検知されること）
+assert_gh 2 'eval "gh pr merge 123"' 'eval 経由は unwrap で検知'
+assert_gh 2 'bash -c "gh pr create -t x -b y"' 'bash -c 経由は unwrap で検知'
+assert_gh 2 "sh -c 'gh release create v1'" 'sh -c 経由は unwrap で検知'
+assert_gh 2 'bash -c "eval '"'"'gh pr merge 1'"'"'"' 'ネストした bash -c / eval も検知'
+assert_gh 2 'git status && gh pr create -t x' 'セグメント連結（&&）でも検知'
+assert_gh 2 'echo x | gh pr comment 1 --body-file -' 'パイプ後段の gh 書き込みも検知'
+assert_gh 2 'GH_TOKEN=xxx gh pr merge 1' '環境変数を前置した形も検知'
+assert_gh 2 'GH_REPO=owner/repo gh pr create -t x' 'GH_REPO 経由の repo 指定形も検知'
+assert_gh 2 'subcmd=merge; gh pr "$subcmd" 123' '変数展開でサブコマンドを組み立てる形も検知'
+assert_gh 2 'gh pr merge --repo owner/repo 123' '--repo を挟む形も検知'
+assert_gh 2 'gh --repo owner/repo pr merge 123' '--repo を group より前に挟む形も検知'
+assert_gh 2 '/usr/bin/gh pr merge 123' '絶対パス起動も検知'
+assert_gh 2 'gh.exe pr merge 123' 'Windows の gh.exe も検知'
+assert_gh 2 'GH pr merge 123' '大文字表記も検知'
+assert_gh 2 'echo $(gh pr create -t x)' 'コマンド置換内の gh 書き込みも検知'
+assert_gh 2 'gh --hostname github.example.com pr merge 1' '--hostname を挟む形も検知'
+assert_gh 2 'cd /tmp && gh issue create -t x' 'cd 連結後も検知'
+
+# 未展開の変数でサブコマンド / group を組み立てる形は判定不能 → fail closed
+assert_gh 2 'gh pr "$UNRESOLVED" 123' 'subcommand が未展開の変数（判定不能）'
+assert_gh 2 'gh "$UNRESOLVED_GROUP" merge 1' 'group が未展開の変数（判定不能）'
+assert_gh 2 'gh pr `printf merge` 1' 'subcommand がコマンド置換（判定不能）'
+
+# リテラル文字列中の gh はコマンド起動ではないので巻き込まない
+assert_gh 0 'git commit -m "gh の書き込みを塞ぐ"' '日本語コミットメッセージ中の gh は誤検知しない'
+assert_gh 0 'echo "see gh https://cli.github.com/manual"' 'URL を伴う散文中の gh は誤検知しない'
+assert_gh 0 'ls tools/gh' 'パス末尾が gh でも後続に subcommand が無ければ allow'
+
+# Codex round 1 (P1): alias 名は [a-z-]+ に限らない。語形トークンは未知でも deny。
+assert_gh 2 'gh foo_bar 123' 'アンダースコア入りの未知 group（alias 経由）も deny'
+assert_gh 2 'gh pr.merge 1' 'ドット入りの未知 group も deny'
+assert_gh 2 'gh 123 1' '数字始まりの未知 group も deny'
+assert_gh 2 'gh issue foo_bar 42' 'アンダースコア入りの未知 subcommand も deny'
+
+# Codex round 1 (P1): graphql の本文を静的に読めない形は deny
+assert_gh 2 'gh api graphql -F query=@q.graphql' 'graphql の body が @file（読めない）'
+assert_gh 2 'gh api graphql -f query=@-' 'graphql の body が標準入力（読めない）'
+assert_gh 2 'gh api graphql -f query=$QUERY' 'graphql の body が未展開の変数（読めない）'
+
+# Codex round 2 (P1): リダイレクトが語に密着した形も検知する
+assert_gh 2 'gh pr create>/dev/null' 'リダイレクトが subcommand に密着した形も検知'
+assert_gh 2 'gh pr>out merge 1' 'リダイレクトが group に密着した形も検知'
+assert_gh 2 'gh pr merge 1 2>&1' 'リダイレクトを伴う書き込みも検知'
+
+# Codex round 2 (P1): graphql 判定は endpoint 位置のみで行う
+assert_gh 2 'gh api -X DELETE /repos/o/r/issues/1 --template graphql' 'option 値の graphql で REST 書き込みが素通りしない'
+assert_gh 2 'gh api -X POST /repos/o/r/issues -H "X-Foo: graphql"' 'header 値の graphql でも素通りしない'
+
+# Codex round 2 (P1): 隣接クォート連結で分断された mutation も検知する
+assert_gh 2 'gh api graphql -f query="muta""tion{x}"' '隣接クォート連結の mutation も検知'
+
+# Codex round 3 (P1): pflag の短縮フラグクラスタも解釈する
+assert_gh 2 'gh api -iXPOST /repos/o/r/issues' 'クラスタ -iXPOST の POST を検知'
+assert_gh 2 'gh api -iFtitle=x /repos/o/r/issues' 'クラスタ -iFtitle=x の暗黙 POST を検知'
+assert_gh 2 'gh api -iX DELETE /repos/o/r/issues/1' 'クラスタ -iX + 別トークン値も検知'
+assert_gh 2 'gh api graphql -iFquery=@q.graphql' 'クラスタ内の @file body も検知'
+
+# Codex round 3 (P1): 引用符で分断された実行ファイル名も検知する
+assert_gh 2 'g"h" pr create -t x' '引用符で分断された gh も検知'
+assert_gh 2 '/usr/bin/g"h" pr merge 1' 'パス付きで引用符分断された gh も検知'
+assert_gh 2 "g'h' pr merge 1" 'シングルクォートで分断された gh も検知'
+
+echo "# --- gh read-only operations: allow cases (回帰の要) ---"
+
+# pr / issue の読み取り
+assert_gh 0 'gh pr view 123'
+assert_gh 0 'gh pr view 123 --json state,title -q .state'
+assert_gh 0 'gh pr list --limit 20 --state open'
+assert_gh 0 'gh pr diff 123'
+assert_gh 0 'gh pr status'
+assert_gh 0 'gh pr checkout 123' 'gh pr checkout はローカル操作のみで GitHub 書き込みではない'
+assert_gh 0 'gh co 123' 'gh co は pr checkout の組み込み alias'
+assert_gh 0 'gh issue view 42'
+assert_gh 0 'gh issue view 42 --comments'
+assert_gh 0 'gh issue list --label bug --limit 50'
+assert_gh 0 'gh issue status'
+
+# CI / run / workflow の読み取り（調査業務の主経路）
+assert_gh 0 'gh run list --workflow ci.yml --limit 5'
+assert_gh 0 'gh run view 999'
+assert_gh 0 'gh run view 999 --log-failed'
+assert_gh 0 'gh run download 999 --name artifact'
+assert_gh 0 'gh workflow list'
+assert_gh 0 'gh workflow view ci.yml'
+
+# repo / release / gist / search の読み取り
+assert_gh 0 'gh repo view owner/repo'
+assert_gh 0 'gh repo list owner --limit 10'
+assert_gh 0 'gh repo clone owner/repo'
+assert_gh 0 'gh repo deploy-key list'
+assert_gh 0 'gh repo license list'
+assert_gh 0 'gh release view v1.0.0'
+assert_gh 0 'gh release list'
+assert_gh 0 'gh release download v1.0.0 --pattern "*.tgz"'
+assert_gh 0 'gh gist view abc123'
+assert_gh 0 'gh search prs --state open --repo owner/repo'
+assert_gh 0 'gh search issues bug --limit 10'
+assert_gh 0 'gh search code needle --repo owner/repo'
+
+# その他の読み取り
+assert_gh 0 'gh auth status'
+assert_gh 0 'gh label list'
+assert_gh 0 'gh cache list'
+assert_gh 0 'gh secret list'
+assert_gh 0 'gh variable get NAME'
+assert_gh 0 'gh ruleset list'
+assert_gh 0 'gh alias list'
+assert_gh 0 'gh config get editor'
+assert_gh 0 'gh extension list'
+assert_gh 0 'gh status'
+assert_gh 0 'gh --version'
+assert_gh 0 'gh --help'
+assert_gh 0 'gh pr' 'group のみ（help 出力）は allow'
+assert_gh 0 'gh pr --help'
+
+# gh api の読み取り
+assert_gh 0 'gh api repos/o/r/pulls/1'
+assert_gh 0 'gh api /repos/o/r/commits --paginate'
+assert_gh 0 'gh api -X GET /repos/o/r/issues'
+assert_gh 0 'gh api --method GET /repos/o/r/issues'
+assert_gh 0 'gh api -H "Accept: application/vnd.github+json" repos/o/r'
+assert_gh 0 'gh api repos/o/r/pulls/1 --jq .head.sha'
+assert_gh 0 'gh api graphql -f query="query{viewer{login}}"' 'graphql の read クエリは allow'
+
+# 読み取りの連結・変数展開
+assert_gh 0 'gh pr view 1 && gh run list'
+assert_gh 0 'prnum=123; gh pr view "$prnum"'
+assert_gh 0 'gh pr view --repo owner/repo 1'
+assert_gh 0 'gh --repo owner/repo pr view 1'
+assert_gh 0 'eval "gh pr view 1"' 'eval 経由の読み取りは allow'
+
+# gh を含まない既存コマンドへの巻き込みが無いこと
+assert_gh 0 'ls -la'
+assert_gh 0 'git status'
+assert_gh 0 'bash tools/gh-helper.sh' 'gh を接尾辞に含むファイル名は gh 起動ではない'
+assert_gh 0 'echo through the night' 'gh を含む単語（through）は誤検知しない'
+
+# 短縮フラグクラスタでも読み取りは通る
+assert_gh 0 'gh api -i /repos/o/r/pulls/1' 'クラスタでない -i 付き GET は allow'
+assert_gh 0 'gh api -iX GET /repos/o/r/issues' 'クラスタ -iX + GET は allow'
+assert_gh 0 'gh api -q .head.sha repos/o/r/pulls/1' '-q 付き GET は allow'
+
+echo "# --- データとして渡る本文中の gh 字面 (Issue #1133) ---"
+
+# Issue #1133 の 3 例: コマンドでない本文の gh で deny しない
+assert_gh 0 $'git commit -m "$(cat <<\'EOF\'\nfix: x\n\n後で gh pr create する\nEOF\n)"' '#1133: commit message heredoc 内の gh pr create'
+assert_gh 0 $'python3 - <<\'EOF\'\nprint("gh auth login")\nEOF' '#1133: python heredoc の文字列リテラル中の gh auth login'
+assert_gh 0 'grep -e "gh auth" -e journalctl file.log' '#1133: grep パターン中の gh auth'
+# 同種の形
+assert_gh 0 $'git add -u && git commit -m "$(cat <<\'EOF\'\nx\n\ngh pr merge 1\nEOF\n)" && git log -1' 'commit heredoc の前後に連結があっても本文は外す'
+assert_gh 0 $'git commit -F - <<\'EOF\'\ngh pr merge 1\nEOF' 'git commit -F - の heredoc 本文'
+assert_gh 0 $'python3 - <<EOF\nprint("gh pr create")\nEOF' '未クォート区切りでも展開が無い本文は外す'
+assert_gh 0 'git commit -m "後で gh pr create する"' 'commit -m のクォート内 gh'
+assert_gh 0 $'git commit -m "line1\n\ngh pr create は窓口"' '複数行 commit -m のクォート内 gh'
+assert_gh 0 'grep -rn "gh pr merge" docs/' 'grep パターン中の gh pr merge'
+assert_gh 0 "rg -n 'gh pr (create|merge)' .hooks" 'rg パターン中の gh'
+
+# 実行されうる文脈は従来どおり deny（fail closed）
+assert_gh 2 'git commit -m "$(gh pr create)"' 'commit -m 内のコマンド置換は deny'
+assert_gh 2 'git commit -m "x" $(gh pr merge 1)' 'commit 引数のコマンド置換は deny'
+assert_gh 2 "git commit -m 'x' \`gh pr merge 1\`" 'commit 引数のバッククォートは deny'
+assert_gh 2 'grep "gh pr merge" f && gh pr merge 1' 'grep の後に連結した実行は deny'
+assert_gh 2 "rg --pre 'gh pr merge' x" 'rg --pre はコマンド実行なので deny'
+assert_gh 2 'rg "--pre" "gh" x auth' 'クォートした rg --pre も deny'
+assert_gh 2 $'grep . <<\'EOF\' > run.sh\n"gh" pr merge 1\nEOF\nbash run.sh' 'grep の heredoc 本文のクォートは外さない'
+assert_gh 2 $'grep . <<< \'"gh" pr merge 1\' > run.sh; bash run.sh' 'grep の here-string のクォートは外さない'
+assert_gh 2 "bash -c \"grep 'x' f; gh pr merge 1\"" 'bash -c 内の実行は deny'
+assert_gh 2 'eval "gh pr merge 1"' 'eval 内は deny'
+assert_gh 2 "grep 'x' f | xargs gh pr close" 'xargs 経由は deny'
+assert_gh 2 "GIT_EDITOR='gh pr merge 1' git commit" '代入前置の git commit はリテラルを外さない'
+assert_gh 2 'echo "gh pr merge 1"' 'データ用コマンド以外のリテラルは従来どおり deny'
+assert_gh 2 $'bash <<\'EOF\'\ngh pr merge 1\nEOF' 'bash への heredoc は deny'
+assert_gh 2 $'cat <<\'EOF\' | bash\ngh pr merge 1\nEOF' 'cat heredoc を bash へ流す形は deny'
+assert_gh 2 $'python3 - <<\'EOF\' | bash\ngh pr merge 1\nEOF' 'python heredoc の出力を bash へ流す形は deny'
+assert_gh 2 $'python3 - <<EOF\n$(gh pr merge 1)\nEOF' '未クォート区切り本文のコマンド置換は deny'
+assert_gh 2 $'python3 - <<\'EOF\'\nx\nEOF\ngh pr merge 1' 'heredoc の後ろの実コマンドは deny'
+assert_gh 2 $'git commit -m "$(cat <<\'EOF\'\nx\nEOF\n) $(gh pr merge 1)"' 'commit heredoc と同じ引数内の置換は deny'
+assert_gh 2 $'git commit -m "$(cat <<\'EOF\'\nx\nEOF\n)"; gh pr merge 1' 'commit heredoc の後の実コマンドは deny'
+assert_gh 2 $'alias python3=bash\npython3 - <<\'EOF\'\ngh pr merge 1\nEOF' 'alias で受け手を差し替える形は外さない'
+assert_gh 2 $'alias cat=bash\ngit commit -m "$(cat <<\'EOF\'\ngh pr merge 1\nEOF\n)"' 'alias cat で置換を実行に変える形は外さない'
+assert_gh 2 $'PATH=/tmp/x\npython3 - <<\'EOF\'\ngh pr merge 1\nEOF' 'PATH 変更後の heredoc は外さない'
+assert_gh 2 $'echo "\npython3 - <<\'EOF\'\n"; gh pr merge 1; echo "\nEOF\n"' 'クォート内に偽の heredoc 開始行がある形は外さない'
+
+echo "# --- プロセス置換 / サブシェル / git alias 経由の gh (Issue #1140) ---"
+assert_gh 2 'cat <(gh pr merge 1)' '#1140: <( ) 内の gh 書き込みは deny'
+assert_gh 2 'diff <(gh pr merge 1) x' '#1140: 引数位置の <( ) 内も deny'
+assert_gh 2 'echo x > >(gh pr merge 1)' '#1140: >( ) 内の gh 書き込みは deny'
+assert_gh 2 'cat <(gh pr merge)' '#1140: 閉じ括弧が subcommand に密着しても deny'
+assert_gh 2 '(gh pr merge 1)' '#1140: サブシェル ( ) 内も deny'
+assert_gh 2 'gh api repos/o/r/issues -f "title=(-XGET)" -f body=x' '#1140: 括弧で囲んだ field 値がメソッド指定に化けない'
+assert_gh 2 'cat <(gh api repos/o/r/issues -X POST)' '#1140: <( ) 内の gh api 書き込みは deny'
+assert_gh 2 'gh api repos/o/r/issues -X POST > >(echo -X GET)' '#1140: 別のプロセス置換の -X GET) で POST が上書きされない'
+assert_gh 2 '(gh api repos/o/r -XPOST)' '#1140: サブシェル内の gh api -XPOST は deny'
+assert_gh 0 'cat <(gh pr view 1)' '#1140: <( ) 内の読み取りは allow'
+assert_gh 0 'cat <(git log) <(gh run list)' '#1140: 複数のプロセス置換の読み取りは allow'
+assert_gh 2 "git -c alias.x='!gh pr merge 1' x" '#1140: git -c alias の ! 経由の gh は deny'
+assert_gh 2 "git -c 'alias.x=!gh pr merge 1' x" '#1140: キーごとクォートした alias も deny'
+assert_gh 2 'git -c alias.x=!gh\ pr\ merge\ 1 x' '#1140: バックスラッシュで空白を繋いだ alias も deny'
+assert_gh 2 "git -c ALIAS.x='!gh pr merge 1' x" '#1140: section 名の大文字も deny'
+assert_gh 2 "git -c alias.x='!echo hi' x" '#1140: ! alias は値を問わず deny'
+assert_gh 2 "git -c alias.x='!git push' x" '#1140: ! alias 経由の git push も deny'
+assert_gh 2 'git -c alias.x=push x' '#1140: push を値に持つ alias も deny'
+assert_gh 2 "v='!gh pr merge 1'; git -c alias.x=\"\$v\" x" '#1140: 変数経由の alias 値も deny'
+assert_gh 2 "eval \"git -c alias.x='!gh pr merge 1' x\"" '#1140: eval 内の alias 定義も deny'
+assert_gh 2 "bash -c \"git -c alias.x='!gh pr merge 1' x\"" '#1140: bash -c 内の alias 定義も deny'
+assert_gh 2 "GIT_CONFIG_PARAMETERS=\"'alias.x'='!gh pr merge 1'\" git x" '#1140: GIT_CONFIG_PARAMETERS の alias も deny'
+assert_gh 2 "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!gh pr merge 1' git x" '#1140: GIT_CONFIG_KEY_<n> の alias も deny'
+assert_gh 2 'git --config-env=alias.x=V x' '#1140: --config-env の alias も deny'
+assert_gh 2 "git config alias.x '!gh pr merge 1'" '#1140: 永続 alias の ! 定義も deny'
+assert_gh 0 "git -c alias.lg='log --oneline' lg" '#1140: ! でも push でもない alias は allow'
+assert_gh 0 'git -c user.name=foo commit -m y' '#1140: alias 以外の -c は allow'
+assert_gh 0 'git config --get alias.x' '#1140: alias の参照は allow'
+
+echo "# --- git push の境界記号密着 (Issue #1140) ---"
+assert_gh 2 'git push; echo' '#1140: push 直後の ; 密着は deny'
+assert_gh 2 'git push&&echo' '#1140: push 直後の && 密着は deny'
+assert_gh 2 'git push|cat' '#1140: push 直後の | 密着は deny'
+assert_gh 2 'git push>/dev/null' '#1140: push 直後のリダイレクト密着は deny'
+assert_gh 2 '{ git push; }' '#1140: { } グループ内の push; は deny'
+assert_gh 2 'cat <(git push)' '#1140: <( ) 内の push は deny'
+assert_gh 2 '(git push)' '#1140: サブシェル内の push は deny'
+assert_gh 2 'echo $(git push)' '#1140: $( ) 内の push は deny'
+assert_gh 2 'echo `git push`' '#1140: バッククォート内の push は deny'
+assert_gh 0 'git config push.default simple' '#1140: push.* 設定キーは allow のまま'
+assert_gh 0 'git status; git log' '#1140: push を含まない連結は allow'
+
+# deny メッセージが本文字面の可能性と回避策を示すこと
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(json_for 'echo "gh pr merge 1"')" "$stderr")
+assert_exit 2 "$ec" 'deny メッセージ確認用'
+assert_stderr_contains 'コマンドではない本文' "$stderr" 'deny メッセージが本文字面の可能性を示す'
+assert_stderr_contains 'git commit -F <file>' "$stderr" 'deny メッセージが回避策を示す'
+
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
 [[ $FAIL -eq 0 ]]

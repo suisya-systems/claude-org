@@ -4,7 +4,13 @@ Python standard library only — no pip install required.
 
 Usage: python3 dashboard/server.py   (Mac/Linux)
        py -3 dashboard/server.py      (Windows)
-       Then open http://localhost:8099
+       Then open the URL printed by ``python3 dashboard/server.py --status``.
+
+The port is the first free one of ``PORTS`` (another org on the same host
+may hold 8099). After a successful bind the server publishes the port it
+actually bound to ``.state/dashboard.json`` (atomic rename) and removes it on
+exit; ``--status`` reads that record and confirms over HTTP that the process
+answering is this clone's server before printing the URL (Issue #1135).
 
 M4 (Issue #267): the dashboard reads exclusively from
 ``.state/state.db``. There is no markdown / JSON fallback — fresh
@@ -16,15 +22,18 @@ clones must run::
 once before ``server.py`` will return useful data.
 """
 
+import argparse
 import http.server
 import json
 import os
 import queue
 import re
+import signal
 import socketserver
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,8 +46,10 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tools.registry_parser import parse_projects_text as _parse_projects_shared
 from tools.state_db import connect as _db_connect
+from tools.secretary_queue_watcher import live_cmdline, pid_alive
 from tools.state_db.queries import (
     get_org_state_summary as _db_org_state_summary,
+    list_live_worker_task_ids as _db_live_worker_task_ids,
     list_recent_events as _db_recent_events,
 )
 
@@ -51,6 +62,8 @@ POLL_INTERVAL = 1.5  # seconds
 BASE_DIR = Path(__file__).parent.parent  # claude-org repo root
 DASHBOARD_DIR = Path(__file__).parent
 PID_FILE = BASE_DIR / ".state" / "dashboard.pid"
+RECORD_FILE = BASE_DIR / ".state" / "dashboard.json"
+ORG_ROOT = str(BASE_DIR.resolve())
 STATE_DB_PATH = BASE_DIR / ".state" / "state.db"
 
 # ---------------------------------------------------------------------------
@@ -79,12 +92,46 @@ def _parse_projects(text):
     ]
 
 
-def _parse_workers(workers_dir):
+def _parse_workers(workers_dir, eligible_task_ids):
+    """Build worker cards for the *live* workers only.
+
+    ``eligible_task_ids`` is the display-eligibility set computed from the
+    DB (``runs.status IN ('in_use', 'review')``). It is a required argument
+    so no caller can accidentally fall back to "every md file under
+    .state/workers/", which is what made the panel report dozens of
+    finished workers as active; md files never grant eligibility of their
+    own.
+
+    A card is emitted for the *intersection* of that set with the md files
+    sitting directly under ``workers_dir`` (a run whose file has been
+    archived is no longer live — Issue #264). Within that intersection the
+    md is a detail source only: if it cannot be parsed the card is still
+    emitted, with null details, so a corrupt file degrades one card instead
+    of hiding a running worker.
+    """
+    eligible = set(eligible_task_ids)
+    if not eligible:
+        return []
+
     workers = []
     try:
-        for md_file in sorted(Path(workers_dir).glob("worker-*.md")):
-            text = _read(md_file)
-            worker_id = md_file.stem.replace("worker-", "")
+        md_files = sorted(Path(workers_dir).glob("worker-*.md"))
+    except OSError as exc:
+        print(
+            f"[dashboard] workers: cannot list {workers_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return []
+
+    for md_file in md_files:
+        worker_id = md_file.stem[len("worker-"):]
+        if worker_id not in eligible:
+            continue
+        try:
+            # Read directly (not via _read, which swallows errors and
+            # returns "") so an unreadable / undecodable file reaches the
+            # per-file handler below instead of rendering a blank card.
+            text = md_file.read_text(encoding="utf-8").replace("\r\n", "\n")
             task = None
             pane_id = None
             started = None
@@ -127,8 +174,26 @@ def _parse_workers(workers_dir):
                 "lastProgress": last_progress["message"] if last_progress else None,
                 "lastProgressTs": last_progress["ts"] if last_progress else None,
             })
-    except Exception:
-        pass
+        except Exception as exc:
+            # Per-file containment: one corrupt md must not blank the whole
+            # panel (the previous blanket try/except turned a single parse
+            # error into "0 workers", indistinguishable from an idle org).
+            # The DB says this worker is running, so the card stays — only
+            # its md-sourced detail is dropped.
+            print(
+                f"[dashboard] workers: unparsable {md_file.name}: {exc}; "
+                "rendering card without detail",
+                file=sys.stderr,
+            )
+            workers.append({
+                "id": worker_id,
+                "shortId": worker_id[:8],
+                "task": None,
+                "paneId": None,
+                "started": None,
+                "lastProgress": None,
+                "lastProgressTs": None,
+            })
     return workers
 
 
@@ -275,6 +340,44 @@ def _load_state_from_db():
     )
 
 
+def _live_worker_task_ids():
+    """Return the DB-side display-eligibility set for the workers panel.
+
+    Never raises: on a missing DB, or if the eligibility query itself
+    fails, it returns an empty set and logs the reason, so the panel
+    degrades to "no live workers" rather than to "show everything on
+    disk".
+
+    Scope note: this only covers the workers panel. If the DB file exists
+    but is corrupt, ``_load_state_from_db`` raises first and the whole
+    ``/api/state`` response fails — that is the deliberate M4 (Issue #267)
+    "DB is required" behaviour, and this helper does not soften it. The
+    guard here is defense-in-depth for the cases the M4 path survives (a
+    transient lock, a schema the org-state queries tolerate but this one
+    does not).
+    """
+    if not STATE_DB_PATH.exists():
+        print(
+            "[dashboard] workers: state.db not found at "
+            f"{STATE_DB_PATH}; rendering 0 workers",
+            file=sys.stderr,
+        )
+        return set()
+    try:
+        conn = _db_connect(STATE_DB_PATH)
+        try:
+            return set(_db_live_worker_task_ids(conn))
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(
+            "[dashboard] workers: live-worker query failed "
+            f"({exc.__class__.__name__}: {exc}); rendering 0 workers",
+            file=sys.stderr,
+        )
+        return set()
+
+
 def build_state():
     state_dir = BASE_DIR / ".state"
 
@@ -310,9 +413,22 @@ def build_state():
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)
 
-    # Source of truth for "live worker" is presence directly under .state/workers/;
-    # closing a worker moves its md file to .state/workers/archive/ (org-delegate Step 5).
-    workers = _parse_workers(state_dir / "workers")
+    # The workers panel renders the intersection of two liveness signals:
+    # the DB phase (the Set F §3.3 user-visible projection — in_use /
+    # review; a review pane is still open awaiting human approval, so it
+    # stays on the panel per Issue #264) and an md file sitting directly
+    # under .state/workers/ (archival means the worker is closed —
+    # Issue #264). The DB is the admitting predicate: md presence alone is
+    # NOT evidence of a live worker, because archival lags and completed /
+    # abandoned / suspended runs keep their file in place. Within the
+    # intersection the md contributes card detail only.
+    #
+    # Fail-safe: if the DB is missing or the eligibility query fails we
+    # render zero workers and log why. Falling back to "every md file"
+    # would silently reinstate the bug this guards against. (A corrupt DB
+    # file never reaches here — the M4 org-state read above raises first,
+    # by design.)
+    workers = _parse_workers(state_dir / "workers", _live_worker_task_ids())
 
     knowledge = _parse_knowledge(BASE_DIR / "knowledge" / "curated")
 
@@ -398,6 +514,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/state":
             self._serve_json(build_state())
+        elif path == "/api/identity":
+            self._serve_json({"org_root": ORG_ROOT, "pid": os.getpid()})
         elif path == "/api/events":
             self._serve_sse()
         elif path == "/" or path == "/index.html":
@@ -471,20 +589,106 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second socket bind a port that is already
+    # listening, so a second org would silently share 8099 instead of falling
+    # through to 8100.
+    allow_reuse_address = os.name != "nt"
+
+
+# ---------------------------------------------------------------------------
+# Port record + --status
+# ---------------------------------------------------------------------------
+
+def _write_atomic(path, text):
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)  # same-dir rename: readers never see a partial file
+
+
+def _remove_if_ours(path, read_pid):
+    """Delete ``path`` only while it still names this process."""
+    try:
+        if read_pid(path.read_text(encoding="utf-8")) == os.getpid():
+            path.unlink()
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+
+def _record_pid(text):
+    return json.loads(text).get("pid")
+
+
+def check_status():
+    """Return (exit_code, message). 0 = running here (message is the URL).
+
+    1 = stopped (no record / record's pid is gone), 2 = record broken or the
+    server on the recorded port is not this clone's, 3 = legacy server with no
+    port record (restart needed). Never guesses a port.
+
+    os.kill(pid, 0) is TerminateProcess on Windows, so there the pid is never
+    probed: the HTTP identity check alone decides, and no answer = stopped.
+    """
+    posix = os.name != "nt"
+    try:
+        rec = json.loads(RECORD_FILE.read_text(encoding="utf-8"))
+        pid, port = int(rec["pid"]), int(rec["port"])
+    except FileNotFoundError:
+        try:
+            old = int(PID_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 1, "stopped"
+        if not posix:
+            # argv is unverifiable here; a leftover pid file means "maybe running".
+            return 3, (f"legacy dashboard pid file (pid={old}) has no port record; "
+                       "stop it with the org-down PowerShell procedure, then start again")
+        cmd = live_cmdline(old) if pid_alive(old) else None
+        if cmd and any("dashboard/server.py" in c.replace("\\", "/") for c in cmd):
+            return 3, (f"legacy dashboard (pid={old}) has no port record; "
+                       "restart it: python3 tools/stop_dashboard.py, then start again")
+        return 1, "stopped"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return 2, f"port record {RECORD_FILE} is unreadable ({exc})"
+    if posix and not pid_alive(pid):
+        return 1, "stopped (stale port record)"
+    try:
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/api/identity", timeout=2
+        ) as resp:
+            ident = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        if not posix:
+            return 1, f"stopped (port {port} does not answer: {exc})"
+        return 2, f"pid={pid} is alive but port {port} does not answer ({exc})"
+    if not isinstance(ident, dict) or ident.get("org_root") != ORG_ROOT \
+            or ident.get("pid") != pid:
+        return 2, f"port {port} is served by another process, not this org's dashboard"
+    return 0, f"http://localhost:{port}"
+
+
+def run_status(wait):
+    deadline = time.monotonic() + wait
+    while True:
+        code, msg = check_status()
+        if code == 0 or time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+    print(msg, file=sys.stdout if code == 0 else sys.stderr)
+    return code
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main():
-    # Write PID file
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(os.getpid()))
-
-    # Start file watcher
-    t = threading.Thread(target=_watcher_thread, daemon=True)
-    t.start()
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="claude-org dashboard server")
+    parser.add_argument("--status", action="store_true",
+                        help="print this org's dashboard URL (exit 0) or why not (exit 1/2/3)")
+    parser.add_argument("--wait", type=float, default=0, metavar="SEC",
+                        help="with --status: keep checking up to SEC seconds for startup")
+    args = parser.parse_args(argv)
+    if args.status:
+        sys.exit(run_status(args.wait))
 
     # Try ports
     server = None
@@ -501,6 +705,28 @@ def main():
         print(f"ERROR: Could not bind to any of {PORTS}", file=sys.stderr)
         sys.exit(1)
 
+    # Publish only after a successful bind; without a record the org cannot
+    # find this server, so refuse to run rather than serve unannounced.
+    try:
+        RECORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(RECORD_FILE, json.dumps({
+            "pid": os.getpid(), "port": port, "org_root": ORG_ROOT,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        _write_atomic(PID_FILE, str(os.getpid()))
+    except OSError as exc:
+        print(f"ERROR: could not write {RECORD_FILE} ({exc})", file=sys.stderr)
+        server.server_close()
+        _remove_if_ours(RECORD_FILE, _record_pid)
+        sys.exit(1)
+
+    def _on_sigterm(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    t = threading.Thread(target=_watcher_thread, daemon=True)
+    t.start()
+
     print(f"Dashboard: http://localhost:{port}")
     print("Press Ctrl+C to stop.")
     try:
@@ -508,7 +734,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        PID_FILE.unlink(missing_ok=True)
+        _remove_if_ours(RECORD_FILE, _record_pid)
+        _remove_if_ours(PID_FILE, lambda t: int(t.strip()))
         print("\nServer stopped.")
 
 
