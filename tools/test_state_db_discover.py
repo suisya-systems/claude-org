@@ -323,6 +323,13 @@ class _SubprocessFixture:
             "set_run_pr_open.py",
             "run_complete_on_merge.py",
             "peer_notify.py",
+            # Issue #828: the two PR-recording CLIs resolve OWNER/REPO from
+            # the run's project through resolve_run_repo, which in turn pulls
+            # the registry parser and the layout resolver's github-URL /
+            # self-edit helpers.
+            "resolve_run_repo.py",
+            "registry_parser.py",
+            "resolve_worker_layout.py",
         ):
             shutil.copy2(src_tools / name, dst_tools / name)
         # Initialise an empty schema'd state.db at the canonical path.
@@ -706,6 +713,44 @@ class SetRunPrOpenCwdTests(unittest.TestCase):
             worktree_state.exists(),
             f"worktree state.db must NOT be auto-created; saw {worktree_state}",
         )
+
+
+class MissingDbNotCreatedTests(unittest.TestCase):
+    """Issue #1154: a missing state.db must stay missing.
+
+    These callers used to ``connect()`` before verifying, and ``connect``
+    creates the file, leaving an empty schema-less state.db behind that
+    /org-start then took for a real one.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / ".state" / "state.db"
+        self.db.parent.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_callers_do_not_create_missing_db(self):
+        from tools import self_edit_approval, spawn_gate, watcher_restart_guard
+        from tools.state_db.migrate_workers import _count_active_runs
+
+        calls = [
+            (lambda: spawn_gate._append_verified_event({}, str(self.db)),
+             SystemExit),
+            (lambda: self_edit_approval._append_event({}, str(self.db)),
+             SystemExit),
+            (lambda: self_edit_approval._precheck_db(str(self.db)),
+             self_edit_approval.ApprovalError),
+            (lambda: watcher_restart_guard._open_conn(str(self.db)),
+             StateDbSchemaError),
+        ]
+        for call, exc in calls:
+            with self.assertRaises(exc):
+                call()
+            self.assertFalse(self.db.exists())
+        self.assertEqual(_count_active_runs(self.db), 0)
+        self.assertFalse(self.db.exists())
 
 
 if __name__ == "__main__":
