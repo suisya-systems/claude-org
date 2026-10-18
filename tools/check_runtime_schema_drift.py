@@ -62,7 +62,7 @@ from typing import Any, Callable
 # requirements.txt. Keep this constant in sync when widening the pin
 # (Phase 5e+ scope per CLAUDE.local.md). Stored as tuples for ordered
 # comparison; only major.minor.micro are honoured.
-RUNTIME_PIN_LOWER_INCLUSIVE = (0, 1, 17)
+RUNTIME_PIN_LOWER_INCLUSIVE = (0, 1, 48)
 RUNTIME_PIN_UPPER_EXCLUSIVE = (0, 2, 0)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -160,6 +160,165 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 )
 
 
+# ja-only worker ``permissions.allow`` entries, stripped on BOTH sides
+# like the credential mirrors above. Each is the exact allow rule paired
+# with a ja-only ``sandbox_by_pattern.*.excludedCommands`` entry (the
+# sandbox bodies are stripped wholesale), so the two travel together:
+# ``git rebase origin/main`` and ja's own ``tools/codex_review_gate.sh``
+# run outside the worker sandbox. Worker settings render from ja's schema,
+# so no runtime release is needed.
+_JA_ONLY_WORKER_ALLOWS = frozenset(
+    {
+        "Bash(git rebase origin/main)",
+        'Bash(bash "{claude_org_path}/tools/codex_review_gate.sh" origin/main)',
+        "Bash(bash {claude_org_path}/tools/codex_review_gate.sh origin/main)",
+    }
+)
+
+
+# ja-only PreToolUse hook scripts that the byte check strips from
+# ``required_hook_scripts`` and from every ``roles[*].required_hooks``
+# entry on BOTH sides before comparison. Same rationale as
+# ``_JA_ONLY_LAYER2_CREDENTIAL_DENIES`` above: these are claude-org-ja
+# org policy, not runtime template defaults, so they intentionally do
+# not ship in the ``claude-org-runtime`` bundled schema and the byte
+# check would otherwise flag them as drift on every commit.
+#
+# ``check-loop-directive.sh`` pins the dispatcher's ``/loop`` monitoring
+# directive to the canonical text in
+# ``.claude/skills/dispatcher-resume/SKILL.md`` (2026-09-02 incident:
+# a self-authored short form dropped the relay delivery steps). Both the
+# hook and the skill it reads are ja-specific artefacts with no runtime
+# counterpart. Registering it in the schema is what makes
+# ``tools/check_role_configs.py --include-local`` report a missing hook
+# as drift at /org-start Block C4; stripping it here keeps that
+# registration from breaking the ja↔runtime *surface* contract, which is
+# the only thing the byte check is meant to police.
+#
+# ``block-codex-rescue.sh`` denies the ``codex:rescue`` skill for workers
+# (ja's Codex self-review runs only through ``tools/codex_review_gate.sh``).
+# It is wired into ``worker_roles[*].hooks.PreToolUse``, so the strip also
+# drops worker hook commands that name a ja-only script. Worker settings
+# are rendered from ja's schema (``tools/gen_delegate_payload.py`` pins
+# ``--schema``), so the hook reaches workers without a runtime release.
+#
+# ``block-close-before-retro.sh`` denies the dispatcher's ``close_pane`` on
+# a worker pane until the retro completion-report gate has passed. It reads
+# ``retro_gate_acked`` (written by ja's ``tools/dispatcher_retro_gate.py``)
+# and the ja state layout, so it has no runtime counterpart. Dispatcher
+# settings are hand-maintained from permissions.md, not runtime-rendered.
+#
+# ``block-blind-spawn-keys.sh`` denies the dispatcher's key-carrying
+# ``send_keys`` unless a ``spawn-prompt-step --target`` decision record
+# authorises exactly those keys. The record format is a runtime contract,
+# but the hook, its single-use consumption and the ja state-dir discovery
+# are ja's; like the close hook it lives only in the dispatcher settings.
+#
+# ``block-codex-over-cap.sh`` enforces the per-task Codex review round cap
+# for workers: it counts canonical ``tools/codex_review_gate.sh`` calls in
+# ja's ``events`` table (``tools/codex_round_cap.py``), refuses the call
+# past the allowance the secretary set, and blocks direct ``codex``
+# invocations. Like ``block-codex-rescue.sh`` it is wired into
+# ``worker_roles[*].hooks.PreToolUse`` and depends on ja's state layout.
+#
+# ``check-worker-spawn-model.sh`` denies a dispatcher ``spawn_claude_pane``
+# for a worker unless ``model`` is explicit, and allows ``opus`` only when
+# the dispatcher inbox task JSON says so (the runtime helper would
+# otherwise default a worker to opus). It reads ja's dispatcher inbox
+# layout and lives only in the hand-maintained dispatcher settings.
+#
+# Add a new name here ONLY for a hook that is genuinely ja-only. A hook
+# that should also ship in the runtime template belongs in a paired
+# runtime release instead.
+_JA_ONLY_HOOK_SCRIPTS = frozenset({
+    "check-loop-directive.sh",
+    "block-codex-rescue.sh",
+    "block-close-before-retro.sh",
+    "block-blind-spawn-keys.sh",
+    "block-codex-over-cap.sh",
+    "check-worker-spawn-model.sh",
+    "check-dispatcher-loop.sh",
+    "remind-verify-premise.sh",
+    "gate-acceptance-before-merge.sh",
+    "context-record.sh",
+})
+
+
+def _is_ja_only_hook_command(hook: object) -> bool:
+    command = hook.get("command") if isinstance(hook, dict) else None
+    return isinstance(command, str) and any(
+        f"/.hooks/{name}" in command for name in _JA_ONLY_HOOK_SCRIPTS
+    )
+
+
+def _strip_ja_only_hooks(schema: object) -> object:
+    """Drop ja-only hook scripts from the required-hook surface.
+
+    Removes every ``_JA_ONLY_HOOK_SCRIPTS`` name from top-level
+    ``required_hook_scripts``, every ``roles[*].required_hooks``
+    entry whose ``command_contains`` names one, and every
+    ``worker_roles[*].hooks`` command that runs one (a matcher entry left
+    with no commands is dropped too). Applied to BOTH sides,
+    so a future runtime that does ship one of these names still
+    compares equal rather than flipping the check into a false pass in
+    only one direction.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = dict(schema)
+    scripts = out.get("required_hook_scripts")
+    if isinstance(scripts, list):
+        out["required_hook_scripts"] = [
+            s for s in scripts if s not in _JA_ONLY_HOOK_SCRIPTS
+        ]
+    roles = out.get("roles")
+    if isinstance(roles, dict):
+        new_roles: dict[str, Any] = {}
+        for role_name, role_def in roles.items():
+            if not isinstance(role_def, dict) or not isinstance(
+                role_def.get("required_hooks"), list
+            ):
+                new_roles[role_name] = role_def
+                continue
+            new_roles[role_name] = {
+                **role_def,
+                "required_hooks": [
+                    hook
+                    for hook in role_def["required_hooks"]
+                    if not (
+                        isinstance(hook, dict)
+                        and hook.get("command_contains") in _JA_ONLY_HOOK_SCRIPTS
+                    )
+                ],
+            }
+        out["roles"] = new_roles
+    worker_roles = out.get("worker_roles")
+    if isinstance(worker_roles, dict):
+        new_worker_roles: dict[str, Any] = {}
+        for role_name, role_def in worker_roles.items():
+            hooks = role_def.get("hooks") if isinstance(role_def, dict) else None
+            if not isinstance(hooks, dict):
+                new_worker_roles[role_name] = role_def
+                continue
+            new_hooks: dict[str, Any] = {}
+            for event, entries in hooks.items():
+                if not isinstance(entries, list):
+                    new_hooks[event] = entries
+                    continue
+                kept = []
+                for entry in entries:
+                    if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+                        cmds = [h for h in entry["hooks"] if not _is_ja_only_hook_command(h)]
+                        if not cmds:
+                            continue
+                        entry = {**entry, "hooks": cmds}
+                    kept.append(entry)
+                new_hooks[event] = kept
+            new_worker_roles[role_name] = {**role_def, "hooks": new_hooks}
+        out["worker_roles"] = new_worker_roles
+    return out
+
+
 def _strip_ja_only_sandbox_bodies(schema: object) -> object:
     """Drop ja-only ``sandbox`` / ``sandbox_by_pattern`` bodies and ja-only
     Layer 2 credential mirror entries from each role / worker_role.
@@ -226,6 +385,21 @@ def _strip_ja_only_sandbox_bodies(schema: object) -> object:
                                 for entry in permissions["deny"]
                                 if entry
                                 not in _JA_ONLY_LAYER2_CREDENTIAL_DENIES
+                            ],
+                        },
+                    }
+                permissions = cleaned.get("permissions")
+                if isinstance(permissions, dict) and isinstance(
+                    permissions.get("allow"), list
+                ):
+                    cleaned = {
+                        **cleaned,
+                        "permissions": {
+                            **permissions,
+                            "allow": [
+                                entry
+                                for entry in permissions["allow"]
+                                if entry not in _JA_ONLY_WORKER_ALLOWS
                             ],
                         },
                     }
@@ -493,8 +667,10 @@ def _check_byte_drift(installed_str: str) -> int:
     bundled = json.loads(bundled_path.read_text(encoding="utf-8"))
     ja = json.loads(JA_SCHEMA.read_text(encoding="utf-8"))
 
-    bundled_norm = _normalise(_strip_ja_only_sandbox_bodies(bundled))
-    ja_norm = _normalise(_strip_ja_only_sandbox_bodies(ja))
+    bundled_norm = _normalise(
+        _strip_ja_only_hooks(_strip_ja_only_sandbox_bodies(bundled))
+    )
+    ja_norm = _normalise(_strip_ja_only_hooks(_strip_ja_only_sandbox_bodies(ja)))
     if bundled_norm == ja_norm:
         print(
             f"check_runtime_schema_drift: OK (claude-org-runtime "
