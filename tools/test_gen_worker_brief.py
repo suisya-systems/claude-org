@@ -1,6 +1,8 @@
 """Tests for tools/gen_worker_brief.py."""
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -372,6 +374,55 @@ class ClosesOrRefs(unittest.TestCase):
         self.assertIn("（なし）", out)
 
 
+class IssueBodies(unittest.TestCase):
+    """Issue bodies are fetched on the secretary side and embedded verbatim."""
+
+    def _fetch(self, repo, numbers, fake):
+        from unittest import mock
+        err = io.StringIO()
+        with mock.patch.object(gwb, "_gh_issue_view", fake), \
+                contextlib.redirect_stderr(err):
+            return gwb.fetch_issue_bodies(repo, numbers), err.getvalue()
+
+    def test_bodies_rendered_per_issue(self):
+        got, _ = self._fetch(
+            "o/r", [7, 8],
+            lambda repo, n: {"title": f"T{n}", "body": f"body ${{x}} {n}"},
+        )
+        cfg = _base_config(False)
+        cfg["references"] = {"issues": got}
+        out = gwb.render(cfg)
+        self.assertIn("### #7: T7", out)
+        self.assertIn("body ${x} 8", out)
+
+    def test_fetch_failure_warns_and_notes(self):
+        def boom(repo, n):
+            raise OSError("unavailable")
+        got, err = self._fetch("o/r", [7], boom)
+        self.assertIn("warning: could not fetch issue #7", err)
+        cfg = _base_config(False)
+        cfg["references"] = {"issues": got}
+        self.assertIn("本文を取得できなかった", gwb.render(cfg))
+
+    def test_unresolved_repo_skips_fetch(self):
+        def boom(repo, n):
+            raise AssertionError("fetch must not run")
+        got, err = self._fetch(None, [7], boom)
+        self.assertIsNone(got[0]["body"])
+        self.assertIn("warning", err)
+
+    def test_long_body_truncated(self):
+        big = "a" * (gwb.ISSUE_BODY_MAX_CHARS + 5)
+        got, _ = self._fetch("o/r", [1], lambda r, n: {"title": "t", "body": big})
+        self.assertIn("5 文字省略", got[0]["body"])
+
+    def test_issue_repo_from_url(self):
+        self.assertEqual(
+            gwb._issue_repo("https://github.com/Foo/bar.git"), "Foo/bar"
+        )
+        self.assertIsNone(gwb._issue_repo("-"))
+
+
 class RoundTrip217(unittest.TestCase):
     """Reproduce the session #9 #217 brief as a round-trip smoke test."""
 
@@ -570,6 +621,80 @@ class FromTaskSubcommand(unittest.TestCase):
         self.assertIn("Closes #9", text)
         self.assertIn("https://example.com/issues/9", text)
 
+    def test_from_task_bad_task_id_reports_one_line_error_not_traceback(self):
+        # resolve_worker_layout.validate_task_id() rejects task_ids that
+        # cannot become a `worker-<task_id>` pane name (renga 2.0 rejects
+        # such names with name_invalid). Before this fix, ResolveError
+        # wasn't in the from-task handler's except tuple, so a bad
+        # --task-id surfaced as a raw traceback here even though
+        # gen_delegate_payload.py's CLI already turns the same
+        # ResolveError into a one-line `error: ...` message.
+        out = Path(self._td.name) / "should-not-be-written.md"
+        argv = [
+            "from-task",
+            "--task-id", "bad id",
+            "--project-slug", "clock-app",
+            "--description", "demo",
+            "--claude-org-root", str(self.claude_org_root),
+            "--out", str(out),
+        ]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc = gwb.main(argv)
+        self.assertEqual(rc, 2)
+        self.assertFalse(out.exists())
+        msg = stderr.getvalue()
+        self.assertTrue(msg.startswith("error: "), f"expected 'error: ' prefix, got {msg!r}")
+        self.assertNotIn("Traceback", msg)
+
+    # -- Issue #909: placement-driven report target ------------------------
+
+    def test_from_task_default_keeps_name_target(self):
+        text = self._run().read_text(encoding="utf-8")
+        self.assertIn('send_message(to_id="secretary"', text)
+
+    def test_from_task_background_tab_writes_numeric_target(self):
+        text = self._run(
+            "--placement", "background_tab", "--report-target", "1"
+        ).read_text(encoding="utf-8")
+        self.assertIn('send_message(to_id="1"', text)
+        self.assertIn("報告先（背景タブ配置）", text)
+
+    def test_from_task_background_tab_without_target_fails(self):
+        out = Path(self._td.name) / "CLAUDE.md"
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc = gwb.main([
+                "from-task",
+                "--task-id", "demo-from-task",
+                "--project-slug", "clock-app",
+                "--description", "demo description for clock app",
+                "--claude-org-root", str(self.claude_org_root),
+                "--out", str(out),
+                "--placement", "background_tab",
+            ])
+        self.assertEqual(rc, 2)
+        self.assertIn("report.target is required", stderr.getvalue())
+        self.assertFalse(out.exists(), "no brief may be written on rejection")
+
+    def test_from_task_background_tab_round_trips_through_toml(self):
+        toml_path = Path(self._td.name) / "audit.toml"
+        self._run(
+            "--placement", "background_tab",
+            "--report-target", "1",
+            "--write-toml", str(toml_path),
+        )
+        cfg = gwb.load_config(toml_path)
+        self.assertEqual(
+            cfg["report"], {"placement": "background_tab", "target": "1"}
+        )
+        self.assertIn('send_message(to_id="1"', gwb.render(cfg))
+
+    def test_from_task_default_writes_no_report_table(self):
+        toml_path = Path(self._td.name) / "audit-default.toml"
+        self._run("--write-toml", str(toml_path))
+        self.assertNotIn("[report]", toml_path.read_text(encoding="utf-8"))
+
 
 class FromTaskPythonSrcLayout(unittest.TestCase):
     """Issue #676 end-to-end: the from-task path detects a Python
@@ -678,6 +803,100 @@ class FromTaskPythonSrcLayout(unittest.TestCase):
         # And the dumped TOML renders back to a brief with the rule.
         cfg = gwb.load_config(toml_path)
         self.assertIn(self.RULE_HEADER, gwb.render(cfg))
+
+
+class Issue909ReportTargetPlacement(unittest.TestCase):
+    """Placement decides the brief's report address (Issue #909).
+
+    Background-tab workers cannot resolve peer *names* at all (renga
+    resolves names inside the sender's tab only), so their brief must carry
+    the Secretary's numeric pane id. The same-tab default must keep
+    rendering the pre-#909 brief byte for byte.
+    """
+
+    def _render(self, *, self_edit: bool, report: dict | None = None) -> str:
+        cfg = _base_config(self_edit=self_edit)
+        if report is not None:
+            cfg["report"] = report
+        return gwb.render(cfg)
+
+    def test_default_is_secretary_by_name(self):
+        for self_edit in (False, True):
+            with self.subTest(self_edit=self_edit):
+                out = self._render(self_edit=self_edit)
+                self.assertIn('send_message(to_id="secretary"', out)
+                self.assertNotIn("報告先（背景タブ配置）", out)
+
+    def test_explicit_same_tab_is_byte_identical_to_default(self):
+        for self_edit in (False, True):
+            with self.subTest(self_edit=self_edit):
+                self.assertEqual(
+                    self._render(self_edit=self_edit),
+                    self._render(
+                        self_edit=self_edit, report={"placement": "same_tab"}
+                    ),
+                )
+
+    def test_background_tab_reports_to_numeric_pane_id(self):
+        for self_edit in (False, True):
+            with self.subTest(self_edit=self_edit):
+                out = self._render(
+                    self_edit=self_edit,
+                    report={"placement": "background_tab", "target": "7"},
+                )
+                self.assertIn('send_message(to_id="7"', out)
+                # The name form must be gone from the send call entirely —
+                # leaving it anywhere the worker could copy re-creates the
+                # silent [pane_not_found] drop this branch exists to close.
+                self.assertNotIn('send_message(to_id="secretary"', out)
+                self.assertIn("報告先（背景タブ配置）", out)
+                self.assertIn("list_peers", out)
+                self.assertNotIn("<!--BEGIN:", out)
+                self.assertNotIn("${", out)
+
+    def test_background_tab_requires_a_target(self):
+        with self.assertRaises(gwb.ConfigError) as ctx:
+            self._render(self_edit=False, report={"placement": "background_tab"})
+        self.assertIn("report.target is required", str(ctx.exception))
+
+    def test_background_tab_rejects_a_name_target(self):
+        with self.assertRaises(gwb.ConfigError) as ctx:
+            self._render(
+                self_edit=False,
+                report={"placement": "background_tab", "target": "secretary"},
+            )
+        self.assertIn("numeric pane id", str(ctx.exception))
+
+    def test_same_tab_rejects_a_custom_target(self):
+        """Codex Round 1 P2: a custom target under same_tab would render the
+        brief against it while the DELEGATE body still names ``secretary``."""
+        with self.assertRaises(gwb.ConfigError) as ctx:
+            self._render(
+                self_edit=False,
+                report={"placement": "same_tab", "target": "dispatcher"},
+            )
+        self.assertIn("requires report.placement", str(ctx.exception))
+        # The explicit default pair stays legal (it renders identically).
+        self._render(
+            self_edit=False,
+            report={"placement": "same_tab", "target": "secretary"},
+        )
+
+    def test_unknown_placement_is_rejected(self):
+        with self.assertRaises(gwb.ConfigError):
+            self._render(self_edit=False, report={"placement": "other_tab"})
+
+    def test_report_table_type_is_checked(self):
+        with self.assertRaises(gwb.ConfigError):
+            self._render(self_edit=False, report="background_tab")  # type: ignore[arg-type]
+
+    def test_build_report_section_omits_table_for_defaults(self):
+        self.assertIsNone(gwb._build_report_section(None, None))
+        self.assertIsNone(gwb._build_report_section("same_tab", "secretary"))
+        self.assertEqual(
+            gwb._build_report_section("background_tab", "3"),
+            {"placement": "background_tab", "target": "3"},
+        )
 
 
 class LegacyCLIPreserved(unittest.TestCase):
