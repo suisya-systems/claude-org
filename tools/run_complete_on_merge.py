@@ -3,14 +3,18 @@
 
 Given a PR number, resolves the merge metadata via ``gh pr view`` and,
 if the PR is merged, runs the canonical ``StateWriter.transaction()``
-to drive the run row to its terminal state:
+to record the merge fact on the run row:
 
-* ``runs.status = 'completed'``
 * ``runs.pr_state = 'merged'``
 * ``runs.pr_url`` and ``runs.commit_short`` / ``runs.commit_full`` set
   from the PR view payload
 * ``runs.completed_at`` set to the PR's ``mergedAt``
 * one ``pr_merged`` event appended to the events table
+
+``runs.status`` is left alone: the secretary flips it to ``completed`` in
+org-pull-request 2b-ii (delegation-lifecycle-contract §T5). Issue #1204:
+the CLI says on stdout when a merged run is still open, and
+``--check-closed`` lists every such run and exits 1.
 
 The helper replaces the inline ``python -c`` block that used to live
 in ``.claude/skills/org-delegate/SKILL.md`` Step 5 2b-ii. The legacy
@@ -21,6 +25,13 @@ Usage::
 
     python tools/run_complete_on_merge.py --pr <N> \\
         [--repo OWNER/REPO] [--task-id <id>] [--db-path <path>]
+
+Issue #828: with ``--task-id`` and no ``--repo``, the repo is resolved
+deterministically from the run (``runs.project_id`` -> project -> GitHub URL)
+via ``tools/resolve_run_repo.py`` and the helper exits non-zero when that
+fails, instead of reading the cwd repo's PR #N. ``gh repo view`` remains the
+default only when neither flag is given -- there the task is discovered *from*
+the PR, so there is no run to resolve a repo from.
 
 The helper is **idempotent**: running it twice for the same PR is a
 no-op on the second call (no double event row, no status flip).
@@ -42,6 +53,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.resolve_run_repo import (  # noqa: E402
+    SOURCE_EXPLICIT,
+    SOURCE_GH_CWD,
+    RepoResolution,
+    RepoResolutionError,
+    RunNotFound,
+    resolve_repo_for_task_at,
+)
 from tools.state_db.discover import resolve_state_db_path  # noqa: E402
 
 # Issue #398: discovery-based default so worktree-cwd invocations target
@@ -203,8 +222,11 @@ def fetch_pr_view(pr: int, repo: str) -> dict:
     """Return the parsed `gh pr view` payload for the given PR.
 
     Fields requested:
-    ``number,url,state,mergedAt,mergeCommit,headRefName,headRefOid``.
-    Issue #636 added ``headRefOid`` so pr_watch's merge-watch loop can
+    ``number,url,state,mergedAt,mergeCommit,headRefName,headRefOid,title``.
+    Issue #828 added ``title``: it is never written to the DB, only echoed
+    on stdout next to the resolved repo so the operator can see *which* PR
+    is being recorded. Issue #636 added ``headRefOid`` so pr_watch's
+    merge-watch loop can
     detect a new commit pushed to the PR branch (the head moving) and
     loop back to ci-watch instead of silently sitting on a stale CI
     verdict. Raises ``RuntimeError`` if gh fails or the JSON is
@@ -216,7 +238,8 @@ def fetch_pr_view(pr: int, repo: str) -> dict:
             "gh", "pr", "view", str(pr),
             "--repo", repo,
             "--json",
-            "number,url,state,mergedAt,mergeCommit,headRefName,headRefOid",
+            "number,url,state,mergedAt,mergeCommit,headRefName,headRefOid,"
+            "title",
         ],
         capture_output=True, text=True, encoding="utf-8", check=False,  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
     )
@@ -275,6 +298,45 @@ def _resolve_task_id(conn, *, pr: int, repo: str, pr_url: str,
         if row is not None:
             return row["task_id"]
     return None
+
+
+def merged_runs_left_open(db_path: Path) -> "list[tuple[str, str]]":
+    """Return ``(task_id, status)`` for runs whose PR is merged but whose
+    ``runs.status`` is still non-terminal (Issue #1204).
+
+    This helper never flips the status (see the comment at
+    RESULT_MERGED_PENDING_CLEANUP), so a merged run stays ``review`` until
+    the secretary finishes the 2b-ii close. Left that way, the dispatcher's
+    auto-handover stops on ``handover_missing_task_ids``. Read-only.
+    """
+    from tools.state_db import connect
+
+    conn = connect(db_path)
+    try:
+        return [
+            (row["task_id"], row["status"]) for row in conn.execute(
+                "SELECT task_id, status FROM runs WHERE pr_state = 'merged' "
+                "AND status NOT IN ('completed','failed','abandoned') "
+                "ORDER BY id",
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def _report_left_open(db_path: Path) -> int:
+    """Print every merged-but-open run and the next step; return the count."""
+    left = merged_runs_left_open(db_path)
+    for task, status in left:
+        sys.stdout.write(
+            f"run_complete_on_merge: NOT COMPLETED task {task} status={status} "
+            "(this tool records the merge only). Next: finish "
+            "org-pull-request 2b-ii (CLOSE_PANE, worktree remove, and its "
+            f"StateWriter block with update_run_status('{task}', "
+            "'completed')), then confirm with: "
+            "python3 tools/run_complete_on_merge.py --check-closed\n"
+        )
+    return len(left)
 
 
 def _short_sha(full: Optional[str]) -> Optional[str]:
@@ -458,10 +520,16 @@ def main(argv: "list[str] | None" = None) -> int:
             "Mark a run completed when its PR has been merged on GitHub."
         ),
     )
-    parser.add_argument("--pr", type=int, required=True,
-                        help="pull request number")
+    parser.add_argument("--pr", type=int, default=None,
+                        help="pull request number (required unless "
+                             "--check-closed)")
+    parser.add_argument("--check-closed", action="store_true",
+                        help="only list runs whose PR is merged but whose "
+                             "status is not completed; exit 1 if any")
     parser.add_argument("--repo", default=None,
-                        help="OWNER/REPO; auto-detected via gh repo view")
+                        help="OWNER/REPO; resolved from the run's project "
+                             "when --task-id is given, else auto-detected "
+                             "via gh repo view")
     parser.add_argument("--task-id", default=None,
                         help="task_id of the run to complete; auto-resolved "
                              "from runs.pr_url / runs.branch when omitted")
@@ -469,24 +537,78 @@ def main(argv: "list[str] | None" = None) -> int:
                         help=f"path to state.db (default: {DEFAULT_DB_PATH})")
     args = parser.parse_args(argv)
 
-    if args.pr <= 0:
+    db_path = (
+        resolve_state_db_path(Path(args.db_path)) if args.db_path
+        else resolve_state_db_path()
+    )
+
+    if args.check_closed:
+        # Issue #1204: the 2b-ii close check. No gh call, no writes.
+        if _report_left_open(db_path):
+            return 1
+        sys.stdout.write(
+            "run_complete_on_merge: OK - no merged run left open\n"
+        )
+        return 0
+
+    if args.pr is None or args.pr <= 0:
         parser.error("--pr must be a positive integer")
 
     _ensure_gh_installed()
-    repo = args.repo or _resolve_repo()
+
+    # Issue #828: with a task_id in hand the repo is derivable from the run,
+    # so derive it instead of reading the cwd repo's PR #N. Without one the
+    # task is discovered *from* the PR, and gh repo view stays the default.
+    if args.repo:
+        resolution = RepoResolution(args.repo, SOURCE_EXPLICIT)
+    elif args.task_id:
+        try:
+            resolution = resolve_repo_for_task_at(db_path, args.task_id)
+        except RunNotFound as exc:
+            sys.stderr.write(
+                "tools/run_complete_on_merge.py: warning: no run row for "
+                f"task_id={args.task_id!r}; skipping ({exc}).\n"
+            )
+            sys.stdout.write(
+                f"run_complete_on_merge: PR #{args.pr} {RESULT_NO_RUN}\n"
+            )
+            return 3
+        except RepoResolutionError as exc:
+            sys.stderr.write(f"tools/run_complete_on_merge.py: error: {exc}\n")
+            return 2
+    else:
+        resolution = RepoResolution(_resolve_repo(), SOURCE_GH_CWD)
+
+    try:
+        pr_view = fetch_pr_view(args.pr, resolution.repo)
+    except RuntimeError as exc:
+        sys.stderr.write(f"tools/run_complete_on_merge.py: error: {exc}\n")
+        return 2
+
+    sys.stdout.write(
+        f"run_complete_on_merge: repo={resolution.repo} "
+        f"(source={resolution.source}) PR #{args.pr}: "
+        f"{(pr_view.get('title') or '').strip() or '(no title)'}\n"
+    )
 
     try:
         result = complete_on_merge(
             pr=args.pr,
-            repo=repo,
+            repo=resolution.repo,
             task_id=args.task_id,
             db_path=Path(args.db_path) if args.db_path else None,
+            pr_view=pr_view,
         )
     except RuntimeError as exc:
         sys.stderr.write(f"tools/run_complete_on_merge.py: error: {exc}\n")
         return 2
 
     sys.stdout.write(f"run_complete_on_merge: PR #{args.pr} {result}\n")
+    # Issue #1204: "PR #N already" alone read as "done" while the run sat in
+    # review. Say so on stdout, for this run and any other merged one left
+    # open. Exit stays 0: the merge record itself succeeded.
+    if result in (RESULT_MERGED, RESULT_ALREADY):
+        _report_left_open(db_path)
     # not_yet is not a failure — the caller polls. Codex round-3 Major:
     # no_run IS a failure (PR merged but no run row matched), so the
     # secretary's manual invocation must see a non-zero exit code.
