@@ -4,15 +4,17 @@ Issue #326 / #590. ``mcp__{renga-peers,org-broker}__send_message`` is
 only reachable from inside a Claude Code session — a CLI helper like
 ``tools/pr_watch.py`` cannot call MCP tools directly. ``notify_peer``
 bridges a Python CLI back into the peer-message channel and is
-**transport-neutral**: it picks the path from ``ORG_TRANSPORT``.
+**transport-neutral**: it picks the path from the resolved transport
+(:func:`tools.transport.resolve` — explicit > ``ORG_TRANSPORT`` env >
+``DEFAULT_TRANSPORT``), the same SoT every other ja consumer reads.
 
-* ``ORG_TRANSPORT`` unset / anything but ``broker`` → renga path. The
-  renga binary ships an ``mcp-peer`` subcommand that runs the same MCP
-  server over stdio, so spawning it as a subprocess and driving a
-  one-shot JSON-RPC handshake is the simplest reliable bridge. When
-  ``RENGA_SOCKET`` is unset (plain shell, CI, etc.) this is a silent
-  no-op so the caller keeps working in non-renga environments.
-* ``ORG_TRANSPORT=broker`` → broker path. Shells out to the frozen
+* ``renga`` → renga path. The renga binary ships an ``mcp-peer``
+  subcommand that runs the same MCP server over stdio, so spawning it as
+  a subprocess and driving a one-shot JSON-RPC handshake is the simplest
+  reliable bridge. When ``RENGA_SOCKET`` is unset (plain shell, CI, etc.)
+  this is a silent no-op so the caller keeps working in non-renga
+  environments.
+* ``broker`` → broker path. Shells out to the frozen
   ``claude-org-runtime broker send --to <id> --message <text>`` CLI and
   treats ``returncode == 0`` as delivered. Until that CLI ships
   (claude-org-runtime #93) the subprocess raises ``FileNotFoundError``,
@@ -36,6 +38,11 @@ Failure handling notes:
   ``docs/contracts/backend-interface-contract.md`` §2.1 / Issue #242).
   This helper inspects the result text and rejects that shape so a
   silent backend failure isn't reported as confirmed delivery.
+* The resolver import and call are both wrapped: this module keeps a
+  never-raise contract, so a missing ``claude_org_runtime`` install
+  (``tools.transport`` imports it at load time) or an unparseable
+  ``ORG_TRANSPORT`` value falls back to the historical raw-env check
+  rather than propagating. See :func:`_resolve_transport`.
 """
 from __future__ import annotations
 
@@ -52,6 +59,22 @@ _RUNTIME_BIN = "claude-org-runtime"
 _HANDSHAKE_TIMEOUT_SEC = 5.0
 _DROPPED_PREFIX = "(message dropped"
 
+# Transport flag literals (mirror ``claude_org_runtime.transport.TRANSPORTS``).
+_RENGA = "renga"
+_BROKER = "broker"
+
+# Issue #1216: renga resolves a peer *name* only inside the sender's own tab,
+# so a watcher parked in a background tab cannot reach "secretary" by name.
+# The spawner exports the secretary's numeric pane id here (ids reach every
+# tab); unset keeps the same-tab name.
+NOTIFY_TO_ENV = "ORG_NOTIFY_TO"
+_DEFAULT_SECRETARY = "secretary"
+
+
+def secretary_target() -> str:
+    """Return the address CLI watchers use for the secretary."""
+    return os.environ.get(NOTIFY_TO_ENV, "").strip() or _DEFAULT_SECRETARY
+
 
 def notify_peer(
     to_id: str,
@@ -62,25 +85,78 @@ def notify_peer(
 ) -> bool:
     """Send a peer message on the active transport. Best-effort.
 
-    Dispatches on ``ORG_TRANSPORT``: ``broker`` shells out to the
-    ``claude-org-runtime broker send`` CLI; anything else (including
-    unset) uses the renga ``mcp-peer`` JSON-RPC path. Returns ``True``
-    only on confirmed delivery and ``False`` for every other outcome
-    (transport not configured, binary missing, subprocess crash,
-    protocol error, timeout, non-zero exit, backend-unreachable shim).
-    Never raises. The signature and ``bool`` contract are identical
-    across transports.
+    Dispatches on :func:`_resolve_transport` (the ``tools.transport``
+    SoT, with a raw-env fallback): ``broker`` shells out to the
+    ``claude-org-runtime broker send`` CLI, ``renga`` uses the
+    ``mcp-peer`` JSON-RPC path. Returns ``True`` only on confirmed
+    delivery and ``False`` for every other outcome (transport not
+    configured, binary missing, subprocess crash, protocol error,
+    timeout, non-zero exit, backend-unreachable shim). Never raises.
+    The signature and ``bool`` contract are identical across transports.
     """
-    # Deliberately a raw env check, NOT tools.transport.resolve(): this
-    # module is stdlib-only and best-effort. transport.resolve() imports
-    # claude_org_runtime at load time (coupling this CLI bridge to the
-    # runtime install) and raises ValueError on unknown/empty values,
-    # which would violate the never-raise contract. The dispatch is
-    # binary anyway — broker vs. "everything else falls back to renga" —
-    # so the SoT resolver buys nothing here. (Issue #590.)
-    if os.environ.get("ORG_TRANSPORT") == "broker":
+    if _resolve_transport() == _BROKER:
         return _notify_peer_broker(to_id, message, timeout=timeout)
     return _notify_peer_renga(to_id, message, timeout=timeout, renga_bin=renga_bin)
+
+
+def _resolve_transport() -> str:
+    """Return the active transport flag (``renga`` / ``broker``).
+
+    Reads the project SoT resolver (:func:`tools.transport.resolve`,
+    which re-exports ``claude_org_runtime.transport.resolve_transport``)
+    so this CLI bridge routes exactly like every other ja consumer:
+    explicit > ``ORG_TRANSPORT`` env > ``DEFAULT_TRANSPORT``.
+
+    Why this matters (Issue #941). The historical raw-env check treated
+    "``ORG_TRANSPORT`` is not literally ``broker``" as renga. Since
+    runtime 0.1.28 (Epic #586) flipped ``DEFAULT_TRANSPORT`` to
+    ``broker``, a pane that runs on the default transport *without* an
+    explicit ``ORG_TRANSPORT`` export is really on broker — but this
+    helper routed it to renga, i.e. to a transport the org does not use
+    for peer messaging.
+
+    The observed failure is the CI-green push for PR
+    suisya-systems/interlock#36. ``events`` id=4233 (``notify_failed``)
+    records the pane env as ``{"ORG_TRANSPORT": false, "RENGA_SOCKET":
+    true, "ORG_BROKER_STATE_DIR": false}`` and the attempted transport as
+    ``"renga"``. Because ``RENGA_SOCKET`` was set, the renga branch did
+    not short-circuit — it drove a real ``renga mcp-peer`` handshake that
+    failed — so the push was not merely mis-labelled, it was aimed at the
+    wrong transport altogether. (Note: Issue #941's body reports this
+    payload as ``transport: "broker"``; the row itself says ``"renga"``.
+    The conclusion is unchanged — the dispatch disagreed with the
+    resolved transport — but the direction of the disagreement is the
+    opposite of the one written up.)
+
+    Under the resolver, the same pane (``ORG_TRANSPORT`` unset) resolves
+    to ``broker`` and the push goes to the broker CLI, which is where the
+    org's peer messages actually live.
+
+    **The never-raise contract still holds.** ``tools.transport``
+    imports ``claude_org_runtime`` at module load, and ``resolve()``
+    raises ``ValueError`` on an unknown flag. Both are caught here and
+    fall back to the historical raw-env behaviour, so an environment
+    without the runtime installed, or with a typo'd ``ORG_TRANSPORT``,
+    degrades exactly the way it did before rather than propagating an
+    exception into a best-effort notification path.
+    """
+    try:
+        from tools.transport import resolve
+    except Exception:  # noqa: BLE001 — runtime not installed / not importable
+        return _raw_env_transport()
+    try:
+        return resolve()
+    except Exception:  # noqa: BLE001 — unknown ORG_TRANSPORT value
+        return _raw_env_transport()
+
+
+def _raw_env_transport() -> str:
+    """Historical raw-env dispatch, kept as the never-raise fallback.
+
+    Only reachable when the SoT resolver is unavailable or rejects the
+    configured value; see :func:`_resolve_transport`.
+    """
+    return _BROKER if os.environ.get("ORG_TRANSPORT") == _BROKER else _RENGA
 
 
 def _notify_peer_broker(
@@ -135,10 +211,36 @@ def _notify_peer_renga(
     error, read timeout, ``(message dropped — ...)`` backend-unreachable
     shim. Never raises.
     """
+    ok, text = renga_tool_call(
+        "send_message", {"to_id": to_id, "message": message},
+        timeout=timeout, renga_bin=renga_bin,
+    )
+    # Renga's backend-unreachable shim returns ok-text rather than a
+    # JSON-RPC error (Issue #242). Reject "(message dropped — ..." so
+    # a silent backend failure isn't reported as success.
+    return ok and not text.lstrip().startswith(_DROPPED_PREFIX)
+
+
+def renga_tool_call(
+    name: str,
+    arguments: dict,
+    *,
+    timeout: float = _HANDSHAKE_TIMEOUT_SEC,
+    renga_bin: str = _RENGA_BIN,
+) -> "tuple[bool, str]":
+    """Call one renga-peers MCP tool via ``renga mcp-peer``. Never raises.
+
+    Returns ``(ok, text)``: ``ok`` is False when RENGA_SOCKET is unset, the
+    binary is missing, the handshake fails or times out, or the tool
+    reports ``isError``; ``text`` is the joined result text (the error
+    text, e.g. ``[split_refused] ...``, when the tool itself refused).
+    The caller pane identity comes from the inherited env, exactly as for
+    the agent's own MCP calls.
+    """
     if not os.environ.get("RENGA_SOCKET"):
-        return False
+        return False, ""
     if shutil.which(renga_bin) is None:
-        return False
+        return False, ""
     try:
         proc = subprocess.Popen(
             [renga_bin, "mcp-peer"],
@@ -150,7 +252,7 @@ def _notify_peer_renga(
             env=os.environ.copy(),
         )
     except (OSError, ValueError):
-        return False
+        return False, ""
 
     line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
@@ -167,9 +269,9 @@ def _notify_peer_renga(
     t = threading.Thread(target=reader, daemon=True)
     t.start()
     try:
-        return _drive_send(proc, line_q, to_id, message, timeout)
+        return _drive_call(proc, line_q, name, arguments, timeout)
     except Exception:  # noqa: BLE001 — best-effort, swallow everything
-        return False
+        return False, ""
     finally:
         _shutdown(proc, timeout)
 
@@ -207,13 +309,13 @@ def _read_response(
             return msg
 
 
-def _drive_send(
+def _drive_call(
     proc: subprocess.Popen,
     line_q: "queue.Queue[Optional[str]]",
-    to_id: str,
-    message: str,
+    name: str,
+    arguments: dict,
     timeout: float,
-) -> bool:
+) -> "tuple[bool, str]":
     def write(req: dict) -> None:
         assert proc.stdin is not None
         proc.stdin.write(json.dumps(req) + "\n")
@@ -229,34 +331,32 @@ def _drive_send(
     })
     init = _read_response(line_q, target_id=1, timeout=timeout)
     if init is None or "result" not in init:
-        return False
+        return False, ""
 
     write({"jsonrpc": "2.0", "method": "notifications/initialized"})
     write({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {
-            "name": "send_message",
-            "arguments": {"to_id": to_id, "message": message},
-        },
+        "params": {"name": name, "arguments": arguments},
     })
     resp = _read_response(line_q, target_id=2, timeout=timeout)
     if resp is None:
-        return False
+        return False, ""
 
+    error = resp.get("error")
+    if isinstance(error, dict):
+        # renga reports tool refusals as JSON-RPC errors whose message
+        # carries the code, e.g. "renga refused spawn_pane: [split_refused] ...".
+        message = error.get("message")
+        return False, message if isinstance(message, str) else ""
     result = resp.get("result")
     if not isinstance(result, dict):
-        return False
-    if result.get("isError"):
-        return False
-    # Renga's backend-unreachable shim returns ok-text rather than a
-    # JSON-RPC error (Issue #242). Reject "(message dropped — ..." so
-    # a silent backend failure isn't reported as success.
-    for chunk in result.get("content", []) or []:
-        if isinstance(chunk, dict):
-            text = chunk.get("text") or ""
-            if isinstance(text, str) and text.lstrip().startswith(_DROPPED_PREFIX):
-                return False
-    return True
+        return False, ""
+    text = "".join(
+        chunk.get("text") or ""
+        for chunk in result.get("content", []) or []
+        if isinstance(chunk, dict) and isinstance(chunk.get("text"), str)
+    )
+    return not result.get("isError"), text
 
 
 def _shutdown(proc: subprocess.Popen, timeout: float) -> None:
