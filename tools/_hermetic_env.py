@@ -42,20 +42,65 @@ import os
 import sys
 
 # Env vars that route peer_notify / the broker CLI at a *live* daemon.
-# Scrubbing all three forces the hermetic no-op path: peer_notify falls
-# back to the renga branch (no ORG_TRANSPORT=broker) which then
-# short-circuits because RENGA_SOCKET is gone too.
-LIVE_TRANSPORT_ENV = ("ORG_BROKER_STATE_DIR", "ORG_TRANSPORT", "RENGA_SOCKET")
+LIVE_TRANSPORT_ENV = ("ORG_BROKER_STATE_DIR", "ORG_NOTIFY_TO", "ORG_TRANSPORT", "RENGA_SOCKET")
+
+# Transport the scrub *pins* rather than unsets. See below for why an
+# unset ORG_TRANSPORT is no longer a safe hermetic state.
+HERMETIC_TRANSPORT = "renga"
 
 
 def scrub_live_transport_env() -> None:
-    """Remove live broker/renga transport env vars from ``os.environ``.
+    """Force the hermetic no-op transport state in ``os.environ``.
+
+    ``ORG_BROKER_STATE_DIR`` and ``RENGA_SOCKET`` are removed, and
+    ``ORG_TRANSPORT`` is **pinned to ``renga``** rather than removed.
+    The result is the same hermetic no-op as before: ``peer_notify``
+    takes the renga branch and short-circuits immediately because
+    ``RENGA_SOCKET`` is gone.
+
+    Why pin instead of unset (Issue #941). This guard used to rely on
+    "no ``ORG_TRANSPORT=broker``" meaning renga, which was true while
+    ``peer_notify`` did a raw ``== "broker"`` env check. It now resolves
+    through ``tools.transport.resolve()``, where an **unset**
+    ``ORG_TRANSPORT`` falls through to ``DEFAULT_TRANSPORT`` — flipped to
+    ``broker`` in runtime 0.1.28 (Epic #586). Merely popping the var
+    would therefore route tests to the *broker* branch, and with
+    ``ORG_BROKER_STATE_DIR`` also popped the broker CLI would fall back
+    to the default ``.state/broker`` — i.e. the live daemon. Popping all
+    three would turn this guard into the leak it exists to prevent.
+    Pinning the value keeps the intent (hermetic no-op) expressed as a
+    fact about the env rather than as an assumption about a default that
+    has since changed.
 
     Idempotent and process-wide: children spawned afterwards with an
     inherited environment start clean too.
     """
     for name in LIVE_TRANSPORT_ENV:
         os.environ.pop(name, None)
+    os.environ["ORG_TRANSPORT"] = HERMETIC_TRANSPORT
+
+
+def pin_throwaway_state_db() -> None:
+    """Point ``STATE_DB_PATH`` at a throwaway DB unless a test already set one (Issue #1234).
+
+    Without it, a hook a test drives records ``hook_denied`` (``.hooks/lib/deny-record.sh``
+    -> ``journal_append``) into the production ``state.db`` found by discovery. Set
+    process-wide so hooks spawned with an inherited env write to the throwaway DB too.
+    Tests that exercise discovery itself ``delenv`` it explicitly.
+
+    Only the process launched as the test runner pins (argv, not the inherited
+    ``PYTEST_*`` env): a hook's own ``journal_append`` started from a test with
+    ``STATE_DB_PATH`` deliberately removed must still resolve like production.
+    """
+    if not os.environ.get("STATE_DB_PATH") and _launched_as_test_runner():
+        import tempfile
+        os.environ["STATE_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "state.db")
+
+
+def _launched_as_test_runner() -> bool:
+    argv0 = sys.argv[0] if sys.argv else ""
+    return ("unittest" in argv0 or "pytest" in argv0
+            or os.path.basename(argv0).startswith("test"))
 
 
 def running_under_test() -> bool:
@@ -76,11 +121,7 @@ def running_under_test() -> bool:
     ``check_role_configs.py``, ...) match none of these, so the guard is a
     no-op for them.
     """
-    argv0 = sys.argv[0] if sys.argv else ""
-    if "unittest" in argv0 or "pytest" in argv0:
-        return True
-    base = os.path.basename(argv0)
-    if base.startswith("test"):
+    if _launched_as_test_runner():
         return True
     if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION"):
         return True
