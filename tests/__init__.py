@@ -8,6 +8,13 @@ live daemon, mirroring the gated guard in ``tools/__init__.py``. See
 """
 import os
 
-for _name in ("ORG_BROKER_STATE_DIR", "ORG_TRANSPORT", "RENGA_SOCKET"):
+for _name in ("ORG_BROKER_STATE_DIR", "ORG_NOTIFY_TO", "ORG_TRANSPORT", "RENGA_SOCKET"):
     os.environ.pop(_name, None)
 del _name
+
+# Issue #1234: hooks driven by tests must not record hook_denied into the
+# production state.db (same pin as tools._hermetic_env.pin_throwaway_state_db).
+if not os.environ.get("STATE_DB_PATH"):
+    import tempfile
+
+    os.environ["STATE_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "state.db")
