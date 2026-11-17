@@ -27,6 +27,7 @@ from tools import gen_worker_brief as gwb
 from tools import transport as t
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transport_seam"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # (fixture 名, self_edit, depth) — golden 生成時と同じ入力でなければ bit 等価
 # 検証が成立しないので、_base_config と対で固定する。
@@ -119,6 +120,91 @@ class WorkerBriefBitEquivalence(unittest.TestCase):
                     self.assertNotIn("mcp__renga-peers__", out)
 
 
+class WorkerBriefRecoverySafetyInvariants(unittest.TestCase):
+    """完了報告の宛先解決が失敗したときの **安全側 invariant** が brief 本体に
+    残っていること。
+
+    復旧手順の判断ロジックは共有 reference (capability gate) と
+    ``renga-error-codes.md`` の messaging 分岐へ寄せてあり、brief 側はポインタ
+    + 2 行に縮約されている。ただし縮約は golden の再生成だけでも通ってしまう
+    ため、**「正本を読む前後で迷っても誤送信しない」局所 invariant 2 つ**は
+    語義 assertion で固定する:
+
+    1. 同一 org だと確認できるまで **一切再送しない** (誤送信は別 org へ完了
+       報告を漏らす)。
+    2. dispatcher への escalate も同じ確認の対象で、確認できないときは
+       **何も送らずペインを保持したまま停止する**。
+
+    どちらが消えても、縮退時に別 org の secretary / dispatcher へ完了内容を
+    渡す経路が開く。transport に依らず成立すべき性質なので両 flag で見る。
+    """
+
+    # (説明, その文が含むべき部分文字列) — 表記ゆれで空振りしないよう、
+    # 意味を担う最小の連結片だけを見る。
+    #
+    # 各 needle は **その invariant を消す書き換えで実際に落ちる**ことを要求する。
+    # 「宛先の文字列が出てくる」程度の needle は、同じ宛先へ「確認なしで送って
+    # よい」と書き換えても素通りしてしまい、名前だけ invariant を騙る空の
+    # assertion になる (実際に mutation で素通りを確認したため差し替えた)。
+    _INVARIANTS = (
+        ("同一 org 確認前の再送禁止", "確認できるまで一切再送しない"),
+        ("dispatcher escalate も同じ確認の対象", "escalate も同じ確認の対象"),
+        ("確認不能時はペイン保持で停止", "何も送らず、ペインを保持したまま停止する"),
+    )
+
+    def test_recovery_invariants_survive_brief_shrink(self):
+        for flag in t.TRANSPORTS:
+            for name, self_edit, depth in _BRIEF_CASES:
+                if self_edit:
+                    # self_edit は別テンプレート (worker_brief_self_edit.md) で、
+                    # 本 invariant は normal brief の「作業完了時」節が持つ。
+                    continue
+                with _env_transport(flag):
+                    out = gwb.render(_base_config(self_edit, depth))
+                for label, needle in self._INVARIANTS:
+                    with self.subTest(flag=flag, fixture=name, invariant=label):
+                        self.assertIn(
+                            needle,
+                            out,
+                            f"{name}: 安全 invariant「{label}」が brief 本体から消えている "
+                            f"(縮約するならポインタだけでなくこの 1 文を残すこと)",
+                        )
+
+    def test_pointed_at_recovery_procedure_carries_the_gate_pointer(self):
+        """brief が主張する **他ファイルの構造的事実** を裏取りする。
+
+        縮約後の brief は「復旧手順の正本は renga-error-codes.md の
+        `pane_not_found` の messaging 分岐 (同節の冒頭が capability gate への
+        ポインタを持つ)」と書いており、worker はこの 1 文を根拠に
+        renga-error-codes.md **だけ**を読んで復旧に入る。ポインタが向こう側から
+        消えると、worker は gate を通らずに `list_peers` を採り直す — brief の
+        文面は無傷なので、これは brief 側のどの assertion でも検出できない。
+        """
+        proc = (
+            REPO_ROOT
+            / ".claude/skills/org-delegate/references/renga-error-codes.md"
+        ).read_text(encoding="utf-8")
+        section = proc.split("### `pane_not_found` の messaging 分岐", 1)
+        self.assertEqual(
+            len(section), 2, "messaging 分岐の見出しが renga-error-codes.md に無い"
+        )
+        body = section[1]
+        pointer_at = body.find("capability-first-drive-operational-gate.md")
+        list_peers_at = body.find("list_peers を引き直す")
+        self.assertNotEqual(
+            pointer_at, -1, "messaging 分岐に capability gate へのポインタが無い"
+        )
+        self.assertNotEqual(
+            list_peers_at, -1, "messaging 分岐に list_peers を引き直す step が無い"
+        )
+        self.assertLess(
+            pointer_at,
+            list_peers_at,
+            "gate ポインタは list_peers を引き直す step より前に置くこと "
+            "(後ろだと gate を通らずに列挙を採り直す経路が開く)",
+        )
+
+
 class WorkerBriefBrokerSurface(unittest.TestCase):
     """flag=broker で worker_brief が broker 面のみを指す。"""
 
@@ -200,7 +286,7 @@ class DelegatePayloadTransportNeutral(unittest.TestCase):
         import json
 
         plan = _StubPlan(delegate_body=self._body())
-        with _tmp_send_plan(plan) as raw:
+        with _env_transport("renga"), _tmp_send_plan(plan) as raw:
             payload = json.loads(raw)
         self.assertEqual(set(payload), {"to_id", "message", "summary"})
         self.assertEqual(payload["to_id"], "dispatcher")
@@ -211,15 +297,19 @@ class DelegatePayloadTransportNeutral(unittest.TestCase):
         # send_plan.json の byte 等価 (indent / 末尾改行 / summary を含む)。
         golden = (FIXTURES / "send_plan.golden.json").read_text(encoding="utf-8")
         plan = _StubPlan(delegate_body=self._body())
-        with _env_transport(None):
+        with _env_transport("renga"):
             with _tmp_send_plan(plan) as raw_renga:
                 pass
         with _env_transport("broker"):
             with _tmp_send_plan(plan) as raw_broker:
                 pass
         self.assertEqual(raw_renga, golden)
-        # transport 中立なので broker でも byte 同一。
-        self.assertEqual(raw_broker, golden)
+        # broker は deliver=user_turn だけが加わる (他は golden と同一)。
+        import json
+
+        expected = json.loads(golden)
+        expected["deliver"] = "user_turn"
+        self.assertEqual(json.loads(raw_broker), expected)
 
 
 class DelegateNextStepHintMatchesDescriptor(unittest.TestCase):
@@ -237,8 +327,8 @@ class DelegateNextStepHintMatchesDescriptor(unittest.TestCase):
         with _env_transport(None):
             self.assertEqual(
                 gdp._next_step_hint(),
-                "Next step: copy send_plan.json's `to_id`/`message` into a "
-                "org-broker send_message call.",
+                "Next step: copy send_plan.json's `to_id`/`message`/`deliver` "
+                "(omit `summary`) into a org-broker send_message call.",
             )
 
     def test_hint_explicit_renga_byte_for_byte(self):
