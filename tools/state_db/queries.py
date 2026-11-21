@@ -114,6 +114,34 @@ def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def list_parked_runs(conn: sqlite3.Connection) -> list[str]:
+    """Task ids of parked runs (delegation-lifecycle-contract §1.6, Issue 1295).
+
+    A run is parked when it is ``review`` and its latest ``worker_parked``
+    event comes after its latest ``worker_spawned`` (insertion order). Such
+    a run has no pane by design, so resume / handover checks must not report
+    it as a vanished worker.
+    """
+    review = {
+        r[0] for r in conn.execute("SELECT task_id FROM runs WHERE status = 'review'")
+    }
+    last: dict[tuple[str, str], int] = {}
+    for eid, kind, raw in conn.execute(
+        "SELECT id, kind, payload_json FROM events "
+        "WHERE kind IN ('worker_spawned', 'worker_parked') ORDER BY id"
+    ):
+        try:
+            task = json.loads(raw or "{}").get("task")
+        except (ValueError, AttributeError):
+            continue
+        if task in review:
+            last[(task, kind)] = eid
+    return sorted(
+        t for t in review
+        if last.get((t, "worker_parked"), -1) > last.get((t, "worker_spawned"), -1)
+    )
+
+
 def list_reserved_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return runs in the active-reservation-only projection (Set F §3.1 \\ §3.3).
 
@@ -147,6 +175,37 @@ def list_reserved_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         """
     ).fetchall()
     return _rows_to_dicts(rows)
+
+
+def list_live_worker_task_ids(conn: sqlite3.Connection) -> list[str]:
+    """Return task_ids of runs whose worker pane is live (Set F §3.3).
+
+    Predicate: ``runs.status IN USER_VISIBLE_STATUSES`` (``in_use`` /
+    ``review``) — the same user-visible projection Active Work Items uses.
+    ``review`` belongs here per Issue #264: the pane is still open awaiting
+    human approval, which is precisely the state an operator needs to see
+    on the panel. ``queued`` has no pane yet, and terminal / ``suspended``
+    rows are not running at all, so both stay out.
+
+    Note the deliberate split of responsibilities: this query is the
+    *admitting* predicate for a worker card, while ``.state/workers/*.md``
+    supplies the card's detail (task / pane / progress). The dashboard
+    intersects this set with the md files still sitting directly under
+    ``.state/workers/`` (archival is its own closed signal), but an md file
+    never admits a worker on its own — that is what kept dozens of finished
+    runs rendering as live.
+    """
+    placeholders = ", ".join("?" for _ in USER_VISIBLE_STATUSES)
+    rows = conn.execute(
+        f"""
+        SELECT r.task_id AS task_id
+        FROM runs r
+        WHERE r.status IN ({placeholders})
+        ORDER BY r.dispatched_at DESC, r.id DESC
+        """,
+        USER_VISIBLE_STATUSES,
+    ).fetchall()
+    return [r["task_id"] for r in rows if r["task_id"]]
 
 
 def list_runs_with_dirs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -300,6 +359,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
           "session": {... org_sessions row ...} | None,
           "active_runs": [...],            # Set F §3.3 user-visible (in_use / review)
           "reserved_runs": [...],          # Set F §3.1 \\ §3.3 (queued only)
+          "parked_runs": [task_id, ...],   # review runs whose pane was parked (§1.6)
           "active_worker_dirs": [...],     # lifecycle='active'
           "recent_events": [...],          # 20 newest
           "run_status_counts": {status: count},
@@ -318,6 +378,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "session": get_session(conn),
         "active_runs": list_active_runs(conn),
         "reserved_runs": list_reserved_runs(conn),
+        "parked_runs": list_parked_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=20),
         "run_status_counts": _run_status_counts(conn),
@@ -437,7 +498,9 @@ _BRIEFING_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
     "design_approved":         ("task", "pr"),
     "drift_reaudit":           ("task", "reason"),
     # PR / push
-    "fix_pushed":              ("task", "branch", "commit"),
+    # Emitters write the sha as ``head``; ``commit`` is the name the event
+    # catalog used to document and is kept so an older row still renders.
+    "fix_pushed":              ("task", "branch", "head", "commit"),
     "pr_opened":               ("task", "pr"),
     "prs_opened":              ("count",),
     "pr_merged":               ("pr", "task"),
@@ -719,6 +782,7 @@ def get_resume_briefing_light(
         "session": format_session_brief(get_session(conn)),
         "active_runs": list_active_runs(conn),
         "reserved_runs": list_reserved_runs(conn),
+        "parked_runs": list_parked_runs(conn),
         "active_inventory_dirs": list_briefing_worker_dirs(conn),
         "recent_events": list_recent_events_for_briefing(conn, limit=5),
         "run_status_counts": _run_status_counts(conn),
@@ -738,6 +802,7 @@ __all__ = [
     "BRIEFING_EVENT_KINDS_NOISE",
     "list_active_runs",
     "list_reserved_runs",
+    "list_live_worker_task_ids",
     "list_runs_with_dirs",
     "get_run_by_task_id",
     "list_worker_dirs",
