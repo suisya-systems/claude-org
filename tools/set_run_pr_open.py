@@ -15,8 +15,10 @@ This helper is the canonical action Secretary runs right after
 1. shells ``gh pr view <PR> --json url,headRefName`` to get the PR URL
    and head branch (authoritative — what GitHub actually recorded);
 2. opens a ``StateWriter.transaction()`` and calls
-   :meth:`StateWriter.set_run_pr` to update ``runs.pr_url`` (and
-   ``runs.branch`` re-asserted from gh's ``headRefName``).
+   :meth:`StateWriter.set_run_pr` to update ``runs.pr_url``, ``runs.branch``
+   (re-asserted from gh's ``headRefName``) and ``runs.pr_state`` (``open``: the
+   PR was just created; a supplied view's ``state`` / ``isDraft`` wins. Issue
+   1298: a task's second PR must not keep the first PR's ``merged``).
 
 Idempotent: a second invocation rewrites the same values and adds no
 journal entry — back-fill is metadata, not a new lifecycle event.
@@ -26,9 +28,17 @@ Usage::
     python tools/set_run_pr_open.py --task-id <id> --pr <N> \\
         [--repo OWNER/REPO] [--db-path <path>]
 
-Exit codes: 0 on success, 2 on gh / DB failure, 3 when the run row for
-``task_id`` is missing (so Secretary sees the misalignment instead of a
-silent no-op), 127 when the ``gh`` CLI is not installed.
+Issue #828: when ``--repo`` is omitted the repo is resolved deterministically
+from the run (``runs.project_id`` -> project -> GitHub URL) by
+``tools/resolve_run_repo.py``, and the helper exits non-zero when that fails.
+It no longer falls back to ``gh repo view`` (the cwd repo, i.e. ja for the
+secretary), which used to make ``gh pr view <N>`` read *ja's* PR #N for a
+cross-repo run and write its branch / commit onto the run while still exiting
+``ok``.
+
+Exit codes: 0 on success, 2 on gh / DB / repo-resolution failure, 3 when the
+run row for ``task_id`` is missing (so Secretary sees the misalignment instead
+of a silent no-op), 127 when the ``gh`` CLI is not installed.
 """
 from __future__ import annotations
 
@@ -44,6 +54,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.resolve_run_repo import (  # noqa: E402
+    SOURCE_EXPLICIT,
+    RepoResolution,
+    RepoResolutionError,
+    RunNotFound,
+    resolve_repo_for_task_at,
+)
 from tools.state_db.discover import resolve_state_db_path  # noqa: E402
 
 # Issue #398: discovery-based default so worktree-cwd invocations target
@@ -60,35 +77,18 @@ def _ensure_gh_installed() -> None:
         sys.exit(127)
 
 
-def _resolve_repo() -> str:
-    try:
-        result = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner"],
-            capture_output=True, text=True, encoding="utf-8", check=True,  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
-        )
-    except subprocess.CalledProcessError as exc:
-        sys.stderr.write(
-            "tools/set_run_pr_open.py: error: failed to auto-detect repo "
-            f"via `gh repo view`: {exc.stderr.strip() or exc}\n"
-        )
-        sys.exit(2)
-    try:
-        return json.loads(result.stdout)["nameWithOwner"]
-    except (json.JSONDecodeError, KeyError) as exc:
-        sys.stderr.write(
-            "tools/set_run_pr_open.py: error: unexpected `gh repo view` "
-            f"output: {exc}\n"
-        )
-        sys.exit(2)
-
-
 def fetch_pr_view(pr: int, repo: str) -> dict:
-    """Return the parsed ``gh pr view`` payload (url + headRefName)."""
+    """Return the parsed ``gh pr view`` payload (url + headRefName + title).
+
+    ``title`` (Issue #828) is not written to the DB; it is echoed on stdout
+    next to the resolved repo so the operator can eyeball *which* PR is about
+    to be recorded before trusting the ``ok``.
+    """
     proc = subprocess.run(
         [
             "gh", "pr", "view", str(pr),
             "--repo", repo,
-            "--json", "url,headRefName",
+            "--json", "url,headRefName,title",
         ],
         capture_output=True, text=True, encoding="utf-8", check=False,  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
     )
@@ -141,6 +141,13 @@ def set_run_pr_open(
 
     pr_url = (pr_view.get("url") or "").strip()
     head_ref = pr_view.get("headRefName") or None
+    # Issue 1298: record the PR's state too, so a second PR of the same task does
+    # not keep the first PR's `merged` (close_run would read it as landed). This
+    # runs right after `gh pr create`, so the PR is open unless a supplied view says
+    # otherwise; a wrong `open` only makes close_run ask GitHub.
+    state = str(pr_view.get("state") or "OPEN").upper()
+    pr_state = ("draft" if pr_view.get("isDraft") and state == "OPEN"
+                else {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}.get(state, "open"))
     if not pr_url:
         raise RuntimeError(
             f"gh pr view {pr} returned no url field; refusing to write "
@@ -171,7 +178,7 @@ def set_run_pr_open(
             return RESULT_NO_RUN
 
         with StateWriter(conn).transaction() as w:
-            w.set_run_pr(task_id, pr_url=pr_url, branch=head_ref)
+            w.set_run_pr(task_id, pr_url=pr_url, branch=head_ref, pr_state=pr_state)
         return RESULT_OK
     finally:
         conn.close()
@@ -191,8 +198,8 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--pr", type=int, required=True,
                         help="pull request number")
     parser.add_argument("--repo", default=None,
-                        help=("OWNER/REPO for cross-repo PRs; "
-                              "auto-detected via gh repo view when omitted"))
+                        help=("OWNER/REPO for cross-repo PRs; resolved from "
+                              "the run's project when omitted"))
     parser.add_argument("--db-path", default=None,
                         help=f"path to state.db (default: {DEFAULT_DB_PATH})")
     args = parser.parse_args(argv)
@@ -203,14 +210,58 @@ def main(argv: "list[str] | None" = None) -> int:
         parser.error("--task-id must be non-empty")
 
     _ensure_gh_installed()
-    repo = args.repo or _resolve_repo()
+
+    db_path = (
+        resolve_state_db_path(Path(args.db_path)) if args.db_path
+        else resolve_state_db_path()
+    )
+
+    # Issue #828: never guess the repo. Either the operator named it, or we
+    # derive it from this run's project; anything else stops here rather than
+    # reading some other repo's PR #N.
+    if args.repo:
+        resolution = RepoResolution(args.repo, SOURCE_EXPLICIT)
+    else:
+        try:
+            resolution = resolve_repo_for_task_at(db_path, args.task_id)
+        except RunNotFound as exc:
+            # Same terminal the post-write path reports for a missing run
+            # row, so the CLI contract (warning + `no_run` + exit 3) holds
+            # whether we notice before or after touching gh.
+            sys.stderr.write(
+                "tools/set_run_pr_open.py: warning: no run row for "
+                f"task_id={args.task_id!r}; skipping back-fill ({exc}).\n"
+            )
+            sys.stdout.write(
+                f"set_run_pr_open: task_id={args.task_id} PR #{args.pr} "
+                f"{RESULT_NO_RUN}\n"
+            )
+            return 3
+        except RepoResolutionError as exc:
+            sys.stderr.write(f"tools/set_run_pr_open.py: error: {exc}\n")
+            return 2
+
+    try:
+        pr_view = fetch_pr_view(args.pr, resolution.repo)
+    except RuntimeError as exc:
+        sys.stderr.write(f"tools/set_run_pr_open.py: error: {exc}\n")
+        return 2
+
+    # Echo the write target before the result line so a wrong repo / PR is
+    # visible even when the back-fill itself succeeds.
+    sys.stdout.write(
+        f"set_run_pr_open: repo={resolution.repo} "
+        f"(source={resolution.source}) PR #{args.pr}: "
+        f"{(pr_view.get('title') or '').strip() or '(no title)'}\n"
+    )
 
     try:
         result = set_run_pr_open(
             task_id=args.task_id,
             pr=args.pr,
-            repo=repo,
+            repo=resolution.repo,
             db_path=Path(args.db_path) if args.db_path else None,
+            pr_view=pr_view,
         )
     except RuntimeError as exc:
         sys.stderr.write(f"tools/set_run_pr_open.py: error: {exc}\n")
